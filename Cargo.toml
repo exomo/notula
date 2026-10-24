@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "src-tauri"]
+default-members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/exomo/noten"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+noten-model = { path = "crates/noten-model" }
+noten-layout = { path = "crates/noten-layout" }
+noten-format = { path = "crates/noten-format" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"

@@ -1,0 +1,17 @@
+[package]
+name = "noten-layout"
+description = "Engraving layout: turns a score into a render list"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+noten-model.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

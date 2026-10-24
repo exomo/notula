@@ -1,0 +1,127 @@
+import { invoke } from "@tauri-apps/api/core";
+import type { RenderList } from "./render";
+
+export type Step = "C" | "D" | "E" | "F" | "G" | "A" | "B";
+export type NoteValue =
+  | "Whole"
+  | "Half"
+  | "Quarter"
+  | "Eighth"
+  | "Sixteenth"
+  | "ThirtySecond"
+  | "SixtyFourth";
+
+export interface Pitch {
+  step: Step;
+  alter: number;
+  octave: number;
+}
+
+export interface Duration {
+  value: NoteValue;
+  dots: number;
+}
+
+export interface Cursor {
+  staff: number;
+  measure: number;
+  voice: number;
+  tick: number;
+}
+
+export interface Status {
+  can_undo: boolean;
+  can_redo: boolean;
+  dirty: boolean;
+  file_name: string | null;
+  title: string;
+}
+
+/** A null cursor or selection means "unchanged", except after undo, redo, new and open. */
+export interface Edited {
+  status: Status;
+  cursor: Cursor | null;
+  selected: number | null;
+  inserted: number | null;
+  undo_cursor: Cursor | null;
+  restored_insert: boolean;
+}
+
+export interface HitInfo {
+  cursor: Cursor;
+  pitch: Pitch;
+  note: number | null;
+}
+
+export interface CursorPosition {
+  cursor: Cursor;
+  selected: number | null;
+}
+
+export interface Instrument {
+  id: string;
+  name: string;
+  staves: number;
+}
+
+export interface ScoreSetup {
+  title: string;
+  composer: string;
+  instruments: string[];
+  time_numerator: number;
+  time_denominator: number;
+  key_fifths: number;
+  measures: number;
+  /** Length in ticks of a shortened first measure (anacrusis), or null for none. */
+  pickup: number | null;
+}
+
+export const api = {
+  currentState: () => invoke<Edited>("current_state"),
+  renderScore: (width: number) => invoke<RenderList>("render_score", { width }),
+  hitTest: (width: number, x: number, y: number) =>
+    invoke<HitInfo | null>("hit_test", { width, x, y }),
+  selectEvent: (event: number) => invoke<Cursor | null>("select_event", { event }),
+  moveCursor: (cursor: Cursor, selected: number | null, forward: boolean, movement = "step") =>
+    invoke<CursorPosition | null>("move_cursor", { cursor, selected, forward, movement }),
+  enterNote: (cursor: Cursor, pitch: Pitch, duration: Duration, holdCursor = false) =>
+    invoke<Edited>("enter_note", { cursor, pitch, duration, holdCursor }),
+  enterStep: (cursor: Cursor, step: Step, duration: Duration, holdCursor = false) =>
+    invoke<Edited>("enter_step", { cursor, step, duration, holdCursor }),
+  enterRest: (cursor: Cursor, duration: Duration) =>
+    invoke<Edited>("enter_rest", { cursor, duration }),
+  setDuration: (event: number, duration: Duration) =>
+    invoke<Edited>("set_duration", { event, duration }),
+  deleteEvent: (event: number) => invoke<Edited>("delete_event", { event }),
+  transposeSemitones: (event: number, semitones: number) =>
+    invoke<Edited>("transpose_semitones", { event, semitones }),
+  transposeOctaves: (event: number, octaves: number) =>
+    invoke<Edited>("transpose_octaves", { event, octaves }),
+  setAlter: (event: number, alter: number) => invoke<Edited>("set_alter", { event, alter }),
+  addNoteAbove: (event: number, step: Step) =>
+    invoke<Edited>("add_note_above", { event, step }),
+  addPitchToChord: (event: number, pitch: Pitch) =>
+    invoke<Edited>("add_pitch_to_chord", { event, pitch }),
+  removePitchFromChord: (event: number, pitch: Pitch) =>
+    invoke<Edited>("remove_pitch_from_chord", { event, pitch }),
+  togglePitchInChord: (event: number, pitch: Pitch) =>
+    invoke<Edited>("toggle_pitch_in_chord", { event, pitch }),
+  insertMeasure: (after: number | null, cursor: Cursor | null) =>
+    invoke<Edited>("insert_measure", { after, cursor }),
+  setTimeSignature: (measure: number, numerator: number, denominator: number) =>
+    invoke<Edited>("set_time_signature", { measure, numerator, denominator }),
+  togglePickup: (measure: number, cursor: Cursor | null) =>
+    invoke<Edited>("toggle_pickup", { measure, cursor }),
+  undo: (
+    cursor: Cursor | null,
+    selected: number | null,
+    restoreCursor: Cursor | null,
+    insertedEvent: number | null,
+  ) => invoke<Edited>("undo", { cursor, selected, restoreCursor, insertedEvent }),
+  redo: (cursor: Cursor | null, selected: number | null) =>
+    invoke<Edited>("redo", { cursor, selected }),
+  instrumentPresets: () => invoke<Instrument[]>("instrument_presets"),
+  newScore: (setup: ScoreSetup) => invoke<Edited | null>("new_score", { setup }),
+  openScore: () => invoke<Edited | null>("open_score"),
+  saveScore: (saveAs: boolean) => invoke<Status | null>("save_score", { saveAs }),
+};

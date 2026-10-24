@@ -1,0 +1,15 @@
+@font-face {
+  font-family: "Bravura";
+  src: url("./fonts/Bravura.woff2") format("woff2");
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: system-ui, sans-serif;
+}

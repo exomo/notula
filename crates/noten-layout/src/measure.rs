@@ -1,0 +1,84 @@
+//! Horizontal spacing of one measure: where each point in time sits, shared by all staves.
+
+use std::collections::BTreeMap;
+
+use noten_model::{Score, Staff, TICKS_PER_QUARTER};
+
+use crate::engrave::{StaffPlan, plan_staff};
+
+const START_PAD: f32 = 1.0;
+const MIN_CLEARANCE: f32 = 1.0;
+const QUARTER_SPACING: f32 = 3.5;
+const SPACING_EXPONENT: f32 = 0.6;
+const MIN_BODY_WIDTH: f32 = 6.0;
+
+pub(crate) struct MeasureMetrics {
+    /// Onsets that have something to draw, ascending.
+    pub columns: Vec<u32>,
+    /// Distance of each column from the start of the measure body.
+    pub offsets: Vec<f32>,
+    pub body_width: f32,
+    /// One plan per staff, in score order.
+    pub plans: Vec<StaffPlan>,
+}
+
+impl MeasureMetrics {
+    pub fn offset_of(&self, onset: u32) -> f32 {
+        self.columns
+            .binary_search(&onset)
+            .map(|i| self.offsets[i])
+            .unwrap_or(0.0)
+    }
+}
+
+/// Natural width for a time span: longer notes get more room, but less than proportionally.
+fn spacing(ticks: u32) -> f32 {
+    QUARTER_SPACING * (ticks as f32 / TICKS_PER_QUARTER as f32).powf(SPACING_EXPONENT)
+}
+
+pub(crate) fn measure_metrics(score: &Score, staves: &[&Staff], measure: usize) -> MeasureMetrics {
+    let info = score.measures[measure];
+    let capacity = info.capacity();
+    // Only a pickup at the start of the score begins partway through the bar.
+    let metric_offset = if measure == 0 {
+        info.time_signature.ticks_per_measure() - capacity
+    } else {
+        0
+    };
+    let plans: Vec<StaffPlan> = staves
+        .iter()
+        .map(|staff| plan_staff(staff.clef, info, metric_offset, &staff.measures[measure]))
+        .collect();
+
+    let mut extents: BTreeMap<u32, (f32, f32)> = BTreeMap::new();
+    for event in plans.iter().flat_map(|p| &p.voices).flat_map(|v| &v.events) {
+        let entry = extents.entry(event.onset).or_insert((0.0, 0.0));
+        entry.0 = entry.0.max(event.left);
+        entry.1 = entry.1.max(event.right);
+    }
+
+    let columns: Vec<u32> = extents.keys().copied().collect();
+    let mut offsets = Vec::with_capacity(columns.len());
+    let mut x = START_PAD + columns.first().map_or(0.0, |c| extents[c].0);
+    for (i, tick) in columns.iter().enumerate() {
+        offsets.push(x);
+        let next = columns.get(i + 1);
+        let until = next.copied().unwrap_or(capacity);
+        let next_left = next.map_or(0.0, |n| extents[n].0);
+        let needed = extents[tick].1 + MIN_CLEARANCE + next_left;
+        x += spacing(until.saturating_sub(*tick)).max(needed);
+    }
+
+    let body_width = if columns.is_empty() {
+        spacing(capacity).max(MIN_BODY_WIDTH)
+    } else {
+        x.max(MIN_BODY_WIDTH)
+    };
+
+    MeasureMetrics {
+        columns,
+        offsets,
+        body_width,
+        plans,
+    }
+}

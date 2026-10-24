@@ -1,0 +1,12 @@
+{
+  "name": "noten",
+  "private": true,
+  "license": "MIT",
+  "workspaces": ["ui"],
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

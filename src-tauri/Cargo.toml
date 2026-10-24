@@ -1,0 +1,25 @@
+[package]
+name = "noten-app"
+description = "Noten desktop application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "noten_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+noten-model.workspace = true
+noten-layout.workspace = true
+noten-format.workspace = true
+serde.workspace = true
+tauri-plugin-dialog = "2"
