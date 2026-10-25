@@ -10,7 +10,7 @@
   let presets = $state<Instrument[]>([]);
   let title = $state("");
   let composer = $state("");
-  let chosen = $state<string[]>(["piano"]);
+  let chosen = $state<{ presetId: string; staves: number }[]>([{ presetId: "piano", staves: 2 }]);
   let numerator = $state(4);
   let denominator = $state(4);
   let fifths = $state(0);
@@ -48,7 +48,12 @@
   }
 
   function add() {
-    if (toAdd) chosen = [...chosen, toAdd];
+    const preset = presets.find((item) => item.id === toAdd);
+    if (preset) chosen = [...chosen, { presetId: preset.id, staves: preset.staves }];
+  }
+
+  function setStaffCount(index: number, staves: number) {
+    chosen = chosen.map((instrument, i) => (i === index ? { ...instrument, staves } : instrument));
   }
 
   function move(index: number, by: number) {
@@ -68,7 +73,7 @@
     const setup: ScoreSetup = {
       title,
       composer,
-      instruments: chosen,
+      instruments: chosen.map(({ presetId, staves }) => ({ preset_id: presetId, staves })),
       time_numerator: numerator,
       time_denominator: denominator,
       key_fifths: fifths,
@@ -91,9 +96,19 @@
     <fieldset>
       <legend>Instruments</legend>
       <ol>
-        {#each chosen as id, index}
+        {#each chosen as instrument, index}
           <li>
-            <span>{nameOf(id)}</span>
+            <span>{nameOf(instrument.presetId)}</span>
+            {#if (presets.find((preset) => preset.id === instrument.presetId)?.staves ?? 1) > 1}
+              <select
+                aria-label="Staff count for {nameOf(instrument.presetId)} {index + 1}"
+                value={instrument.staves}
+                onchange={(event) => setStaffCount(index, Number(event.currentTarget.value))}
+              >
+                <option value={1}>One staff</option>
+                <option value={2}>Two staves</option>
+              </select>
+            {/if}
             <button type="button" onclick={() => move(index, -1)} disabled={index === 0} aria-label="Move up">↑</button>
             <button type="button" onclick={() => move(index, 1)} disabled={index === chosen.length - 1} aria-label="Move down">↓</button>
             <button type="button" onclick={() => (chosen = chosen.filter((_, i) => i !== index))} aria-label="Remove">✕</button>
@@ -157,7 +172,10 @@
 
 <style>
   dialog {
-    min-width: 28rem;
+    box-sizing: border-box;
+    width: min(36rem, calc(100vw - 2rem));
+    max-height: calc(100vh - 2rem);
+    overflow: auto;
     border: 1px solid #888;
     border-radius: 6px;
     padding: 1rem 1.25rem;
@@ -180,6 +198,7 @@
   fieldset {
     display: grid;
     gap: 0.5rem;
+    min-width: 0;
   }
 
   ol {
@@ -207,6 +226,7 @@
 
   .row {
     display: flex;
+    flex-wrap: wrap;
     gap: 1rem;
   }
 
@@ -223,5 +243,19 @@
   .error {
     margin: 0;
     color: #b00020;
+  }
+
+  @media (max-width: 520px) {
+    dialog {
+      padding: 0.8rem;
+    }
+
+    li {
+      flex-wrap: wrap;
+    }
+
+    li span {
+      flex: 1 0 100%;
+    }
   }
 </style>

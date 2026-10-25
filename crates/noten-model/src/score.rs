@@ -140,6 +140,8 @@ pub struct Staff {
 pub struct Part {
     pub id: PartId,
     pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub short_name: String,
     pub staves: Vec<Staff>,
 }
 
@@ -257,6 +259,7 @@ impl Score {
         Part {
             id,
             name: name.to_owned(),
+            short_name: String::new(),
             staves,
         }
     }

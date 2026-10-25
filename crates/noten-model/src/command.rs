@@ -7,7 +7,8 @@ use crate::duration::TimeSignature;
 use crate::error::ModelError;
 use crate::ids::{PartId, StaffId};
 use crate::score::{
-    Clef, Event, KeySignature, MeasureData, MeasureInfo, Part, Score, StaffMeasure, VoiceLocation,
+    Clef, Event, KeySignature, MeasureData, MeasureInfo, Part, Score, Staff, StaffMeasure,
+    VoiceLocation,
 };
 
 /// A reversible edit. `apply` leaves the score untouched on error and returns the inverse command.
@@ -56,8 +57,24 @@ pub enum Command {
         index: usize,
         part: Part,
     },
+    MovePart {
+        part: PartId,
+        index: usize,
+    },
     RemovePart {
         part: PartId,
+    },
+    SetPartName {
+        part: PartId,
+        name: String,
+    },
+    SetPartShortName {
+        part: PartId,
+        short_name: String,
+    },
+    SetPartStaves {
+        part: PartId,
+        staves: Vec<Staff>,
     },
     SetMetadata {
         title: String,
@@ -251,6 +268,22 @@ impl Command {
                 score.parts.insert(index, part);
                 Ok(Command::RemovePart { part: id })
             }
+            Command::MovePart { part, index } => {
+                let old_index = score
+                    .parts
+                    .iter()
+                    .position(|candidate| candidate.id == part)
+                    .ok_or(ModelError::PartNotFound(part))?;
+                if index >= score.parts.len() {
+                    return Err(ModelError::Invalid("part index is out of range"));
+                }
+                let moved = score.parts.remove(old_index);
+                score.parts.insert(index, moved);
+                Ok(Command::MovePart {
+                    part,
+                    index: old_index,
+                })
+            }
             Command::RemovePart { part } => {
                 let index = score
                     .parts
@@ -259,6 +292,78 @@ impl Command {
                     .ok_or(ModelError::PartNotFound(part))?;
                 let part = score.parts.remove(index);
                 Ok(Command::AddPart { index, part })
+            }
+            Command::SetPartName { part, name } => {
+                if name.trim().is_empty() {
+                    return Err(ModelError::Invalid("part name cannot be empty"));
+                }
+                let target = score
+                    .parts
+                    .iter_mut()
+                    .find(|candidate| candidate.id == part)
+                    .ok_or(ModelError::PartNotFound(part))?;
+                let old = mem::replace(&mut target.name, name);
+                Ok(Command::SetPartName { part, name: old })
+            }
+            Command::SetPartShortName { part, short_name } => {
+                let target = score
+                    .parts
+                    .iter_mut()
+                    .find(|candidate| candidate.id == part)
+                    .ok_or(ModelError::PartNotFound(part))?;
+                let old = mem::replace(&mut target.short_name, short_name);
+                Ok(Command::SetPartShortName {
+                    part,
+                    short_name: old,
+                })
+            }
+            Command::SetPartStaves { part, staves } => {
+                if staves.is_empty() {
+                    return Err(ModelError::Invalid("a part needs at least one staff"));
+                }
+                let part_index = score
+                    .parts
+                    .iter()
+                    .position(|candidate| candidate.id == part)
+                    .ok_or(ModelError::PartNotFound(part))?;
+                let old_staves = &score.parts[part_index].staves;
+                let retained: HashSet<_> = staves.iter().map(|staff| staff.id).collect();
+                if old_staves.iter().any(|staff| {
+                    !retained.contains(&staff.id)
+                        && staff.measures.iter().any(|measure| {
+                            measure.voices.iter().any(|voice| !voice.events.is_empty())
+                        })
+                }) {
+                    return Err(ModelError::Invalid(
+                        "cannot remove a staff that contains notes or rests",
+                    ));
+                }
+
+                let old_ids: HashSet<_> = old_staves.iter().map(|staff| staff.id).collect();
+                let mut used: HashSet<u64> = score.parts.iter().map(|part| part.id.0).collect();
+                let mut seen_staves = HashSet::new();
+                used.extend(
+                    score
+                        .staves()
+                        .filter(|staff| !old_ids.contains(&staff.id))
+                        .map(|staff| staff.id.0),
+                );
+                for staff in &staves {
+                    if !seen_staves.insert(staff.id) {
+                        return Err(ModelError::DuplicateId(staff.id.0));
+                    }
+                    if !old_ids.contains(&staff.id) && !used.insert(staff.id.0) {
+                        return Err(ModelError::DuplicateId(staff.id.0));
+                    }
+                    if staff.measures.len() != score.measures.len() {
+                        return Err(ModelError::Invalid("staff must have one entry per measure"));
+                    }
+                    for (content, info) in staff.measures.iter().zip(&score.measures) {
+                        check_fits(content, info.capacity())?;
+                    }
+                }
+                let old = mem::replace(&mut score.parts[part_index].staves, staves);
+                Ok(Command::SetPartStaves { part, staves: old })
             }
             Command::SetMetadata { title, composer } => {
                 let title = mem::replace(&mut score.title, title);

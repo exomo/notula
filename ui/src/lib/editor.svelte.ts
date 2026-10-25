@@ -48,6 +48,7 @@ class Editor {
   revision = $state(0);
   message = $state<string | null>(null);
   newScoreOpen = $state(false);
+  scorePropertiesOpen = $state(false);
   timeSignatureOpen = $state(false);
   /** Where measures are on screen, as of the latest layout. */
   areas = $state<MeasureArea[]>([]);
@@ -345,6 +346,12 @@ class Editor {
     if (edited) this.insertHistory = [];
     this.apply(edited ?? null, true);
     return edited !== undefined && edited !== null;
+  }
+
+  async updateScoreProperties(update: Parameters<typeof api.updateScoreProperties>[0]): Promise<boolean> {
+    const edited = await this.run(() => api.updateScoreProperties(update));
+    this.apply(edited ?? null);
+    return edited !== undefined;
   }
 
   async open() {

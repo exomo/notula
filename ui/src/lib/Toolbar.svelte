@@ -19,17 +19,74 @@
   ];
 
   const hasSelection = $derived(editor.selected !== null);
+  let fileMenuOpen = $state(false);
+  let fileMenuTrigger = $state<HTMLButtonElement | null>(null);
+  let fileMenuPanel = $state<HTMLDivElement | null>(null);
+  let fileMenuPosition = $state({ left: 0, top: 0 });
+
+  function toggleFileMenu() {
+    if (fileMenuOpen) {
+      fileMenuOpen = false;
+      return;
+    }
+    const bounds = fileMenuTrigger?.getBoundingClientRect();
+    if (bounds) {
+      fileMenuPosition = {
+        left: Math.max(8, Math.min(bounds.left, window.innerWidth - 224)),
+        top: bounds.bottom + 4,
+      };
+    }
+    fileMenuOpen = true;
+  }
+
+  function onWindowClick(event: MouseEvent) {
+    if (
+      fileMenuOpen &&
+      !fileMenuPanel?.contains(event.target as Node) &&
+      !fileMenuTrigger?.contains(event.target as Node)
+    ) {
+      fileMenuOpen = false;
+    }
+  }
+
+  function onFileKeydown(event: KeyboardEvent) {
+    if (fileMenuOpen && event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      fileMenuOpen = false;
+      fileMenuTrigger?.focus();
+    }
+  }
+
+  function runFileAction(action: () => void) {
+    fileMenuOpen = false;
+    action();
+  }
+
+  function exportChanged(event: Event) {
+    const select = event.currentTarget as HTMLSelectElement;
+    const format = select.value as "pdf" | "png" | "svg" | "";
+    select.value = "";
+    if (format) {
+      fileMenuOpen = false;
+      void editor.exportScore(format);
+    }
+  }
 </script>
 
-<header>
-  <div class="group">
-    <button onclick={() => (editor.newScoreOpen = true)} title="New score (Ctrl+N)">New</button>
-    <button onclick={() => editor.open()} title="Open (Ctrl+O)">Open</button>
-    <button onclick={() => editor.save()} title="Save (Ctrl+S)">Save</button>
-    <button onclick={() => editor.save(true)} title="Save as (Ctrl+Shift+S)">Save as</button>
-    <button onclick={() => editor.exportScore("pdf")} title="Export score as PDF">PDF</button>
-    <button onclick={() => editor.exportScore("png")} title="Export score as PNG image">PNG</button>
-    <button onclick={() => editor.exportScore("svg")} title="Export score as SVG image">SVG</button>
+<svelte:window onclick={onWindowClick} />
+
+<header role="toolbar" aria-label="Score editor toolbar" tabindex="0" onkeydown={onFileKeydown}>
+  <div class="group file-menu">
+    <button
+      bind:this={fileMenuTrigger}
+      aria-haspopup="true"
+      aria-expanded={fileMenuOpen}
+      aria-controls="file-actions"
+      onclick={toggleFileMenu}
+    >
+      File
+    </button>
   </div>
 
   <div class="group">
@@ -124,42 +181,182 @@
   </div>
 </header>
 
+{#if fileMenuOpen}
+  <div
+    bind:this={fileMenuPanel}
+    id="file-actions"
+    class="file-panel"
+    role="toolbar"
+    aria-label="File actions"
+    tabindex="-1"
+    onkeydown={onFileKeydown}
+    style:left="{fileMenuPosition.left}px"
+    style:top="{fileMenuPosition.top}px"
+  >
+    <button onclick={() => runFileAction(() => (editor.newScoreOpen = true))} title="New score (Ctrl+N)">New score</button>
+    <button onclick={() => runFileAction(() => void editor.open())} title="Open (Ctrl+O)">Open…</button>
+    <button onclick={() => runFileAction(() => void editor.save())} title="Save (Ctrl+S)">Save</button>
+    <button onclick={() => runFileAction(() => void editor.save(true))} title="Save as (Ctrl+Shift+S)">Save as…</button>
+    <button onclick={() => runFileAction(() => (editor.scorePropertiesOpen = true))}>Score properties…</button>
+    <label for="score-export">Export</label>
+    <select id="score-export" aria-label="Export score" onchange={exportChanged}>
+      <option value="">Choose format…</option>
+      <option value="pdf">PDF</option>
+      <option value="png">PNG image</option>
+      <option value="svg">SVG image</option>
+    </select>
+  </div>
+{/if}
+
 <style>
   header {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.25rem 1rem;
-    padding: 0.4rem 0.75rem;
-    border-bottom: 1px solid #bbb;
-    background: #f4f4f4;
+    gap: 0.35rem 0;
+    padding: 0.45rem 0.6rem;
+    border-bottom: 1px solid var(--line);
+    background: var(--toolbar);
+    box-shadow: 0 1px 3px rgb(28 38 34 / 7%);
   }
 
   .group {
     display: flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.3rem;
+    padding: 0 0.55rem;
+    border-right: 1px solid var(--line);
   }
 
-  button {
-    min-width: 2rem;
-    padding: 0.25rem 0.55rem;
+  .group:first-child {
+    padding-left: 0;
+  }
+
+  .group:last-child {
+    border-right: 0;
+  }
+
+  .file-panel {
+    position: fixed;
+    z-index: 30;
+    display: grid;
+    width: 13rem;
+    gap: 0.2rem;
+    padding: 0.45rem;
+    border: 1px solid var(--line-strong);
+    border-radius: 6px;
+    background: var(--toolbar);
+    box-shadow: 0 10px 28px rgb(20 32 26 / 20%);
+  }
+
+  .file-panel button {
+    width: 100%;
+    text-align: left;
+  }
+
+  .file-panel label {
+    padding: 0.25rem 0.55rem 0;
+    color: var(--muted);
+    font-size: 0.74rem;
+    font-weight: 600;
+  }
+
+  .file-panel select {
+    width: 100%;
+    border-color: var(--line);
+    background: #fff;
+  }
+
+  .group.playback span {
+    max-width: 10rem;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 0.78rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  button,
+  select {
+    min-height: 2rem;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 0.3rem 0.55rem;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.82rem;
+    cursor: pointer;
+  }
+
+  button:hover:not(:disabled),
+  select:hover {
+    border-color: var(--line-strong);
+    background: #fff;
+  }
+
+  button:focus-visible,
+  select:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  button:disabled {
+    color: #9aa19e;
+    cursor: default;
   }
 
   button.active {
-    background: #cfe0fc;
-    border-color: #1a73e8;
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent-strong);
   }
 
   .smufl {
     font-family: "Bravura";
     font-size: 1.4rem;
     line-height: 1;
-    padding: 0.2rem 0.45rem 0.1rem;
+    min-width: 2.1rem;
+    padding: 0.2rem 0.35rem 0.1rem;
   }
 
   .zoom span {
     min-width: 3.2em;
     text-align: center;
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+
+  @media (max-width: 760px) {
+    header {
+      flex-wrap: nowrap;
+      gap: 0;
+      padding: 0.4rem;
+      overflow-x: auto;
+      overscroll-behavior-x: contain;
+      scrollbar-width: thin;
+    }
+
+    .group {
+      flex: 0 0 auto;
+      flex-wrap: nowrap;
+      padding: 0 0.35rem;
+    }
+
+    .group.playback span {
+      display: none;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .group {
+      border-right: 0;
+      padding: 0 0.2rem;
+    }
+
+    button,
+    select {
+      padding-inline: 0.4rem;
+    }
   }
 </style>

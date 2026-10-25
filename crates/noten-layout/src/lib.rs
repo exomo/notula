@@ -233,19 +233,30 @@ pub fn hit_test(score: &Score, list: &RenderList, x: f32, y: f32) -> Option<Hit>
 impl Layouter<'_> {
     fn run(&self, width: f32) -> RenderList {
         let score = self.score;
-        let name_chars = score
+        let first_name_chars = score
             .parts
             .iter()
             .map(|p| p.name.chars().count())
             .max()
             .unwrap_or(0);
-        let names_width = if name_chars > 0 {
-            name_chars as f32 * NAME_CHAR_WIDTH + NAME_GAP
+        let short_name_chars = score
+            .parts
+            .iter()
+            .map(|part| short_name(part).chars().count())
+            .max()
+            .unwrap_or(0);
+        let first_names_width = if first_name_chars > 0 {
+            first_name_chars as f32 * NAME_CHAR_WIDTH + NAME_GAP
         } else {
             0.0
         };
-        let first_x = MARGIN + names_width + self.brace_room();
-        let other_x = MARGIN + self.brace_room();
+        let short_names_width = if short_name_chars > 0 {
+            short_name_chars as f32 * NAME_CHAR_WIDTH + NAME_GAP
+        } else {
+            0.0
+        };
+        let first_x = MARGIN + first_names_width + self.brace_room();
+        let other_x = MARGIN + short_names_width + self.brace_room();
         let right = width - MARGIN;
 
         let systems = break_systems(score, &self.metrics, right - first_x, right - other_x);
@@ -339,11 +350,16 @@ impl Layouter<'_> {
                     height,
                 );
             }
-            if first_system && !part.name.is_empty() {
+            let label = if first_system {
+                &part.name
+            } else {
+                short_name(part)
+            };
+            if !label.is_empty() {
                 canvas.text(
                     x_start - self.brace_room() - NAME_GAP,
                     (top + bottom) / 2.0 + NAME_SIZE * 0.35,
-                    &part.name,
+                    label,
                     NAME_SIZE,
                     Anchor::End,
                 );
@@ -417,5 +433,31 @@ impl Layouter<'_> {
             }
             cursor = body_end;
         }
+    }
+}
+
+fn short_name(part: &noten_model::Part) -> &str {
+    if !part.short_name.is_empty() {
+        return &part.short_name;
+    }
+    match part.name.as_str() {
+        "Piano" => "Pno.",
+        "Organ" => "Org.",
+        "Harp" => "Hp.",
+        "Accordion" => "Acc.",
+        "Flute" => "Fl.",
+        "Oboe" => "Ob.",
+        "Clarinet" => "Cl.",
+        "Bassoon" => "Bsn.",
+        "Horn" => "Hn.",
+        "Trumpet" => "Tpt.",
+        "Trombone" => "Tbn.",
+        "Violin" => "Vln.",
+        "Viola" => "Vla.",
+        "Cello" => "Vc.",
+        "Double Bass" => "Db.",
+        "Guitar" => "Gtr.",
+        "Voice" => "Vo.",
+        _ => &part.name,
     }
 }

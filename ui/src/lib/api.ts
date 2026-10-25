@@ -61,19 +61,41 @@ export interface CursorPosition {
 export interface Instrument {
   id: string;
   name: string;
+  short_name: string;
   staves: number;
 }
 
 export interface ScoreSetup {
   title: string;
   composer: string;
-  instruments: string[];
+  instruments: { preset_id: string; staves: number }[];
   time_numerator: number;
   time_denominator: number;
   key_fifths: number;
   measures: number;
   /** Length in ticks of a shortened first measure (anacrusis), or null for none. */
   pickup: number | null;
+}
+
+export interface ScorePart {
+  id: number;
+  name: string;
+  short_name: string;
+  staves: number;
+}
+
+export interface ScoreProperties {
+  title: string;
+  composer: string;
+  parts: ScorePart[];
+}
+
+export interface ScorePropertiesUpdate {
+  title: string;
+  composer: string;
+  remove_part_ids: number[];
+  instruments: { part_id: number; name: string; short_name: string; preset_id: string | null; staves: number }[];
+  add_instruments: { preset_id: string; name: string; short_name: string; staves: number }[];
 }
 
 export interface PlaybackStatus {
@@ -127,6 +149,9 @@ export const api = {
   redo: (cursor: Cursor | null, selected: number | null) =>
     invoke<Edited>("redo", { cursor, selected }),
   instrumentPresets: () => invoke<Instrument[]>("instrument_presets"),
+  scoreProperties: () => invoke<ScoreProperties>("score_properties"),
+  updateScoreProperties: (update: ScorePropertiesUpdate) =>
+    invoke<Edited>("update_score_properties", { update }),
   newScore: (setup: ScoreSetup) => invoke<Edited | null>("new_score", { setup }),
   openScore: () => invoke<Edited | null>("open_score"),
   saveScore: (saveAs: boolean) => invoke<Status | null>("save_score", { saveAs }),

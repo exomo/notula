@@ -11,7 +11,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use crate::export::{ExportFormat, export_render_list};
 use crate::playback::PlaybackController;
 use crate::session::{Session, Status};
-use crate::setup::{self, InstrumentInfo, ScoreSetup};
+use crate::setup::{self, InstrumentInfo, ScoreProperties, ScorePropertiesUpdate, ScoreSetup};
 
 pub struct AppState {
     session: Mutex<Session>,
@@ -458,6 +458,22 @@ pub fn redo(
 #[tauri::command]
 pub fn instrument_presets() -> Vec<InstrumentInfo> {
     setup::instruments()
+}
+
+#[tauri::command]
+pub fn score_properties(state: State<AppState>) -> ScoreProperties {
+    setup::properties(state.lock().doc.score())
+}
+
+#[tauri::command]
+pub fn update_score_properties(
+    app: AppHandle,
+    state: State<AppState>,
+    update: ScorePropertiesUpdate,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    setup::update_properties(&mut session.doc, update).map_err(text)?;
+    Ok(finish(&app, &session, None, None))
 }
 
 /// Asks before throwing away unsaved work; returns whether to go on.

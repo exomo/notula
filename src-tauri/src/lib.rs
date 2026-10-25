@@ -41,6 +41,8 @@ pub fn run() {
             commands::undo,
             commands::redo,
             commands::instrument_presets,
+            commands::score_properties,
+            commands::update_score_properties,
             commands::new_score,
             commands::open_score,
             commands::save_score,

@@ -262,6 +262,48 @@ fn parts_can_be_added_and_removed_with_undo() {
 }
 
 #[test]
+fn part_properties_can_change_without_losing_notes_and_undo_together() {
+    let (mut doc, staff) = setup();
+    insert(&mut doc, staff, 0, NoteValue::Quarter).unwrap();
+    let before = doc.score().clone();
+    let part = doc.score().parts[0].id;
+
+    doc.execute(Command::Batch {
+        commands: vec![
+            Command::SetMetadata {
+                title: "Revised title".into(),
+                composer: "Composer".into(),
+            },
+            Command::SetPartName {
+                part,
+                name: "Viola".into(),
+            },
+            Command::SetPartShortName {
+                part,
+                short_name: "Vla.".into(),
+            },
+            Command::SetClef {
+                staff,
+                clef: Clef::Alto,
+            },
+        ],
+    })
+    .unwrap();
+
+    let updated = doc.score();
+    assert_eq!(updated.title, "Revised title");
+    assert_eq!(updated.parts[0].name, "Viola");
+    assert_eq!(updated.parts[0].short_name, "Vla.");
+    assert_eq!(updated.parts[0].staves[0].id, staff);
+    assert_eq!(
+        updated.parts[0].staves[0].measures,
+        before.parts[0].staves[0].measures
+    );
+    doc.undo().unwrap();
+    assert_eq!(doc.score(), &before);
+}
+
+#[test]
 fn clef_key_and_metadata_roundtrip() {
     let (mut doc, staff) = setup();
     let before = doc.score().clone();
@@ -304,13 +346,32 @@ fn score_and_commands_survive_json() {
     assert_eq!(&restored, doc.score());
 
     let command = Command::Batch {
-        commands: vec![Command::SetMetadata {
-            title: "T".into(),
-            composer: "C".into(),
-        }],
+        commands: vec![
+            Command::SetMetadata {
+                title: "T".into(),
+                composer: "C".into(),
+            },
+            Command::SetPartShortName {
+                part: doc.score().parts[0].id,
+                short_name: "Pno.".into(),
+            },
+        ],
     };
     let json = serde_json::to_string(&command).unwrap();
     assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), command);
+}
+
+#[test]
+fn old_scores_without_part_short_names_still_load() {
+    let (doc, _) = setup();
+    let mut json = serde_json::to_value(doc.score()).unwrap();
+    json["parts"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("short_name");
+
+    let restored: Score = serde_json::from_value(json).unwrap();
+    assert_eq!(restored.parts[0].short_name, "");
 }
 
 #[test]

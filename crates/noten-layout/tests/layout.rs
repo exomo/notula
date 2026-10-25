@@ -392,7 +392,7 @@ fn key_signature_is_repeated_at_each_system_start() {
 }
 
 #[test]
-fn multi_staff_parts_get_a_brace_and_names_only_on_the_first_system() {
+fn multi_staff_parts_get_full_and_short_names_across_systems() {
     let mut b = Builder::new(&[
         ("Piano", &[Clef::Treble, Clef::Bass]),
         ("Violin", &[Clef::Treble]),
@@ -405,15 +405,24 @@ fn multi_staff_parts_get_a_brace_and_names_only_on_the_first_system() {
         .iter()
         .filter(|item| matches!(item.shape, Shape::Glyph { glyph, .. } if glyph == '\u{E000}'))
         .count();
-    let names = list
+    let names: Vec<_> = list
         .items
         .iter()
-        .filter(|item| matches!(item.shape, Shape::Text { .. }))
-        .count();
+        .filter_map(|item| match &item.shape {
+            Shape::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
     let systems = staff_lines(&list).len() / 15;
     assert!(systems > 1);
     assert_eq!(braces, systems);
-    assert_eq!(names, 2);
+    assert_eq!(names.len(), systems * 2);
+    assert_eq!(&names[..2], &["Piano", "Violin"]);
+    assert!(
+        names[2..]
+            .chunks_exact(2)
+            .all(|pair| pair == ["Pno.", "Vln."])
+    );
 }
 
 #[test]
