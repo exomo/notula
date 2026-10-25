@@ -116,10 +116,31 @@ fn render_list_svg(list: &RenderList) -> String {
                     .join(" ");
                 svg.push_str(&format!("<polygon points=\"{points}\" fill=\"black\"/>"));
             }
-            Shape::Glyph { x, y, glyph, size } => svg.push_str(&format!(
-                "<text class=\"glyph\" x=\"{x}\" y=\"{y}\" font-size=\"{size}\">&#x{:X};</text>",
-                *glyph as u32
+            Shape::Knockout {
+                x,
+                y,
+                width,
+                height,
+            } => svg.push_str(&format!(
+                "<rect x=\"{x}\" y=\"{y}\" width=\"{width}\" height=\"{height}\" fill=\"white\"/>"
             )),
+            Shape::Glyph {
+                x,
+                y,
+                glyph,
+                size,
+                centered,
+            } => {
+                let anchor = if *centered {
+                    " text-anchor=\"middle\""
+                } else {
+                    ""
+                };
+                svg.push_str(&format!(
+                    "<text class=\"glyph\" x=\"{x}\" y=\"{y}\" font-size=\"{size}\"{anchor}>&#x{:X};</text>",
+                    *glyph as u32
+                ));
+            }
             Shape::Text {
                 x,
                 y,
@@ -182,6 +203,7 @@ mod tests {
                         y: 8.0,
                         glyph: '\u{E0A4}',
                         size: 4.0,
+                        centered: true,
                     },
                 },
             ],
@@ -190,6 +212,7 @@ mod tests {
         let svg = render_list_svg(&list);
         assert!(svg.contains("data:font/ttf;base64,"));
         assert!(svg.contains("A &amp; B"));
+        assert!(svg.contains("text-anchor=\"middle\""));
         assert!(parse_svg(&svg).is_ok());
         assert!(
             render_bytes(&list, ExportFormat::Pdf)

@@ -1,6 +1,6 @@
 //! Codepoints and metrics from the SMuFL Bravura font, in staff spaces at the standard size.
 
-use notula_model::{Clef, NoteValue};
+use notula_model::{Articulation, Clef, NoteValue};
 
 pub const STAFF_LINE_THICKNESS: f32 = 0.13;
 pub const STEM_THICKNESS: f32 = 0.12;
@@ -18,6 +18,18 @@ pub const STEM_ANCHOR_OFFSET: f32 = 0.168;
 pub const BRACE: char = '\u{E000}';
 pub const BRACE_WIDTH_PER_HEIGHT: f32 = 0.277 / 4.0;
 pub const AUGMENTATION_DOT: char = '\u{E1E7}';
+pub const ACCENT_ABOVE: char = '\u{E4A0}';
+pub const ACCENT_BELOW: char = '\u{E4A1}';
+pub const STACCATO_ABOVE: char = '\u{E4A2}';
+pub const STACCATO_BELOW: char = '\u{E4A3}';
+pub const TENUTO_ABOVE: char = '\u{E4A4}';
+pub const TENUTO_BELOW: char = '\u{E4A5}';
+pub const STACCATISSIMO_ABOVE: char = '\u{E4A6}';
+pub const STACCATISSIMO_BELOW: char = '\u{E4A7}';
+pub const MARCATO_ABOVE: char = '\u{E4AC}';
+pub const MARCATO_BELOW: char = '\u{E4AD}';
+pub const FERMATA_ABOVE: char = '\u{E4C0}';
+pub const FERMATA_BELOW: char = '\u{E4C1}';
 pub const TIME_COMMON: char = '\u{E08A}';
 pub const TIME_CUT_COMMON: char = '\u{E08B}';
 
@@ -25,6 +37,23 @@ pub struct ClefGlyph {
     pub glyph: char,
     /// Staff line the clef is anchored to, as distance from the top line.
     pub y: f32,
+}
+
+pub fn articulation(articulation: Articulation, below: bool) -> char {
+    match (articulation, below) {
+        (Articulation::Accent, false) => ACCENT_ABOVE,
+        (Articulation::Accent, true) => ACCENT_BELOW,
+        (Articulation::Staccato, false) => STACCATO_ABOVE,
+        (Articulation::Staccato, true) => STACCATO_BELOW,
+        (Articulation::Tenuto, false) => TENUTO_ABOVE,
+        (Articulation::Tenuto, true) => TENUTO_BELOW,
+        (Articulation::Staccatissimo, false) => STACCATISSIMO_ABOVE,
+        (Articulation::Staccatissimo, true) => STACCATISSIMO_BELOW,
+        (Articulation::Marcato, false) => MARCATO_ABOVE,
+        (Articulation::Marcato, true) => MARCATO_BELOW,
+        (Articulation::Fermata, false) => FERMATA_ABOVE,
+        (Articulation::Fermata, true) => FERMATA_BELOW,
+    }
 }
 
 pub fn clef_glyph(clef: Clef) -> ClefGlyph {

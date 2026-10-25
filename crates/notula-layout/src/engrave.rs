@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 
 use notula_model::{
-    Clef, EventId, EventKind, MeasureInfo, NoteValue, StaffMeasure, Step, TICKS_PER_QUARTER,
-    TimeSignature,
+    Articulation, Clef, EventId, EventKind, MeasureInfo, NoteValue, StaffMeasure, Step,
+    TICKS_PER_QUARTER, TimeSignature,
 };
 
 use crate::smufl;
@@ -42,6 +42,7 @@ pub(crate) struct EventPlan {
     pub onset: u32,
     pub value: NoteValue,
     pub dots: u8,
+    pub articulations: Vec<Articulation>,
     pub stem_up: bool,
     pub body: Body,
     /// Space needed left of the column.
@@ -80,6 +81,7 @@ struct Draft {
     onset: u32,
     value: NoteValue,
     dots: u8,
+    articulations: Vec<Articulation>,
     /// Empty for rests; otherwise sorted from the lowest to the highest pitch.
     notes: Vec<DraftNote>,
 }
@@ -132,6 +134,7 @@ pub(crate) fn plan_staff(
                         onset,
                         value: event.duration.value,
                         dots: event.duration.dots,
+                        articulations: event.markings.articulations.clone(),
                         notes,
                     };
                     onset += event.duration.ticks();
@@ -308,6 +311,7 @@ fn finish_event(draft: &Draft, stem_up: bool) -> EventPlan {
             onset: draft.onset,
             value: draft.value,
             dots: draft.dots,
+            articulations: draft.articulations.clone(),
             stem_up,
             body: Body::Rest { y },
             left: 0.0,
@@ -402,6 +406,7 @@ fn finish_event(draft: &Draft, stem_up: bool) -> EventPlan {
         onset: draft.onset,
         value: draft.value,
         dots: draft.dots,
+        articulations: draft.articulations.clone(),
         stem_up,
         body: Body::Chord { notes },
         left,
@@ -412,7 +417,7 @@ fn finish_event(draft: &Draft, stem_up: bool) -> EventPlan {
 
 #[cfg(test)]
 mod tests {
-    use notula_model::{Duration, Event, KeySignature, Pitch, Voice};
+    use notula_model::{Articulation, Duration, Event, KeySignature, Pitch, Voice};
 
     use super::*;
 
@@ -469,6 +474,130 @@ mod tests {
         assert_eq!(accidental_glyph(&plan, 1, 0), None);
         assert_eq!(accidental_glyph(&plan, 2, 0), Some('\u{E261}'));
         assert_eq!(accidental_glyph(&plan, 3, 0), None);
+    }
+
+    #[test]
+    fn accentuation_is_carried_into_the_event_plan() {
+        let mut event = chord(1, NoteValue::Quarter, &[Pitch::new(Step::C, 0, 4)]);
+        event.markings.articulations.push(Articulation::Accent);
+        let plan = plan_staff(Clef::Treble, c_major_44(), &measure(vec![event]));
+
+        assert_eq!(
+            plan.voices[0].events[0].articulations,
+            vec![Articulation::Accent]
+        );
+        let mut canvas = crate::render::Canvas::default();
+        crate::emit::emit_voice(&mut canvas, &plan.voices[0], 0.0, &|_| 0.0);
+
+        assert!(canvas.items.iter().any(|item| matches!(
+            item.shape,
+            crate::render::Shape::Glyph {
+                glyph: '\u{E4A1}',
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn standard_articulations_render_and_fermatas_are_deferred() {
+        let mut note = chord(1, NoteValue::Quarter, &[Pitch::new(Step::C, 0, 4)]);
+        note.markings.articulations = vec![
+            Articulation::Staccato,
+            Articulation::Staccatissimo,
+            Articulation::Tenuto,
+            Articulation::Accent,
+            Articulation::Marcato,
+            Articulation::Fermata,
+        ];
+        let mut rest = Event::new(
+            EventId(2),
+            Duration::new(NoteValue::Quarter, 0),
+            EventKind::Rest,
+        );
+        rest.markings.articulations.push(Articulation::Fermata);
+        let plan = plan_staff(Clef::Treble, c_major_44(), &measure(vec![note, rest]));
+        let mut canvas = crate::render::Canvas::default();
+        crate::emit::emit_voice(&mut canvas, &plan.voices[0], 0.0, &|_| 0.0);
+
+        let glyphs: Vec<_> = canvas
+            .items
+            .iter()
+            .filter_map(|item| match item.shape {
+                crate::render::Shape::Glyph { glyph, .. } => Some((item.event, glyph)),
+                _ => None,
+            })
+            .collect();
+        for glyph in ['\u{E4A3}', '\u{E4A7}', '\u{E4A5}', '\u{E4A1}', '\u{E4AD}'] {
+            assert!(glyphs.contains(&(Some(EventId(1)), glyph)));
+        }
+        assert!(!glyphs.iter().any(|(_, glyph)| *glyph == '\u{E4C0}'));
+        let fermatas = crate::emit::fermatas(&plan.voices, 0.0, &|onset| onset as f32);
+        assert_eq!(
+            fermatas
+                .iter()
+                .map(|(event, _, _)| *event)
+                .collect::<Vec<_>>(),
+            vec![EventId(1), EventId(2)]
+        );
+    }
+
+    #[test]
+    fn articulation_is_centered_on_displaced_chord_and_avoids_staff_lines() {
+        let mut event = chord(
+            1,
+            NoteValue::Quarter,
+            &[Pitch::new(Step::C, 0, 4), Pitch::new(Step::D, 0, 4)],
+        );
+        event.markings.articulations.push(Articulation::Staccato);
+        let plan = plan_staff(Clef::Treble, c_major_44(), &measure(vec![event]));
+        let event_plan = &plan.voices[0].events[0];
+        let mut canvas = crate::render::Canvas::default();
+        crate::emit::emit_voice(&mut canvas, &plan.voices[0], 0.0, &|_| 0.0);
+
+        let articulation = canvas.items.iter().find_map(|item| match item.shape {
+            crate::render::Shape::Glyph {
+                x,
+                y,
+                glyph: '\u{E4A3}',
+                centered,
+                ..
+            } => Some((x, y, centered)),
+            _ => None,
+        });
+        let (x, y, centered) = articulation.expect("staccato glyph should be emitted");
+        let head_width = crate::smufl::notehead(NoteValue::Quarter).1;
+        let expected_x = head_width - crate::smufl::STEM_THICKNESS / 2.0;
+
+        assert!(event_plan.stem_up);
+        assert!(centered);
+        assert!((x - expected_x).abs() < 0.001);
+        assert!((y * 2.0).fract().abs() < 0.001);
+        assert!((y.fract().abs() - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn staccato_and_tenuto_keep_clear_vertical_separation() {
+        let mut event = chord(1, NoteValue::Quarter, &[Pitch::new(Step::C, 0, 4)]);
+        event.markings.articulations = vec![Articulation::Staccato, Articulation::Tenuto];
+        let plan = plan_staff(Clef::Treble, c_major_44(), &measure(vec![event]));
+        let mut canvas = crate::render::Canvas::default();
+        crate::emit::emit_voice(&mut canvas, &plan.voices[0], 0.0, &|_| 0.0);
+
+        let baselines: Vec<_> = canvas
+            .items
+            .iter()
+            .filter_map(|item| match item.shape {
+                crate::render::Shape::Glyph {
+                    y,
+                    glyph: '\u{E4A3}' | '\u{E4A5}',
+                    ..
+                } => Some(y),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(baselines.len(), 2);
+        assert!((baselines[0] - baselines[1]).abs() >= 1.0);
     }
 
     #[test]

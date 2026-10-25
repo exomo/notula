@@ -1,7 +1,8 @@
 use notula_layout::{Item, LayoutOptions, RenderList, Shape, hit_test, layout};
 use notula_model::{
-    Clef, Command, Document, Duration, Event, EventId, EventKind, KeySignature, NoteValue, Pitch,
-    StaffId, Step, TimeSignature, TimeSignatureDisplay, VoiceLocation,
+    Articulation, Clef, Command, Document, Duration, Event, EventId, EventKind, KeySignature,
+    NoteValue, Pitch, StaffId, Step, TimeSignature, TimeSignatureDisplay, VoiceLocation,
+    edit::{self, Cursor},
 };
 
 const STAFF_LINE: f32 = 0.13;
@@ -84,6 +85,75 @@ fn glyph_x(list: &RenderList, event: EventId, glyph: char) -> f32 {
             _ => None,
         })
         .expect("glyph not found")
+}
+
+#[test]
+fn fermata_is_above_simultaneous_voices_and_drawn_in_foreground() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let event = b.note(0, 0, c4(), NoteValue::Quarter);
+    edit::toggle_articulation(&mut b.doc, event, Articulation::Fermata).unwrap();
+    let staff = b.staves[0];
+    let second_voice = edit::add_voice(&mut b.doc, staff, 0).unwrap();
+    edit::enter_note(
+        &mut b.doc,
+        Cursor {
+            staff,
+            measure: 0,
+            voice: second_voice,
+            tick: 0,
+        },
+        Pitch::new(Step::C, 0, 6),
+        Duration::new(NoteValue::Quarter, 0),
+    )
+    .unwrap();
+
+    let list = b.layout(100.0);
+    let fermata_index = list
+        .items
+        .iter()
+        .position(|item| {
+            matches!(
+                item.shape,
+                Shape::Glyph {
+                    glyph: '\u{E4C0}',
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    assert!(matches!(
+        list.items[fermata_index - 1].shape,
+        Shape::Knockout { .. }
+    ));
+    let (fermata_y, upper_note_y) = list.items.iter().enumerate().fold(
+        (None, None),
+        |(fermata_y, upper_note_y), (index, item)| match item.shape {
+            Shape::Glyph {
+                y,
+                glyph: '\u{E4C0}',
+                ..
+            } if index == fermata_index => (Some(y), upper_note_y),
+            Shape::Glyph {
+                y,
+                glyph: BLACK_HEAD,
+                ..
+            } => (
+                fermata_y,
+                Some(upper_note_y.map_or(y, |top: f32| top.min(y))),
+            ),
+            _ => (fermata_y, upper_note_y),
+        },
+    );
+
+    assert!(fermata_index > 0);
+    assert!(fermata_y.unwrap() < upper_note_y.unwrap());
+    assert!(list.items[fermata_index + 1..].iter().all(|item| !matches!(
+        item.shape,
+        Shape::Glyph {
+            glyph: BLACK_HEAD,
+            ..
+        }
+    )));
 }
 
 fn staff_lines(list: &RenderList) -> Vec<&Item> {

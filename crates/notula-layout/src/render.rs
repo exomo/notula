@@ -64,12 +64,20 @@ pub enum Shape {
     Polygon {
         points: Vec<[f32; 2]>,
     },
+    Knockout {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    },
     /// A SMuFL glyph; `size` is the font size in staff spaces (4 for the standard size).
     Glyph {
         x: f32,
         y: f32,
         glyph: char,
         size: f32,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        centered: bool,
     },
     Text {
         x: f32,
@@ -123,7 +131,44 @@ impl Canvas {
         });
     }
 
+    pub fn knockout(&mut self, x: f32, y: f32, width: f32, height: f32) {
+        self.items.push(Item {
+            event: None,
+            staff: None,
+            voice: None,
+            shape: Shape::Knockout {
+                x: round(x),
+                y: round(y),
+                width: round(width),
+                height: round(height),
+            },
+        });
+    }
+
     pub fn glyph(&mut self, event: Option<EventId>, x: f32, y: f32, glyph: char, size: f32) {
+        self.push_glyph(event, x, y, glyph, size, false);
+    }
+
+    pub fn centered_glyph(
+        &mut self,
+        event: Option<EventId>,
+        x: f32,
+        y: f32,
+        glyph: char,
+        size: f32,
+    ) {
+        self.push_glyph(event, x, y, glyph, size, true);
+    }
+
+    fn push_glyph(
+        &mut self,
+        event: Option<EventId>,
+        x: f32,
+        y: f32,
+        glyph: char,
+        size: f32,
+        centered: bool,
+    ) {
         self.items.push(Item {
             event,
             staff: None,
@@ -133,6 +178,7 @@ impl Canvas {
                 y: round(y),
                 glyph,
                 size: round(size),
+                centered,
             },
         });
     }

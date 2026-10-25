@@ -3,7 +3,8 @@ export type Anchor = "start" | "middle" | "end";
 export type Shape =
   | { type: "line"; x1: number; y1: number; x2: number; y2: number; thickness: number }
   | { type: "polygon"; points: [number, number][] }
-  | { type: "glyph"; x: number; y: number; glyph: string; size: number }
+  | { type: "knockout"; x: number; y: number; width: number; height: number }
+  | { type: "glyph"; x: number; y: number; glyph: string; size: number; centered?: boolean }
   | { type: "text"; x: number; y: number; text: string; size: number; anchor: Anchor };
 
 /** Everything that belongs to a note or rest carries that event's id. */

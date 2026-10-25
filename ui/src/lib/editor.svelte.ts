@@ -2,7 +2,9 @@ import {
   api,
   type Cursor,
   type Duration,
+  type Articulation,
   type Edited,
+  type EventArticulations,
   type NoteValue,
   type Pitch,
   type PlaybackStatus,
@@ -41,6 +43,7 @@ class Editor {
   });
   cursor = $state<Cursor | null>(null);
   selected = $state<number | null>(null);
+  eventArticulations = $state<EventArticulations | null>(null);
   selectedTone = $state<{ event: number; pitch: Pitch; y: number } | null>(null);
   inputMode = $state(false);
   entryAlter = $state<number | null>(null);
@@ -63,6 +66,7 @@ class Editor {
   private noteEditor: SVGSVGElement | null = null;
   private playbackPoll: ReturnType<typeof setInterval> | null = null;
   private insertHistory: InsertMarker[] = [];
+  private articulationRequest = 0;
 
   zoomIn() {
     this.zoom = Math.min(MAX_ZOOM, this.zoom + 1);
@@ -220,7 +224,9 @@ class Editor {
     if (this.inputMode) {
       const cursor = this.cursor;
       const note = hit.note;
-      if (note !== null && note === this.selected) {
+      const selectedAtCursor =
+        note !== null && note === this.selected && this.samePosition(cursor, hit.cursor);
+      if (selectedAtCursor) {
         if (shift) {
           this.apply((await this.run(() => api.togglePitchInChord(note, this.entryPitch(hit.pitch)))) ?? null, true);
           this.selectedTone = null;
@@ -229,30 +235,23 @@ class Editor {
         }
         return;
       }
-      if (!cursor || !this.samePosition(cursor, hit.cursor)) {
+      if (note !== null) {
         this.cursor = hit.cursor;
         this.selected = note;
-        if (note !== null && hit.chord_pitch) this.targetTone(note, hit.chord_pitch, y, hit.cursor);
-        else this.selectedTone = null;
+        this.selectedTone = null;
         return;
       }
-      if (note !== null) {
-        if (shift) {
-          this.apply((await this.run(() => api.togglePitchInChord(note, this.entryPitch(hit.pitch)))) ?? null);
-          this.selectedTone = null;
-        } else {
-          this.selected = note;
-          if (hit.chord_pitch) this.targetTone(note, hit.chord_pitch, y, hit.cursor);
-          else this.selectedTone = null;
-        }
+      if (!cursor || !this.samePosition(cursor, hit.cursor)) {
+        this.cursor = hit.cursor;
+        this.selected = null;
+        this.selectedTone = null;
         return;
       }
       if (shift) await this.enterAtCursor(() => api.enterNote(cursor, this.entryPitch(hit.pitch), this.duration, true));
     } else {
       this.cursor = hit.cursor;
       this.selected = hit.note;
-      if (hit.note !== null && hit.chord_pitch) this.targetTone(hit.note, hit.chord_pitch, y, hit.cursor);
-      else this.selectedTone = null;
+      this.selectedTone = null;
     }
   }
 
@@ -262,21 +261,25 @@ class Editor {
     if (!this.inputMode) {
       this.cursor = eventCursor;
       this.selected = id;
+      this.selectedTone = null;
       return;
     }
-    const hit = await this.run(() => api.hitTest(this.layoutWidth, x, y, eventCursor.voice));
+    const eventArea = this.areas.find(
+      (area) => area.staff === eventCursor.staff && area.measure === eventCursor.measure,
+    );
+    const eventX = eventArea?.columns.find(([tick]) => tick === eventCursor.tick)?.[1] ?? x;
+    const hit = await this.run(() => api.hitTest(this.layoutWidth, eventX, y, eventCursor.voice));
     const isSelectedAtCursor = this.selected === id && this.samePosition(this.cursor, eventCursor);
     if (!isSelectedAtCursor) {
       this.cursor = eventCursor;
       this.selected = id;
-      if (hit?.chord_pitch) this.targetTone(id, hit.chord_pitch, y, eventCursor);
-      else this.selectedTone = null;
+      this.selectedTone = null;
       return;
     }
-    if (shift && hit) {
+    if (shift && hit?.note === id) {
       this.apply((await this.run(() => api.togglePitchInChord(id, this.entryPitch(hit.pitch)))) ?? null, true);
       this.selectedTone = null;
-    } else if (hit?.chord_pitch) {
+    } else if (hit?.note === id && hit.chord_pitch) {
       this.targetTone(id, hit.chord_pitch, y, eventCursor);
     } else {
       this.selectedTone = null;
@@ -318,7 +321,43 @@ class Editor {
     this.apply((await this.run(() => api.deleteEvent(event))) ?? null);
   }
 
+  hasArticulation(articulation: Articulation) {
+    return this.eventArticulations?.articulations.includes(articulation) ?? false;
+  }
+
+  canToggleArticulation(articulation: Articulation) {
+    const state = this.eventArticulations;
+    return state !== null && (!state.is_rest || articulation === "Fermata");
+  }
+
+  async refreshArticulations(event: number | null = this.selected) {
+    const request = ++this.articulationRequest;
+    if (event === null) {
+      this.eventArticulations = null;
+      return;
+    }
+    this.eventArticulations = null;
+    const articulations = await this.run(() => api.eventArticulations(event));
+    if (
+      request === this.articulationRequest &&
+      this.selected === event &&
+      articulations !== undefined
+    ) {
+      this.eventArticulations = articulations;
+    }
+  }
+
+  async toggleArticulation(articulation: Articulation) {
+    const event = this.selected;
+    if (event === null || !this.canToggleArticulation(articulation)) return;
+    const edited = await this.run(() => api.toggleArticulation(event, articulation));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshArticulations(event);
+  }
+
   async transpose(semitones: number) {
+    if (!this.inputMode) return;
     const event = this.selected;
     if (event === null) return;
     this.selectedTone = null;
@@ -326,6 +365,7 @@ class Editor {
   }
 
   async transposeChordTone(semitones: number) {
+    if (!this.inputMode) return;
     const tone = this.selectedTone;
     if (!tone || tone.event !== this.selected) {
       await this.transpose(semitones);
@@ -341,6 +381,7 @@ class Editor {
   }
 
   async transposeOctave(octaves: number) {
+    if (!this.inputMode) return;
     const event = this.selected;
     if (event === null) return;
     this.selectedTone = null;
@@ -391,8 +432,7 @@ class Editor {
     const cursor = this.cursor;
     if (!cursor) return;
     if (cursor.voice + 1 < this.voiceCount) {
-      this.cursor = { ...cursor, voice: cursor.voice + 1 };
-      this.selected = null;
+      await this.selectVoiceAtCursor({ ...cursor, voice: cursor.voice + 1 });
       this.selectedTone = null;
       return;
     }
@@ -403,12 +443,32 @@ class Editor {
     const cursor = this.cursor;
     if (!cursor) return;
     if (cursor.voice > 0) {
-      this.cursor = { ...cursor, voice: cursor.voice - 1 };
-      this.selected = null;
+      await this.selectVoiceAtCursor({ ...cursor, voice: cursor.voice - 1 });
       this.selectedTone = null;
       return;
     }
     await this.moveCursor(false, "staff");
+  }
+
+  private async selectVoiceAtCursor(cursor: Cursor) {
+    const area = this.areas.find(
+      (item) => item.staff === cursor.staff && item.measure === cursor.measure,
+    );
+    const column = area?.columns.reduce<[number, number] | null>((nearest, current) => {
+      if (nearest === null || Math.abs(current[0] - cursor.tick) < Math.abs(nearest[0] - cursor.tick)) {
+        return current;
+      }
+      return nearest;
+    }, null);
+    const x = column?.[1] ?? area?.x_start ?? 0;
+    const y = area ? area.y_top + 2 : 0;
+    const hit = area
+      ? await this.run(() => api.hitTest(this.layoutWidth, x, y, cursor.voice))
+      : null;
+    this.cursor = cursor;
+    this.selected = hit?.cursor.measure === cursor.measure && hit.cursor.tick === cursor.tick
+      ? hit.note
+      : null;
   }
 
   async insertMeasure(before: boolean) {
@@ -504,8 +564,17 @@ class Editor {
   }
 
   toggleInputMode() {
-    this.inputMode = !this.inputMode;
+    if (this.inputMode) {
+      this.disableInputMode();
+    } else {
+      this.inputMode = true;
+    }
     this.message = null;
+  }
+
+  disableInputMode() {
+    this.inputMode = false;
+    this.selectedTone = null;
   }
 
   async newScore(setup: Parameters<typeof api.newScore>[0]): Promise<boolean> {
@@ -603,7 +672,7 @@ class Editor {
         void this.toggleDot();
         return true;
       case "Escape":
-        if (this.inputMode) this.inputMode = false;
+        if (this.inputMode) this.disableInputMode();
         else this.selected = null;
         return true;
       case "Delete":

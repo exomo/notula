@@ -27,6 +27,8 @@ pub fn run() {
             commands::enter_step,
             commands::enter_rest,
             commands::set_duration,
+            commands::toggle_articulation,
+            commands::event_articulations,
             commands::delete_event,
             commands::transpose_semitones,
             commands::transpose_chord_pitch,

@@ -1,9 +1,13 @@
 //! Converts score events into a time-ordered stream of MIDI note events.
 
-use notula_model::{EventKind, Score, TICKS_PER_QUARTER};
+use notula_model::{Articulation, EventKind, Score, TICKS_PER_QUARTER};
 
 pub const DEFAULT_TEMPO_BPM: u16 = 120;
 pub const DEFAULT_VELOCITY: u8 = 96;
+pub const ACCENTED_VELOCITY: u8 = 120;
+const STACCATO_DURATION: (u64, u64) = (1, 2);
+const STACCATISSIMO_DURATION: (u64, u64) = (1, 4);
+const FERMATA_DURATION: (u64, u64) = (3, 2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackEventKind {
@@ -27,6 +31,8 @@ struct NoteSpan {
     track: usize,
     channel: u8,
     note: u8,
+    velocity: u8,
+    duration_ratio: (u64, u64),
     tied: bool,
 }
 
@@ -63,6 +69,23 @@ pub fn events(score: &Score) -> Vec<PlaybackEvent> {
                     for event in &voice.events {
                         let end = onset + u64::from(event.duration.ticks());
                         if let EventKind::Chord { pitches, tied } = &event.kind {
+                            let articulations = &event.markings.articulations;
+                            let velocity = if articulations.contains(&Articulation::Accent)
+                                || articulations.contains(&Articulation::Marcato)
+                            {
+                                ACCENTED_VELOCITY
+                            } else {
+                                DEFAULT_VELOCITY
+                            };
+                            let duration_ratio = if articulations.contains(&Articulation::Fermata) {
+                                FERMATA_DURATION
+                            } else if articulations.contains(&Articulation::Staccatissimo) {
+                                STACCATISSIMO_DURATION
+                            } else if articulations.contains(&Articulation::Staccato) {
+                                STACCATO_DURATION
+                            } else {
+                                (1, 1)
+                            };
                             for pitch in pitches {
                                 let note = pitch.midi() as u8;
                                 if let Some(previous) =
@@ -83,6 +106,8 @@ pub fn events(score: &Score) -> Vec<PlaybackEvent> {
                                         track: track_id,
                                         channel,
                                         note,
+                                        velocity,
+                                        duration_ratio,
                                         tied: *tied,
                                     });
                                 }
@@ -97,15 +122,17 @@ pub fn events(score: &Score) -> Vec<PlaybackEvent> {
 
     let mut events = Vec::with_capacity(spans.len() * 2);
     for span in spans {
+        let sounding_end =
+            span.start + (span.end - span.start) * span.duration_ratio.0 / span.duration_ratio.1;
         events.push(PlaybackEvent {
             tick: span.start,
             channel: span.channel,
             note: span.note,
-            velocity: DEFAULT_VELOCITY,
+            velocity: span.velocity,
             kind: PlaybackEventKind::NoteOn,
         });
         events.push(PlaybackEvent {
-            tick: span.end,
+            tick: sounding_end,
             channel: span.channel,
             note: span.note,
             velocity: 0,
@@ -132,7 +159,7 @@ pub fn tick_duration_seconds(ticks: u64, tempo_bpm: u16) -> f64 {
 #[cfg(test)]
 mod tests {
     use notula_model::{
-        Clef, Command, Document, Duration, EventKind, NoteValue, Pitch, Score, Step,
+        Articulation, Clef, Command, Document, Duration, EventKind, NoteValue, Pitch, Score, Step,
         edit::{self, Cursor, enter_note, enter_rest},
     };
 
@@ -206,6 +233,49 @@ mod tests {
             velocity: DEFAULT_VELOCITY,
             kind: PlaybackEventKind::NoteOn,
         }));
+    }
+
+    #[test]
+    fn accented_notes_play_with_a_stronger_attack() {
+        let (mut doc, cursor) = setup(1);
+        let entry = enter_note(&mut doc, cursor, c4(), quarter()).unwrap();
+        edit::toggle_articulation(&mut doc, entry.event, Articulation::Accent).unwrap();
+
+        let attack = events(doc.score())
+            .into_iter()
+            .find(|event| event.kind == PlaybackEventKind::NoteOn)
+            .unwrap();
+        assert_eq!(attack.velocity, ACCENTED_VELOCITY);
+    }
+
+    #[test]
+    fn standard_articulations_shape_playback_attacks_and_releases() {
+        let cases = [
+            (Articulation::Staccato, 480, DEFAULT_VELOCITY),
+            (Articulation::Staccatissimo, 240, DEFAULT_VELOCITY),
+            (Articulation::Tenuto, 960, DEFAULT_VELOCITY),
+            (Articulation::Accent, 960, ACCENTED_VELOCITY),
+            (Articulation::Marcato, 960, ACCENTED_VELOCITY),
+            (Articulation::Fermata, 1440, DEFAULT_VELOCITY),
+        ];
+
+        for (articulation, expected_release, expected_velocity) in cases {
+            let (mut doc, cursor) = setup(1);
+            let entry = enter_note(&mut doc, cursor, c4(), quarter()).unwrap();
+            edit::toggle_articulation(&mut doc, entry.event, articulation).unwrap();
+            let generated = events(doc.score());
+            let attack = generated
+                .iter()
+                .find(|event| event.kind == PlaybackEventKind::NoteOn)
+                .unwrap();
+            let release = generated
+                .iter()
+                .find(|event| event.kind == PlaybackEventKind::NoteOff)
+                .unwrap();
+
+            assert_eq!(attack.velocity, expected_velocity, "{articulation:?}");
+            assert_eq!(release.tick, expected_release, "{articulation:?}");
+        }
     }
 
     #[test]

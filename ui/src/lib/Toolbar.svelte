@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { NoteValue } from "./api";
+  import type { Articulation, NoteValue } from "./api";
   import { NOTE_VALUES, editor } from "./editor.svelte";
 
   // SMuFL "individual notes" glyphs, named by the note value they show.
@@ -17,6 +17,14 @@
     { alter: 0, glyph: "\uE261", label: "Natural" },
     { alter: 1, glyph: "\uE262", label: "Sharp" },
   ];
+  const ARTICULATIONS: { articulation: Articulation; glyph: string; label: string }[] = [
+    { articulation: "Staccato", glyph: "\uE4A2", label: "Staccato" },
+    { articulation: "Staccatissimo", glyph: "\uE4A6", label: "Staccatissimo" },
+    { articulation: "Tenuto", glyph: "\uE4A4", label: "Tenuto" },
+    { articulation: "Accent", glyph: "\uE4A0", label: "Accent" },
+    { articulation: "Marcato", glyph: "\uE4AC", label: "Marcato" },
+    { articulation: "Fermata", glyph: "\uE4C0", label: "Fermata" },
+  ];
 
   const hasSelection = $derived(editor.selected !== null);
   let fileMenuOpen = $state(false);
@@ -25,6 +33,11 @@
   let fileMenuPosition = $state({ left: 0, top: 0 });
   let measureDeleteDialog = $state<HTMLDialogElement | null>(null);
   let pendingDeleteMeasure = $state<number | null>(null);
+
+  $effect(() => {
+    editor.revision;
+    void editor.refreshArticulations(editor.selected);
+  });
 
   function toggleFileMenu() {
     if (fileMenuOpen) {
@@ -181,6 +194,17 @@
         title={accidental.label}
         disabled={!hasSelection && !editor.inputMode}
         onclick={() => editor.setAlter(accidental.alter)}>{accidental.glyph}</button
+      >
+    {/each}
+    {#each ARTICULATIONS as item}
+      <button
+        class="smufl"
+        class:active={editor.hasArticulation(item.articulation)}
+        aria-pressed={editor.hasArticulation(item.articulation)}
+        aria-label={item.label}
+        title="Toggle {item.label}"
+        disabled={!editor.canToggleArticulation(item.articulation)}
+        onclick={() => editor.toggleArticulation(item.articulation)}>{item.glyph}</button
       >
     {/each}
   </div>

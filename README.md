@@ -7,12 +7,13 @@ Notula is an open-source desktop music notation editor built with Rust and Tauri
 - Create scores and configure instruments, staves, and score properties.
 - Enter notes, rests, chords, and multiple independent voices.
 - Edit note durations, dots, accidentals, pitches, and chord tones.
+- Add staccato, staccatissimo, tenuto, accent, marcato, and fermata markings.
 - Set key and time signatures and create pickup measures.
 - Undo and redo score edits.
 - Play scores using a selected soundfont.
 - Export scores as PDF, PNG, or SVG.
 
-Notation options such as articulations, dynamics, and hairpins are not yet available in the editor.
+Other notation options, including dynamics and hairpins, are not yet available in the editor.
 
 ## Development
 

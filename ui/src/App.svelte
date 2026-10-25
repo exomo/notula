@@ -34,7 +34,7 @@
     {:else if editor.inputMode}
       <span>A–G enter notes · 1–7 duration · . dot · 0 rest · ←/→ move cursor · Alt+↑/↓ changes voice, then staff · Ctrl+wheel zooms · click a chord tone to target it · ↑/↓ moves target tone or chord · Ctrl+↑/↓ moves an octave · Shift+click adds to chord · Esc leaves</span>
     {:else}
-      <span>Click a note to select it; click a chord tone to target it · ←/→ move cursor · Alt+↑/↓ changes voice, then staff · Ctrl+wheel zooms · ↑/↓ moves target tone or chord · Ctrl+↑/↓ moves an octave · Delete removes it</span>
+      <span>Click a note to select it · ←/→ move cursor · Alt+↑/↓ changes voice, then staff · Ctrl+wheel zooms · Delete removes it</span>
     {/if}
   </footer>
 </main>

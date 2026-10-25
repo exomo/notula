@@ -400,6 +400,7 @@ impl Layouter<'_> {
         }
 
         let mut cursor = x_start;
+        let mut foreground_fermatas = Vec::new();
         for (offset, measure) in system.measures.clone().enumerate() {
             let info = self.score.measures[measure];
             let metrics = &self.metrics[measure];
@@ -447,6 +448,7 @@ impl Layouter<'_> {
                 for voice in &plan.voices {
                     emit::emit_voice(canvas, voice, y0, &x_of);
                 }
+                foreground_fermatas.extend(emit::fermatas(&plan.voices, y0, &x_of));
             }
 
             let is_final = measure + 1 == self.score.measures.len();
@@ -468,6 +470,11 @@ impl Layouter<'_> {
                 }
             }
             cursor = body_end;
+        }
+
+        for (event, x, y) in foreground_fermatas {
+            canvas.knockout(x - 1.1, y - 1.5, 2.2, 1.6);
+            canvas.centered_glyph(Some(event), x, y, smufl::FERMATA_ABOVE, 4.0);
         }
     }
 }

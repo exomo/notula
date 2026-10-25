@@ -148,7 +148,7 @@
       caretBounds.left < viewport.left + margin ||
       caretBounds.right > viewport.right - margin
     ) {
-      editor.inputMode = false;
+      editor.disableInputMode();
     }
   }
 
@@ -246,16 +246,19 @@
             data-event={item.event}
             points={item.points.map((p) => p.join(",")).join(" ")}
           />
+        {:else if item.type === "knockout"}
+          <rect x={item.x} y={item.y} width={item.width} height={item.height} fill="white" />
         {:else if item.type === "glyph"}
           <text
             class="glyph"
             class:selected
             class:active-voice={editor.cursor !== null && item.staff === editor.cursor.staff && item.voice === editor.cursor.voice}
-            class:selected-tone={editor.selectedTone !== null && editor.selectedTone.event === item.event && Math.abs(item.y - editor.selectedTone.y) < 0.01}
+            class:selected-tone={editor.inputMode && editor.selectedTone !== null && editor.selectedTone.event === item.event && Math.abs(item.y - editor.selectedTone.y) < 0.01}
             data-event={item.event}
             x={item.x}
             y={item.y}
             font-size={item.size}
+            text-anchor={item.centered ? "middle" : undefined}
             >{item.glyph}</text
           >
         {:else}

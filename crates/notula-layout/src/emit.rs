@@ -1,6 +1,6 @@
 //! Turns planned events into drawing primitives once their horizontal positions are known.
 
-use notula_model::NoteValue;
+use notula_model::{Articulation, EventId, NoteValue};
 
 use crate::engrave::{Body, EventPlan, NotePlan, VoicePlan, dot_advance};
 use crate::render::Canvas;
@@ -12,6 +12,7 @@ const EXTRA_BEAM_STEM: f32 = 0.75;
 const BEAM_STUB: f32 = 1.0;
 const MAX_BEAM_DROP: f32 = 1.0;
 const MIDDLE_LINE: f32 = 2.0;
+const ARTICULATION_GAP: f32 = 1.0;
 
 struct Stem {
     x: f32,
@@ -66,6 +67,137 @@ fn draw_dots(canvas: &mut Canvas, ev: &EventPlan, x: f32, ys: &[f32]) {
     }
 }
 
+fn draw_articulations(
+    canvas: &mut Canvas,
+    ev: &EventPlan,
+    y0: f32,
+    center_x: f32,
+    top: f32,
+    bottom: f32,
+) {
+    let mut above_index = 0;
+    let mut below_index = 0;
+    for &articulation in &ev.articulations {
+        if articulation == Articulation::Fermata {
+            continue;
+        }
+        let below = articulation != notula_model::Articulation::Fermata && ev.stem_up;
+        let y = if below {
+            let y = articulation_y(bottom + 0.75 + below_index as f32 * ARTICULATION_GAP, true);
+            below_index += 1;
+            y
+        } else {
+            let y = articulation_y(top - 0.75 - above_index as f32 * ARTICULATION_GAP, false);
+            above_index += 1;
+            y
+        };
+        canvas.centered_glyph(
+            Some(ev.id),
+            center_x,
+            y0 + y,
+            smufl::articulation(articulation, below),
+            4.0,
+        );
+    }
+}
+
+pub(crate) fn fermatas(
+    voices: &[VoicePlan],
+    y0: f32,
+    x_of: &dyn Fn(u32) -> f32,
+) -> Vec<(EventId, f32, f32)> {
+    voices
+        .iter()
+        .flat_map(|voice| &voice.events)
+        .filter(|event| event.articulations.contains(&Articulation::Fermata))
+        .map(|event| {
+            let top = voices
+                .iter()
+                .flat_map(|voice| {
+                    voice
+                        .events
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, other)| other.onset == event.onset)
+                        .map(|(index, _)| upper_extent(voice, index))
+                })
+                .fold(f32::INFINITY, f32::min);
+            let x = x_of(event.onset);
+            let center_x = match &event.body {
+                Body::Rest { .. } => x + smufl::rest(event.value).1 / 2.0,
+                Body::Chord { notes } => {
+                    let head_width = smufl::notehead(event.value).1;
+                    let left = notes
+                        .iter()
+                        .map(|note| head_x(note, event, x, head_width))
+                        .fold(f32::INFINITY, f32::min);
+                    let right = notes
+                        .iter()
+                        .map(|note| head_x(note, event, x, head_width) + head_width)
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    (left + right) / 2.0
+                }
+            };
+            (
+                event.id,
+                center_x,
+                y0 + articulation_y(top - ARTICULATION_GAP, false),
+            )
+        })
+        .collect()
+}
+
+fn articulation_y(target: f32, below: bool) -> f32 {
+    let half_space = if below {
+        (target * 2.0).ceil() / 2.0
+    } else {
+        (target * 2.0).floor() / 2.0
+    };
+    if half_space.fract() == 0.0 {
+        half_space + if below { 0.5 } else { -0.5 }
+    } else {
+        half_space
+    }
+}
+
+fn upper_extent(voice: &VoicePlan, event_index: usize) -> f32 {
+    let event = &voice.events[event_index];
+    let Body::Chord { notes } = &event.body else {
+        return match &event.body {
+            Body::Rest { y } => *y,
+            Body::Chord { .. } => unreachable!(),
+        };
+    };
+    let top = notes
+        .iter()
+        .map(|note| note.y)
+        .fold(f32::INFINITY, f32::min);
+    if !event.stem_up {
+        return top;
+    }
+
+    if let Some(group) = voice
+        .beams
+        .iter()
+        .find(|group| group.contains(&event_index))
+    {
+        let levels = group
+            .iter()
+            .map(|&index| smufl::flag_count(voice.events[index].value))
+            .max()
+            .unwrap_or(1);
+        top.min(
+            top - MIN_BEAMED_STEM
+                - (levels.saturating_sub(1) as f32 * EXTRA_BEAM_STEM)
+                - MAX_BEAM_DROP,
+        )
+    } else {
+        let length =
+            STEM_LENGTH + smufl::flag_count(event.value).saturating_sub(1) as f32 * EXTRA_BEAM_STEM;
+        top.min((top - length).min(MIDDLE_LINE))
+    }
+}
+
 pub(crate) fn emit_voice(
     canvas: &mut Canvas,
     voice: &VoicePlan,
@@ -87,17 +219,22 @@ pub(crate) fn emit_voice(
 fn emit_event(canvas: &mut Canvas, ev: &EventPlan, x: f32, y0: f32, own_stem: bool) {
     match &ev.body {
         Body::Rest { y } => {
-            let (glyph, _, _) = smufl::rest(ev.value);
+            let (glyph, width, _) = smufl::rest(ev.value);
             canvas.glyph(Some(ev.id), x, y0 + y, glyph, 4.0);
             draw_dots(canvas, ev, x, &[y0 + 1.5]);
+            draw_articulations(canvas, ev, y0, x + width / 2.0, *y, *y);
         }
         Body::Chord { notes } => {
             let (head, head_width) = smufl::notehead(ev.value);
             let mut ledgers: Vec<(f32, f32, f32)> = Vec::new();
             let mut dot_ys: Vec<f32> = Vec::new();
+            let mut notehead_left = f32::INFINITY;
+            let mut notehead_right = f32::NEG_INFINITY;
 
             for note in notes {
                 let hx = head_x(note, ev, x, head_width);
+                notehead_left = notehead_left.min(hx);
+                notehead_right = notehead_right.max(hx + head_width);
                 canvas.glyph(Some(ev.id), hx, y0 + note.y, head, 4.0);
 
                 if let Some(accidental) = &note.accidental {
@@ -154,6 +291,23 @@ fn emit_event(canvas: &mut Canvas, ev: &EventPlan, x: f32, y0: f32, own_stem: bo
                 );
             }
             draw_dots(canvas, ev, x, &dot_ys);
+
+            let top = notes
+                .iter()
+                .map(|note| note.y)
+                .fold(f32::INFINITY, f32::min);
+            let bottom = notes
+                .iter()
+                .map(|note| note.y)
+                .fold(f32::NEG_INFINITY, f32::max);
+            draw_articulations(
+                canvas,
+                ev,
+                y0,
+                (notehead_left + notehead_right) / 2.0,
+                top,
+                bottom,
+            );
 
             if own_stem && ev.value != NoteValue::Whole {
                 emit_free_stem(canvas, ev, notes, x, y0);

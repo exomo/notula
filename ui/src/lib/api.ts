@@ -10,6 +10,13 @@ export type NoteValue =
   | "Sixteenth"
   | "ThirtySecond"
   | "SixtyFourth";
+export type Articulation =
+  | "Staccato"
+  | "Staccatissimo"
+  | "Tenuto"
+  | "Accent"
+  | "Marcato"
+  | "Fermata";
 
 export interface Pitch {
   step: Step;
@@ -20,6 +27,11 @@ export interface Pitch {
 export interface Duration {
   value: NoteValue;
   dots: number;
+}
+
+export interface EventArticulations {
+  articulations: Articulation[];
+  is_rest: boolean;
 }
 
 export interface Cursor {
@@ -133,6 +145,10 @@ export const api = {
     invoke<Edited>("enter_rest", { cursor, duration }),
   setDuration: (event: number, duration: Duration) =>
     invoke<Edited>("set_duration", { event, duration }),
+  toggleArticulation: (event: number, articulation: Articulation) =>
+    invoke<Edited>("toggle_articulation", { event, articulation }),
+  eventArticulations: (event: number) =>
+    invoke<EventArticulations | null>("event_articulations", { event }),
   deleteEvent: (event: number) => invoke<Edited>("delete_event", { event }),
   transposeSemitones: (event: number, semitones: number) =>
     invoke<Edited>("transpose_semitones", { event, semitones }),

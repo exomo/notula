@@ -4,7 +4,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use notula_layout::{LayoutOptions, RenderList};
 use notula_model::edit::{self, Cursor};
 use notula_model::{
-    Document, Duration, EventId, EventKind, KeySignature, Pitch, Step, TimeSignature,
+    Articulation, Document, Duration, EventId, EventKind, KeySignature, Pitch, Step, TimeSignature,
     TimeSignatureDisplay,
 };
 use serde::Serialize;
@@ -39,6 +39,12 @@ pub struct PlaybackStatus {
     playing: bool,
     instrument: Option<String>,
     cursor: Option<Cursor>,
+}
+
+#[derive(Serialize)]
+pub struct EventArticulations {
+    articulations: Vec<Articulation>,
+    is_rest: bool,
 }
 
 type Reply<T> = Result<T, String>;
@@ -315,6 +321,33 @@ pub fn set_duration(
     let mut session = state.lock();
     let entry = edit::set_duration(&mut session.doc, event, duration).map_err(text)?;
     Ok(finish(&app, &session, Some(entry.next), Some(entry.event)))
+}
+
+#[tauri::command]
+pub fn toggle_articulation(
+    app: AppHandle,
+    state: State<AppState>,
+    event: EventId,
+    articulation: Articulation,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::toggle_articulation(&mut session.doc, event, articulation).map_err(text)?;
+    let cursor = cursor_of(&session, event);
+    Ok(finish(&app, &session, cursor, Some(event)))
+}
+
+#[tauri::command]
+pub fn event_articulations(state: State<AppState>, event: EventId) -> Option<EventArticulations> {
+    let session = state.lock();
+    let located = edit::locate(session.doc.score(), event)?;
+    let staff = session.doc.score().staff(located.cursor.staff).ok()?;
+    let event = staff.measures[located.cursor.measure].voices[located.cursor.voice]
+        .events
+        .get(located.index)?;
+    Some(EventArticulations {
+        articulations: event.markings.articulations.clone(),
+        is_rest: matches!(event.kind, EventKind::Rest),
+    })
 }
 
 #[tauri::command]
