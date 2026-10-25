@@ -27,6 +27,9 @@
     <button onclick={() => editor.open()} title="Open (Ctrl+O)">Open</button>
     <button onclick={() => editor.save()} title="Save (Ctrl+S)">Save</button>
     <button onclick={() => editor.save(true)} title="Save as (Ctrl+Shift+S)">Save as</button>
+    <button onclick={() => editor.exportScore("pdf")} title="Export score as PDF">PDF</button>
+    <button onclick={() => editor.exportScore("png")} title="Export score as PNG image">PNG</button>
+    <button onclick={() => editor.exportScore("svg")} title="Export score as SVG image">SVG</button>
   </div>
 
   <div class="group">

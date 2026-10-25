@@ -1,4 +1,5 @@
 mod commands;
+mod export;
 mod playback;
 mod session;
 mod setup;
@@ -43,6 +44,7 @@ pub fn run() {
             commands::new_score,
             commands::open_score,
             commands::save_score,
+            commands::export_score,
             commands::select_soundfont,
             commands::restore_soundfont,
             commands::play_score,

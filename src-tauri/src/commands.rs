@@ -8,6 +8,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
+use crate::export::{ExportFormat, export_render_list};
 use crate::playback::PlaybackController;
 use crate::session::{Session, Status};
 use crate::setup::{self, InstrumentInfo, ScoreSetup};
@@ -558,6 +559,35 @@ pub async fn save_score(
     session.mark_saved(path);
     update_title(&app, &session);
     Ok(Some(session.status()))
+}
+
+#[tauri::command]
+pub async fn export_score(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    format: String,
+) -> Reply<Option<()>> {
+    let format = ExportFormat::parse(&format)?;
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter(format.filter_name(), &[format.extension()])
+        .set_file_name(format!("Score.{}", format.extension()))
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let mut path = picked.into_path().map_err(text)?;
+    if path
+        .extension()
+        .is_none_or(|extension| !extension.eq_ignore_ascii_case(format.extension()))
+    {
+        path.set_extension(format.extension());
+    }
+    let session = state.lock();
+    let render_list = noten_layout::layout(session.doc.score(), &LayoutOptions { width: 80.0 });
+    export_render_list(&render_list, format, &path)?;
+    Ok(Some(()))
 }
 
 #[tauri::command]

@@ -130,6 +130,7 @@ export const api = {
   newScore: (setup: ScoreSetup) => invoke<Edited | null>("new_score", { setup }),
   openScore: () => invoke<Edited | null>("open_score"),
   saveScore: (saveAs: boolean) => invoke<Status | null>("save_score", { saveAs }),
+  exportScore: (format: "pdf" | "png" | "svg") => invoke<void | null>("export_score", { format }),
   selectSoundfont: () => invoke<string | null>("select_soundfont"),
   restoreSoundfont: () => invoke<string | null>("restore_soundfont"),
   playScore: () => invoke<void>("play_score"),

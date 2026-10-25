@@ -136,6 +136,10 @@ class Editor {
     await this.refreshPlaybackStatus();
   }
 
+  async exportScore(format: "pdf" | "png" | "svg") {
+    await this.run(() => api.exportScore(format));
+  }
+
   async selectEvent(id: number) {
     this.selected = id;
     const cursor = await this.run(() => api.selectEvent(id));
