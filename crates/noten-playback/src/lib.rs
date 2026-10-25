@@ -209,6 +209,54 @@ mod tests {
     }
 
     #[test]
+    fn independent_voices_play_simultaneously_and_end_independently() {
+        let (mut doc, cursor) = setup(1);
+        let second_voice = edit::add_voice(&mut doc, cursor.staff, 0).unwrap();
+        enter_note(&mut doc, cursor, c4(), quarter()).unwrap();
+        enter_note(
+            &mut doc,
+            Cursor {
+                voice: second_voice,
+                ..cursor
+            },
+            Pitch::new(Step::E, 0, 4),
+            Duration::new(NoteValue::Half, 0),
+        )
+        .unwrap();
+
+        let generated = events(doc.score());
+        assert!(generated.contains(&PlaybackEvent {
+            tick: 0,
+            channel: 0,
+            note: 60,
+            velocity: DEFAULT_VELOCITY,
+            kind: PlaybackEventKind::NoteOn,
+        }));
+        assert!(generated.contains(&PlaybackEvent {
+            tick: 0,
+            channel: 1,
+            note: 64,
+            velocity: DEFAULT_VELOCITY,
+            kind: PlaybackEventKind::NoteOn,
+        }));
+        assert!(generated.contains(&PlaybackEvent {
+            tick: 960,
+            channel: 0,
+            note: 60,
+            velocity: 0,
+            kind: PlaybackEventKind::NoteOff,
+        }));
+        assert!(generated.contains(&PlaybackEvent {
+            tick: 1920,
+            channel: 1,
+            note: 64,
+            velocity: 0,
+            kind: PlaybackEventKind::NoteOff,
+        }));
+        assert_eq!(generated.len(), 4);
+    }
+
+    #[test]
     fn tied_notes_extend_one_sounding_span() {
         let (mut doc, cursor) = setup(1);
         let first = enter_note(&mut doc, cursor, c4(), quarter()).unwrap();

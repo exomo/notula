@@ -112,12 +112,23 @@ fn note_at_cursor_selects_only_a_note_starting_at_that_position() {
 
 #[test]
 fn alternate_horizontal_movement_starts_at_the_adjacent_measure() {
-    let (doc, cursor) = setup(2);
+    let (mut doc, cursor) = setup(2);
+    edit::add_voice(&mut doc, cursor.staff, 1).unwrap();
+    let second_voice = Cursor {
+        measure: 1,
+        voice: 1,
+        ..cursor
+    };
     let moved = edit::move_cursor_to_measure(doc.score(), cursor, true).unwrap();
     assert_eq!(moved.measure, 1);
+    assert_eq!(moved.voice, 0);
     assert_eq!(moved.tick, 0);
-    let moved_back = edit::move_cursor_to_measure(doc.score(), moved, false).unwrap();
+    let moved_back = edit::move_cursor_to_measure(doc.score(), second_voice, false).unwrap();
     assert_eq!(moved_back.measure, 0);
+    assert_eq!(moved_back.voice, 0);
+    let stepped_back = edit::move_cursor(doc.score(), second_voice, None, false).unwrap();
+    assert_eq!(stepped_back.measure, 0);
+    assert_eq!(stepped_back.voice, 0);
 }
 
 #[test]
@@ -127,6 +138,7 @@ fn alternate_vertical_movement_keeps_nearest_time_position() {
     let treble = part.staves[0].id;
     let bass = part.staves[1].id;
     doc.execute(Command::AddPart { index: 0, part }).unwrap();
+    edit::add_voice(&mut doc, treble, 0).unwrap();
     let bass_cursor = Cursor {
         staff: bass,
         measure: 0,
@@ -158,12 +170,14 @@ fn alternate_vertical_movement_keeps_nearest_time_position() {
         doc.score(),
         Cursor {
             staff: treble,
+            voice: 1,
             ..bass_cursor
         },
         true,
     )
     .unwrap();
     assert_eq!(moved.staff, bass);
+    assert_eq!(moved.voice, 0);
     assert_eq!(moved.tick, 960);
     let empty_staff = edit::move_cursor_to_staff(doc.score(), moved, false).unwrap();
     assert_eq!(empty_staff.staff, treble);

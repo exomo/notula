@@ -124,18 +124,30 @@ pub struct HitInfo {
 }
 
 #[tauri::command]
-pub fn hit_test(state: State<AppState>, width: f32, x: f32, y: f32) -> Option<HitInfo> {
+pub fn hit_test(
+    state: State<AppState>,
+    width: f32,
+    x: f32,
+    y: f32,
+    voice: usize,
+) -> Option<HitInfo> {
     let session = state.lock();
     let score = session.doc.score();
     let list = noten_layout::layout(score, &LayoutOptions { width });
     let hit = noten_layout::hit_test(score, &list, x, y)?;
+    let voice = voice.min(
+        score.staff(hit.staff).ok()?.measures[hit.measure]
+            .voices
+            .len()
+            - 1,
+    );
     let cursor = Cursor {
         staff: hit.staff,
         measure: hit.measure,
-        voice: 0,
+        voice,
         tick: hit.tick.unwrap_or(0),
     };
-    let voice_end = edit::voice_end(score, hit.staff, hit.measure, 0).ok()?;
+    let voice_end = edit::voice_end(score, hit.staff, hit.measure, voice).ok()?;
     let capacity = score.measure_capacity(hit.measure).ok()?;
     let cursor = if hit.tick.is_none() {
         if voice_end >= capacity && hit.next_measure.is_some() {
@@ -375,6 +387,73 @@ pub fn remove_measure(
         ..c
     });
     Ok(finish(&app, &session, cursor, None))
+}
+
+#[tauri::command]
+pub fn add_voice(
+    app: AppHandle,
+    state: State<AppState>,
+    staff: noten_model::StaffId,
+    measure: usize,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    session
+        .doc
+        .score()
+        .measure_capacity(measure)
+        .map_err(text)?;
+    let voice = edit::add_voice(&mut session.doc, staff, measure).map_err(text)?;
+    let cursor = Cursor {
+        staff,
+        measure,
+        voice,
+        tick: 0,
+    };
+    Ok(finish(&app, &session, Some(cursor), None))
+}
+
+#[tauri::command]
+pub fn remove_voice(
+    app: AppHandle,
+    state: State<AppState>,
+    staff: noten_model::StaffId,
+    measure: usize,
+    voice: usize,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    session
+        .doc
+        .score()
+        .measure_capacity(measure)
+        .map_err(text)?;
+    edit::remove_voice(&mut session.doc, staff, voice).map_err(text)?;
+    let cursor = Cursor {
+        staff,
+        measure,
+        voice: voice.saturating_sub(1),
+        tick: 0,
+    };
+    Ok(finish(&app, &session, Some(cursor), None))
+}
+
+#[tauri::command]
+pub fn end_voice(
+    app: AppHandle,
+    state: State<AppState>,
+    staff: noten_model::StaffId,
+    measure: usize,
+    voice: usize,
+    tick: u32,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::end_voice_at(&mut session.doc, staff, measure, voice, tick).map_err(text)?;
+    let cursor = Cursor {
+        staff,
+        measure,
+        voice: 0,
+        tick,
+    };
+    Ok(finish(&app, &session, Some(cursor), None))
 }
 
 /// Applies to the measure and all following ones up to the next time signature change.

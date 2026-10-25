@@ -299,6 +299,31 @@ impl Layouter<'_> {
             y += self.rows.height + SYSTEM_GAP;
         }
 
+        let event_voices: std::collections::HashMap<_, _> = self
+            .staves
+            .iter()
+            .flat_map(|staff| {
+                staff.measures.iter().flat_map(move |measure| {
+                    measure
+                        .voices
+                        .iter()
+                        .enumerate()
+                        .flat_map(move |(voice, events)| {
+                            events
+                                .events
+                                .iter()
+                                .map(move |event| (event.id, (staff.id, voice)))
+                        })
+                })
+            })
+            .collect();
+        for item in &mut canvas.items {
+            if let Some((staff, voice)) = item.event.and_then(|event| event_voices.get(&event)) {
+                item.staff = Some(*staff);
+                item.voice = Some(*voice);
+            }
+        }
+
         RenderList {
             width,
             height: y - SYSTEM_GAP + VERTICAL_MARGIN,
@@ -391,6 +416,7 @@ impl Layouter<'_> {
                 canvas.areas.push(MeasureArea {
                     staff: staff.id,
                     measure,
+                    voice_count: staff.measures[measure].voices.len(),
                     next_measure: system.measures.clone().nth(offset + 1),
                     time_signature: info.time_signature,
                     time_signature_display: info.time_signature_display,

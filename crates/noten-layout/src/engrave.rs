@@ -143,13 +143,34 @@ pub(crate) fn plan_staff(
 
     assign_accidentals(&mut drafts, content, info);
 
-    let voice_count = drafts.len();
+    let active_ends: Vec<_> = content
+        .voices
+        .iter()
+        .map(|voice| voice.end_tick.unwrap_or_else(|| info.capacity()))
+        .collect();
     let voices = drafts
         .iter()
         .enumerate()
         .map(|(voice_index, voice_drafts)| {
-            let forced = (voice_count > 1).then_some(voice_index % 2 == 0);
-            plan_voice(voice_drafts, info.time_signature, metric_offset, forced)
+            let forced: Vec<_> = voice_drafts
+                .iter()
+                .map(|draft| {
+                    let active: Vec<_> = active_ends
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, &end)| (draft.onset < end).then_some(index))
+                        .collect();
+                    (active.len() > 1).then(|| {
+                        active
+                            .iter()
+                            .position(|&index| index == voice_index)
+                            .unwrap_or(voice_index)
+                            % 2
+                            == 0
+                    })
+                })
+                .collect();
+            plan_voice(voice_drafts, info.time_signature, metric_offset, &forced)
         })
         .collect();
 
@@ -221,7 +242,7 @@ fn plan_voice(
     drafts: &[Draft],
     time: TimeSignature,
     metric_offset: u32,
-    forced_up: Option<bool>,
+    forced_up: &[Option<bool>],
 ) -> VoicePlan {
     let beat = beat_ticks(time);
     let mut groups: Vec<Vec<usize>> = Vec::new();
@@ -239,7 +260,9 @@ fn plan_voice(
             continue;
         }
         if let Some(&first) = current.first()
-            && (drafts[first].onset + metric_offset) / beat != (draft.onset + metric_offset) / beat
+            && ((drafts[first].onset + metric_offset) / beat
+                != (draft.onset + metric_offset) / beat
+                || forced_up[first] != forced_up[i])
         {
             flush(&mut current);
         }
@@ -249,10 +272,14 @@ fn plan_voice(
 
     let mut stem_up: Vec<bool> = drafts
         .iter()
-        .map(|d| forced_up.unwrap_or_else(|| !d.notes.is_empty() && extreme_offset(&d.notes) > 0.0))
+        .enumerate()
+        .map(|(index, draft)| {
+            forced_up[index]
+                .unwrap_or_else(|| !draft.notes.is_empty() && extreme_offset(&draft.notes) > 0.0)
+        })
         .collect();
-    if forced_up.is_none() {
-        for group in &groups {
+    for group in &groups {
+        if group.iter().all(|&index| forced_up[index].is_none()) {
             let sum: f32 = group
                 .iter()
                 .map(|&i| extreme_offset(&drafts[i].notes))
@@ -406,7 +433,10 @@ mod tests {
 
     fn measure(events: Vec<Event>) -> StaffMeasure {
         StaffMeasure {
-            voices: vec![Voice { events }],
+            voices: vec![Voice {
+                events,
+                ..Voice::default()
+            }],
         }
     }
 
@@ -541,6 +571,36 @@ mod tests {
         let plan = plan_staff(Clef::Treble, c_major_44(), &measure(vec![low, high]));
         assert!(plan.voices[0].events[0].stem_up);
         assert!(!plan.voices[0].events[1].stem_up);
+    }
+
+    #[test]
+    fn stem_direction_returns_to_single_voice_after_an_additional_voice_ends() {
+        let high = chord(1, NoteValue::Quarter, &[Pitch::new(Step::A, 0, 5)]);
+        let after_end = chord(3, NoteValue::Quarter, &[Pitch::new(Step::A, 0, 5)]);
+        let two_voice_plan = plan_staff(
+            Clef::Treble,
+            c_major_44(),
+            &StaffMeasure {
+                voices: vec![
+                    Voice {
+                        events: vec![
+                            high.clone(),
+                            chord(4, NoteValue::Quarter, &[Pitch::new(Step::A, 0, 5)]),
+                            after_end,
+                        ],
+                        ..Voice::default()
+                    },
+                    Voice {
+                        events: vec![chord(2, NoteValue::Quarter, &[Pitch::new(Step::C, 0, 4)])],
+                        end_tick: Some(1920),
+                    },
+                ],
+            },
+        );
+
+        assert!(two_voice_plan.voices[0].events[0].stem_up);
+        assert!(two_voice_plan.voices[0].events[1].stem_up);
+        assert!(!two_voice_plan.voices[0].events[2].stem_up);
     }
 
     #[test]

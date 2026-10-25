@@ -663,7 +663,19 @@ pub fn move_cursor(
     } else {
         cursor.measure.checked_sub(1)
     };
-    let voice_at = |measure: usize| staff.measures.get(measure)?.voices.get(cursor.voice);
+    let cursor_in = |measure: usize, tick: u32| {
+        let voices = &staff.measures.get(measure)?.voices;
+        Some(Cursor {
+            measure,
+            voice: cursor.voice.min(voices.len().checked_sub(1)?),
+            tick,
+            ..cursor
+        })
+    };
+    let voice_at = |measure: usize| {
+        let target = cursor_in(measure, 0)?;
+        staff.measures.get(measure)?.voices.get(target.voice)
+    };
 
     if let Some(id) = selected {
         let located = locate(score, id)?;
@@ -682,11 +694,7 @@ pub fn move_cursor(
             let tick = located.cursor.tick + event.duration.ticks();
             let capacity = score.measure_capacity(located.cursor.measure).ok()?;
             if tick == capacity && located.cursor.measure + 1 < staff.measures.len() {
-                return Some(Cursor {
-                    measure: located.cursor.measure + 1,
-                    tick: 0,
-                    ..cursor
-                });
+                return cursor_in(located.cursor.measure + 1, 0);
             }
             return Some(Cursor {
                 tick,
@@ -698,15 +706,11 @@ pub fn move_cursor(
                 .measures
                 .get(measure)?
                 .voices
-                .get(cursor.voice)?
+                .get(cursor_in(measure, 0)?.voice)?
                 .events
                 .is_empty();
             if empty {
-                return Some(Cursor {
-                    measure,
-                    tick: 0,
-                    ..cursor
-                });
+                return cursor_in(measure, 0);
             }
         }
         if located.index > 0 {
@@ -723,7 +727,7 @@ pub fn move_cursor(
             return Some(located.cursor);
         };
         voice_at(measure)?;
-        return cursor_before_measure_end(score, cursor, measure);
+        return cursor_before_measure_end(score, cursor_in(measure, 0)?, measure);
     }
 
     let voice = voice_at(cursor.measure)?;
@@ -741,11 +745,7 @@ pub fn move_cursor(
         }
         let measure = adjacent_measure?;
         voice_at(measure)?;
-        return Some(Cursor {
-            measure,
-            tick: 0,
-            ..cursor
-        });
+        return cursor_in(measure, 0);
     }
 
     let mut previous = None;
@@ -762,13 +762,9 @@ pub fn move_cursor(
     let measure = adjacent_measure?;
     let previous_voice = voice_at(measure)?;
     if previous_voice.events.is_empty() {
-        return Some(Cursor {
-            measure,
-            tick: 0,
-            ..cursor
-        });
+        return cursor_in(measure, 0);
     }
-    cursor_before_measure_end(score, cursor, measure)
+    cursor_before_measure_end(score, cursor_in(measure, 0)?, measure)
 }
 
 fn cursor_before_measure_end(score: &Score, cursor: Cursor, measure: usize) -> Option<Cursor> {
@@ -782,8 +778,15 @@ pub fn move_cursor_to_measure(score: &Score, cursor: Cursor, forward: bool) -> O
         cursor.measure.checked_sub(1)?
     };
     score.measure_capacity(measure).ok()?;
+    let voices = &score
+        .staff(cursor.staff)
+        .ok()?
+        .measures
+        .get(measure)?
+        .voices;
     Some(Cursor {
         measure,
+        voice: cursor.voice.min(voices.len().checked_sub(1)?),
         tick: 0,
         ..cursor
     })
@@ -798,14 +801,13 @@ pub fn move_cursor_to_staff(score: &Score, cursor: Cursor, down: bool) -> Option
         *staves.get(current.checked_sub(1)?)?
     };
     let capacity = score.measure_capacity(cursor.measure).ok()?;
-    let voice = target
-        .measures
-        .get(cursor.measure)?
-        .voices
-        .get(cursor.voice)?;
+    let target_voices = &target.measures.get(cursor.measure)?.voices;
+    let voice_index = cursor.voice.min(target_voices.len().checked_sub(1)?);
+    let voice = target_voices.get(voice_index)?;
     if voice.events.is_empty() {
         return Some(Cursor {
             staff: target.id,
+            voice: voice_index,
             tick: 0,
             ..cursor
         });
@@ -823,6 +825,7 @@ pub fn move_cursor_to_staff(score: &Score, cursor: Cursor, down: bool) -> Option
         .min_by_key(|candidate| candidate.abs_diff(clamped_tick))?;
     Some(Cursor {
         staff: target.id,
+        voice: voice_index,
         tick,
         ..cursor
     })
@@ -831,6 +834,137 @@ pub fn move_cursor_to_staff(score: &Score, cursor: Cursor, down: bool) -> Option
 pub fn append_measure(doc: &mut Document) -> Result<(), ModelError> {
     let last = doc.score().measures.len() - 1;
     insert_measure_after(doc, last)
+}
+
+/// Adds a new staff-wide voice and returns its index.
+pub fn add_voice(doc: &mut Document, staff: StaffId, measure: usize) -> Result<usize, ModelError> {
+    let staff_data = doc.score().staff(staff)?;
+    let voice_count = staff_data
+        .measures
+        .get(measure)
+        .map(|measure| measure.voices.len())
+        .ok_or(ModelError::MeasureOutOfRange(measure))?;
+    if staff_data.measures[measure..]
+        .iter()
+        .any(|content| content.voices.len() < voice_count)
+    {
+        return Err(ModelError::Invalid(
+            "voice indices must remain available after their start measure",
+        ));
+    }
+    let voices = vec![Voice::default(); doc.score().measures.len() - measure];
+    doc.execute(Command::InsertVoice {
+        staff,
+        measure,
+        index: voice_count,
+        voices,
+    })?;
+    Ok(voice_count)
+}
+
+/// Removes a staff-wide additional voice as one undoable edit.
+pub fn remove_voice(doc: &mut Document, staff: StaffId, voice: usize) -> Result<(), ModelError> {
+    let staff_data = doc.score().staff(staff)?;
+    let measure = staff_data
+        .measures
+        .iter()
+        .position(|content| content.voices.len() > voice)
+        .ok_or(ModelError::VoiceOutOfRange(voice))?;
+    doc.execute(Command::RemoveVoice {
+        staff,
+        measure,
+        index: voice,
+    })
+}
+
+/// Ends an additional voice at `tick`, moving its suffix into the primary voice.
+pub fn end_voice_at(
+    doc: &mut Document,
+    staff: StaffId,
+    measure: usize,
+    voice: usize,
+    tick: u32,
+) -> Result<(), ModelError> {
+    if voice == 0 {
+        return Err(ModelError::Invalid("the original voice cannot be ended"));
+    }
+    let at = VoiceLocation {
+        staff,
+        measure,
+        voice,
+    };
+    let capacity = doc.score().measure_capacity(measure)?;
+    if tick > capacity {
+        return Err(ModelError::Invalid("voice end is beyond the measure"));
+    }
+    let target_events = doc.score().voice(at)?.events.clone();
+    let mut onset = 0;
+    let mut first_removed = target_events.len();
+    for (index, event) in target_events.iter().enumerate() {
+        if onset == tick {
+            first_removed = index;
+            break;
+        }
+        let end = onset + event.duration.ticks();
+        if onset < tick && tick < end {
+            return Err(ModelError::Invalid("voice must end at an event boundary"));
+        }
+        onset = end;
+    }
+    if first_removed == target_events.len() && tick > onset {
+        return Err(ModelError::Invalid("voice must end at an event boundary"));
+    }
+
+    let suffix = target_events[first_removed..].to_vec();
+    let primary_at = VoiceLocation { voice: 0, ..at };
+    let primary_ticks = doc.score().voice(primary_at)?.used_ticks();
+    let mut primary_index = doc.score().voice(primary_at)?.events.len();
+    if !suffix.is_empty() && primary_ticks > tick {
+        return Err(ModelError::Invalid(
+            "primary voice already contains music after this point",
+        ));
+    }
+
+    let mut commands = Vec::new();
+    let padding = if primary_ticks < tick {
+        rest_durations(tick - primary_ticks)?
+    } else {
+        Vec::new()
+    };
+    for duration in padding {
+        let event = Event::new(doc.new_event_id(), duration, EventKind::Rest);
+        commands.push(Command::InsertEvent {
+            at: primary_at,
+            index: primary_index,
+            event,
+        });
+        primary_index += 1;
+    }
+    for event in suffix {
+        commands.push(Command::InsertEvent {
+            at: primary_at,
+            index: primary_index,
+            event,
+        });
+        primary_index += 1;
+    }
+    commands.extend(
+        (first_removed..target_events.len())
+            .rev()
+            .map(|index| Command::RemoveEvent { at, index }),
+    );
+    commands.push(Command::SetVoiceEnd {
+        at,
+        end_tick: Some(tick),
+    });
+    if measure + 1 < doc.score().measures.len() {
+        commands.push(Command::RemoveVoice {
+            staff,
+            measure: measure + 1,
+            index: voice,
+        });
+    }
+    doc.execute(Command::Batch { commands })
 }
 
 /// Inserts an empty measure that takes over the signatures active at its position.

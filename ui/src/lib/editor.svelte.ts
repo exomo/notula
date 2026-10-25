@@ -80,6 +80,19 @@ class Editor {
     return this.cursor !== null && new Set(this.areas.map((area) => area.measure)).size > 1;
   }
 
+  get voiceCount() {
+    const cursor = this.cursor;
+    return cursor
+      ? this.areas.find((area) => area.staff === cursor.staff && area.measure === cursor.measure)?.voice_count ?? 1
+      : 0;
+  }
+
+  get canEndVoice() {
+    const cursor = this.cursor;
+    if (!cursor || cursor.voice === 0) return false;
+    return this.voiceCount > cursor.voice;
+  }
+
   private apply(edited: Edited | null, exactSelection = false) {
     if (!edited) return;
     this.status = edited.status;
@@ -167,7 +180,7 @@ class Editor {
   }
 
   async clickStaff(x: number, y: number, shift = false) {
-    const hit = await this.run(() => api.hitTest(this.layoutWidth, x, y));
+    const hit = await this.run(() => api.hitTest(this.layoutWidth, x, y, this.cursor?.voice ?? 0));
     if (!hit) {
       this.selected = null;
       return;
@@ -202,17 +215,14 @@ class Editor {
   }
 
   async clickEvent(id: number, x: number, y: number, shift = false) {
-    if (!this.inputMode) {
-      await this.selectEvent(id);
-      return;
-    }
-    const hit = await this.run(() => api.hitTest(this.layoutWidth, x, y));
-    if (hit && hit.note !== id) {
-      await this.clickStaff(x, y, shift);
-      return;
-    }
     const eventCursor = await this.run(() => api.selectEvent(id));
     if (!eventCursor) return;
+    if (!this.inputMode) {
+      this.cursor = eventCursor;
+      this.selected = id;
+      return;
+    }
+    const hit = await this.run(() => api.hitTest(this.layoutWidth, x, y, eventCursor.voice));
     const isSelectedAtCursor = this.selected === id && this.samePosition(this.cursor, eventCursor);
     if (!isSelectedAtCursor) {
       this.cursor = eventCursor;
@@ -318,6 +328,36 @@ class Editor {
     const cursor = this.cursor;
     if (!cursor) return;
     this.apply((await this.run(() => api.removeMeasure(measure, cursor))) ?? null, true);
+  }
+
+  async addVoice() {
+    const cursor = this.requireCursor();
+    if (!cursor) return;
+    const edited = await this.run(() => api.addVoice(cursor.staff, cursor.measure));
+    this.apply(edited ?? null, true);
+  }
+
+  async removeVoice() {
+    const cursor = this.requireCursor();
+    if (!cursor || cursor.voice === 0) return;
+    const edited = await this.run(() => api.removeVoice(cursor.staff, cursor.measure, cursor.voice));
+    this.apply(edited ?? null, true);
+  }
+
+  async endVoice() {
+    const cursor = this.requireCursor();
+    if (!cursor || !this.canEndVoice) return;
+    const edited = await this.run(() =>
+      api.endVoice(cursor.staff, cursor.measure, cursor.voice, cursor.tick),
+    );
+    this.apply(edited ?? null, true);
+  }
+
+  selectVoice(voice: number) {
+    const cursor = this.cursor;
+    if (!cursor || voice < 0 || voice >= this.voiceCount) return;
+    this.cursor = { ...cursor, voice, tick: 0 };
+    this.selected = null;
   }
 
   /** The time signature is applied from the cursor's measure up to the next change. */

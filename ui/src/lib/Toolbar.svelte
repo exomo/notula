@@ -179,6 +179,41 @@
     <button onclick={askDeleteMeasure} disabled={!editor.canDeleteMeasure} title="Delete the current measure">
       Delete measure
     </button>
+    {#if editor.cursor}
+      <label class="voice-control">
+        Voice
+        <select
+          aria-label="Voice being edited"
+          value={editor.cursor.voice}
+          onchange={(event) => editor.selectVoice(Number(event.currentTarget.value))}
+        >
+          {#each Array.from({ length: editor.voiceCount }, (_, index) => index) as voice}
+            <option value={voice}>{voice + 1}</option>
+          {/each}
+        </select>
+      </label>
+    {/if}
+    <button
+      onclick={() => editor.addVoice()}
+      disabled={!editor.cursor}
+      title="Start a new voice at the beginning of this measure"
+    >
+      + Voice
+    </button>
+    <button
+      onclick={() => editor.removeVoice()}
+      disabled={!editor.cursor || editor.cursor.voice === 0}
+      title="Delete the selected additional voice across this staff"
+    >
+      Delete voice
+    </button>
+    <button
+      onclick={() => editor.endVoice()}
+      disabled={!editor.canEndVoice}
+      title="End this voice here and continue in voice 1"
+    >
+      End here
+    </button>
     <button
       onclick={() => {
         if (editor.cursor) editor.timeSignatureOpen = true;

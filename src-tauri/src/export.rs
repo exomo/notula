@@ -163,6 +163,8 @@ mod tests {
             items: vec![
                 noten_layout::Item {
                     event: None,
+                    staff: None,
+                    voice: None,
                     shape: Shape::Text {
                         x: 1.0,
                         y: 2.0,
@@ -173,6 +175,8 @@ mod tests {
                 },
                 noten_layout::Item {
                     event: None,
+                    staff: None,
+                    voice: None,
                     shape: Shape::Glyph {
                         x: 10.0,
                         y: 8.0,

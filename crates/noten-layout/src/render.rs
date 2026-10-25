@@ -15,6 +15,7 @@ pub struct RenderList {
 pub struct MeasureArea {
     pub staff: StaffId,
     pub measure: usize,
+    pub voice_count: usize,
     /// Following measure in this system, if this is not the system's final bar.
     pub next_measure: Option<usize>,
     pub time_signature: TimeSignature,
@@ -34,6 +35,10 @@ pub struct Item {
     /// Set for everything that belongs to a note or rest, for hit-testing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event: Option<EventId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub staff: Option<StaffId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<usize>,
     #[serde(flatten)]
     pub shape: Shape,
 }
@@ -95,6 +100,8 @@ impl Canvas {
     ) {
         self.items.push(Item {
             event,
+            staff: None,
+            voice: None,
             shape: Shape::Line {
                 x1: round(from.0),
                 y1: round(from.1),
@@ -108,6 +115,8 @@ impl Canvas {
     pub fn polygon(&mut self, event: Option<EventId>, points: &[(f32, f32)]) {
         self.items.push(Item {
             event,
+            staff: None,
+            voice: None,
             shape: Shape::Polygon {
                 points: points.iter().map(|&(x, y)| [round(x), round(y)]).collect(),
             },
@@ -117,6 +126,8 @@ impl Canvas {
     pub fn glyph(&mut self, event: Option<EventId>, x: f32, y: f32, glyph: char, size: f32) {
         self.items.push(Item {
             event,
+            staff: None,
+            voice: None,
             shape: Shape::Glyph {
                 x: round(x),
                 y: round(y),
@@ -129,6 +140,8 @@ impl Canvas {
     pub fn text(&mut self, x: f32, y: f32, text: &str, size: f32, anchor: Anchor) {
         self.items.push(Item {
             event: None,
+            staff: None,
+            voice: None,
             shape: Shape::Text {
                 x: round(x),
                 y: round(y),

@@ -45,7 +45,21 @@
       : area.columns.length > 0
         ? area.x_end - 1.0
         : area.x_start + 1.0;
-    return { x, area };
+    return { x, area, voice: cursor.voice };
+  });
+
+  const renderedItems = $derived.by(() => {
+    if (!list) return [];
+    const cursor = editor.cursor;
+    if (!cursor) return list.items;
+    return [
+      ...list.items.filter(
+        (item) => item.staff !== cursor.staff || item.voice !== cursor.voice,
+      ),
+      ...list.items.filter(
+        (item) => item.staff === cursor.staff && item.voice === cursor.voice,
+      ),
+    ];
   });
 
   const playbackCaret = $derived.by(() => {
@@ -107,6 +121,14 @@
             height="8"
           />
         {/if}
+        {#if caret.area.voice_count > 1}
+          <text
+            class="voice-indicator"
+            class:additional={caret.voice > 0}
+            x={caret.area.x_start}
+            y={caret.area.y_top - 0.8}
+          >Voice {caret.voice + 1}</text>
+        {/if}
         <line
           bind:this={caretElement}
           class="caret"
@@ -117,11 +139,12 @@
           stroke-width="0.2"
         />
       {/if}
-      {#each list.items as item}
+      {#each renderedItems as item}
         {@const selected = editor.inputMode && item.event !== undefined && item.event === editor.selected}
         {#if item.type === "line"}
           <line
             class:selected
+            class:active-voice={editor.cursor !== null && item.staff === editor.cursor.staff && item.voice === editor.cursor.voice}
             data-event={item.event}
             x1={item.x1}
             y1={item.y1}
@@ -132,11 +155,19 @@
         {:else if item.type === "polygon"}
           <polygon
             class:selected
+            class:active-voice={editor.cursor !== null && item.staff === editor.cursor.staff && item.voice === editor.cursor.voice}
             data-event={item.event}
             points={item.points.map((p) => p.join(",")).join(" ")}
           />
         {:else if item.type === "glyph"}
-          <text class="glyph" class:selected data-event={item.event} x={item.x} y={item.y} font-size={item.size}
+          <text
+            class="glyph"
+            class:selected
+            class:active-voice={editor.cursor !== null && item.staff === editor.cursor.staff && item.voice === editor.cursor.voice}
+            data-event={item.event}
+            x={item.x}
+            y={item.y}
+            font-size={item.size}
             >{item.glyph}</text
           >
         {:else}
@@ -191,6 +222,15 @@
     stroke: #1a73e8;
   }
 
+  line.active-voice {
+    stroke: #087f70;
+  }
+
+  polygon.active-voice,
+  text.active-voice {
+    fill: #087f70;
+  }
+
   polygon.selected,
   text.selected {
     fill: #1a73e8;
@@ -207,6 +247,16 @@
 
   .caret {
     stroke: #1a73e8;
+  }
+
+  .voice-indicator {
+    fill: #1a73e8;
+    font: 600 0.8px sans-serif;
+    pointer-events: none;
+  }
+
+  .voice-indicator.additional {
+    fill: #087f70;
   }
 
   .playback-caret {

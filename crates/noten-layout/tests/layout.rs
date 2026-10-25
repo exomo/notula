@@ -151,6 +151,43 @@ fn hit_testing_at_a_measure_start_uses_that_measure() {
 }
 
 #[test]
+fn rendered_events_identify_their_voice_and_measure_voice_count() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let staff = b.staves[0];
+    let voice = noten_model::edit::add_voice(&mut b.doc, staff, 0).unwrap();
+    let event = Event::new(
+        b.doc.new_event_id(),
+        Duration::new(NoteValue::Quarter, 0),
+        EventKind::Chord {
+            pitches: vec![c4()],
+            tied: false,
+        },
+    );
+    let event_id = event.id;
+    b.doc
+        .execute(Command::InsertEvent {
+            at: VoiceLocation {
+                staff,
+                measure: 0,
+                voice,
+            },
+            index: 0,
+            event,
+        })
+        .unwrap();
+
+    let list = b.layout(100.0);
+    let rendered = list
+        .items
+        .iter()
+        .find(|item| item.event == Some(event_id))
+        .unwrap();
+    assert_eq!(rendered.staff, Some(staff));
+    assert_eq!(rendered.voice, Some(1));
+    assert_eq!(list.areas[0].voice_count, 2);
+}
+
+#[test]
 fn hit_testing_near_the_barline_targets_the_content_end() {
     let mut b = Builder::new(&[("", &[Clef::Treble])]);
     b.note(0, 0, c4(), NoteValue::Quarter);

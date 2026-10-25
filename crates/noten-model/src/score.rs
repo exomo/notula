@@ -107,6 +107,9 @@ impl Event {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Voice {
     pub events: Vec<Event>,
+    /// Explicit end within a measure, used when another voice continues alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_tick: Option<u32>,
 }
 
 impl Voice {
@@ -291,7 +294,19 @@ impl Score {
             },
             content: self
                 .staves()
-                .map(|staff| (staff.id, StaffMeasure::default()))
+                .map(|staff| {
+                    let voice_source = staff
+                        .measures
+                        .get(index)
+                        .unwrap_or(&staff.measures[inherit]);
+                    let voice_count = voice_source.voices.len();
+                    (
+                        staff.id,
+                        StaffMeasure {
+                            voices: vec![Voice::default(); voice_count],
+                        },
+                    )
+                })
                 .collect(),
         }
     }
@@ -379,6 +394,14 @@ impl Score {
                     for voice in &content.voices {
                         if voice.used_ticks() > capacity {
                             return Err(ModelError::MeasureOverfull);
+                        }
+                        if voice
+                            .end_tick
+                            .is_some_and(|end| end > capacity || end < voice.used_ticks())
+                        {
+                            return Err(ModelError::Invalid(
+                                "voice end must follow its events within the measure",
+                            ));
                         }
                         for event in &voice.events {
                             event.validate()?;

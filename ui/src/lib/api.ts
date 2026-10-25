@@ -109,8 +109,8 @@ export interface PlaybackStatus {
 export const api = {
   currentState: () => invoke<Edited>("current_state"),
   renderScore: (width: number) => invoke<RenderList>("render_score", { width }),
-  hitTest: (width: number, x: number, y: number) =>
-    invoke<HitInfo | null>("hit_test", { width, x, y }),
+  hitTest: (width: number, x: number, y: number, voice: number) =>
+    invoke<HitInfo | null>("hit_test", { width, x, y, voice }),
   selectEvent: (event: number) => invoke<Cursor | null>("select_event", { event }),
   moveCursor: (cursor: Cursor, selected: number | null, forward: boolean, movement = "step") =>
     invoke<CursorPosition | null>("move_cursor", { cursor, selected, forward, movement }),
@@ -140,6 +140,12 @@ export const api = {
     invoke<Edited>("insert_measure", { measure, before, cursor }),
   removeMeasure: (measure: number, cursor: Cursor) =>
     invoke<Edited>("remove_measure", { measure, cursor }),
+  addVoice: (staff: number, measure: number) =>
+    invoke<Edited>("add_voice", { staff, measure }),
+  removeVoice: (staff: number, measure: number, voice: number) =>
+    invoke<Edited>("remove_voice", { staff, measure, voice }),
+  endVoice: (staff: number, measure: number, voice: number, tick: number) =>
+    invoke<Edited>("end_voice", { staff, measure, voice, tick }),
   setTimeSignature: (
     measure: number,
     numerator: number,

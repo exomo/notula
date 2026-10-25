@@ -7,11 +7,12 @@ export type Shape =
   | { type: "text"; x: number; y: number; text: string; size: number; anchor: Anchor };
 
 /** Everything that belongs to a note or rest carries that event's id. */
-export type Item = Shape & { event?: number };
+export type Item = Shape & { event?: number; staff?: number; voice?: number };
 
 export interface MeasureArea {
   staff: number;
   measure: number;
+  voice_count: number;
   next_measure: number | null;
   time_signature: { numerator: number; denominator: number };
   time_signature_display: "numeric" | "common" | "alla_breve";

@@ -204,6 +204,204 @@ fn measures_can_be_inserted_removed_and_restored() {
 }
 
 #[test]
+fn staff_voices_are_added_removed_and_restored_across_all_measures() {
+    let (mut doc, staff) = setup();
+    noten_model::edit::insert_measure_at(&mut doc, 1).unwrap();
+    noten_model::edit::insert_measure_at(&mut doc, 2).unwrap();
+    let voice = noten_model::edit::add_voice(&mut doc, staff, 1).unwrap();
+    assert_eq!(voice, 1);
+    assert_eq!(
+        doc.score().staff(staff).unwrap().measures[0].voices.len(),
+        1
+    );
+    assert!(
+        doc.score().staff(staff).unwrap().measures[1..]
+            .iter()
+            .all(|measure| measure.voices.len() == 2)
+    );
+
+    let note = note(&mut doc, NoteValue::Quarter);
+    doc.execute(Command::InsertEvent {
+        at: VoiceLocation {
+            staff,
+            measure: 1,
+            voice,
+        },
+        index: 0,
+        event: note,
+    })
+    .unwrap();
+    let with_note = doc.score().clone();
+
+    noten_model::edit::remove_voice(&mut doc, staff, voice).unwrap();
+    assert!(
+        doc.score()
+            .staff(staff)
+            .unwrap()
+            .measures
+            .iter()
+            .all(|measure| measure.voices.len() == 1)
+    );
+    assert!(doc.undo().unwrap());
+    assert_eq!(doc.score(), &with_note);
+
+    noten_model::edit::insert_measure_at(&mut doc, 2).unwrap();
+    assert_eq!(
+        doc.score().staff(staff).unwrap().measures[2].voices.len(),
+        2
+    );
+}
+
+#[test]
+fn original_staff_voice_cannot_be_removed() {
+    let (mut doc, staff) = setup();
+    assert!(matches!(
+        noten_model::edit::remove_voice(&mut doc, staff, 0),
+        Err(ModelError::Invalid(_))
+    ));
+}
+
+#[test]
+fn ending_a_voice_at_a_measure_boundary_restores_single_voice_after_it() {
+    let (mut doc, staff) = setup();
+    noten_model::edit::insert_measure_at(&mut doc, 1).unwrap();
+    noten_model::edit::insert_measure_at(&mut doc, 2).unwrap();
+    let voice = noten_model::edit::add_voice(&mut doc, staff, 0).unwrap();
+    for measure in [0, 1, 2] {
+        let note = note(&mut doc, NoteValue::Quarter);
+        doc.execute(Command::InsertEvent {
+            at: VoiceLocation {
+                staff,
+                measure,
+                voice,
+            },
+            index: 0,
+            event: note,
+        })
+        .unwrap();
+    }
+    let before_end = doc.score().clone();
+
+    noten_model::edit::end_voice_at(&mut doc, staff, 1, voice, 960).unwrap();
+    let measures = &doc.score().staff(staff).unwrap().measures;
+    assert_eq!(measures[0].voices.len(), 2);
+    assert_eq!(measures[1].voices.len(), 2);
+    assert_eq!(measures[2].voices.len(), 1);
+
+    noten_model::edit::insert_measure_at(&mut doc, 2).unwrap();
+    assert_eq!(
+        doc.score().staff(staff).unwrap().measures[2].voices.len(),
+        1
+    );
+    doc.undo().unwrap();
+
+    assert!(doc.undo().unwrap());
+    assert_eq!(doc.score(), &before_end);
+}
+
+#[test]
+fn ending_here_moves_the_remaining_note_into_the_primary_voice() {
+    let (mut doc, staff) = setup();
+    let voice = noten_model::edit::add_voice(&mut doc, staff, 0).unwrap();
+    let first = note(&mut doc, NoteValue::Quarter);
+    let first_id = first.id;
+    let pickup = note(&mut doc, NoteValue::Quarter);
+    let pickup_id = pickup.id;
+    for (index, event) in [first, pickup].into_iter().enumerate() {
+        doc.execute(Command::InsertEvent {
+            at: VoiceLocation {
+                staff,
+                measure: 0,
+                voice,
+            },
+            index,
+            event,
+        })
+        .unwrap();
+    }
+    let before_end = doc.score().clone();
+
+    noten_model::edit::end_voice_at(&mut doc, staff, 0, voice, 960).unwrap();
+    let primary = doc
+        .score()
+        .voice(VoiceLocation {
+            staff,
+            measure: 0,
+            voice: 0,
+        })
+        .unwrap();
+    assert_eq!(primary.events.len(), 2);
+    assert!(matches!(primary.events[0].kind, EventKind::Rest));
+    assert_eq!(primary.events[1].id, pickup_id);
+    let ended = doc
+        .score()
+        .voice(VoiceLocation {
+            staff,
+            measure: 0,
+            voice,
+        })
+        .unwrap();
+    assert_eq!(ended.events.len(), 1);
+    assert_eq!(ended.events[0].id, first_id);
+    assert_eq!(ended.end_tick, Some(960));
+
+    assert!(doc.undo().unwrap());
+    assert_eq!(doc.score(), &before_end);
+}
+
+#[test]
+fn ending_here_is_safe_when_the_primary_voice_already_continues() {
+    let (mut doc, staff) = setup();
+    let voice = noten_model::edit::add_voice(&mut doc, staff, 0).unwrap();
+    let primary_note = note(&mut doc, NoteValue::Half);
+    let secondary_note = note(&mut doc, NoteValue::Quarter);
+    doc.execute(Command::InsertEvent {
+        at: VoiceLocation {
+            staff,
+            measure: 0,
+            voice: 0,
+        },
+        index: 0,
+        event: primary_note,
+    })
+    .unwrap();
+    doc.execute(Command::InsertEvent {
+        at: VoiceLocation {
+            staff,
+            measure: 0,
+            voice,
+        },
+        index: 0,
+        event: secondary_note,
+    })
+    .unwrap();
+
+    noten_model::edit::end_voice_at(&mut doc, staff, 0, voice, 960).unwrap();
+
+    let primary = doc
+        .score()
+        .voice(VoiceLocation {
+            staff,
+            measure: 0,
+            voice: 0,
+        })
+        .unwrap();
+    assert_eq!(primary.used_ticks(), 1920);
+    assert_eq!(primary.events.len(), 1);
+    assert_eq!(
+        doc.score()
+            .voice(VoiceLocation {
+                staff,
+                measure: 0,
+                voice,
+            })
+            .unwrap()
+            .end_tick,
+        Some(960)
+    );
+}
+
+#[test]
 fn time_signature_change_must_fit_existing_content() {
     let (mut doc, staff) = setup();
     insert(&mut doc, staff, 0, NoteValue::Half).unwrap();

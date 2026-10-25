@@ -7,7 +7,7 @@ use crate::duration::{TimeSignature, TimeSignatureDisplay};
 use crate::error::ModelError;
 use crate::ids::{PartId, StaffId};
 use crate::score::{
-    Clef, Event, KeySignature, MeasureData, MeasureInfo, Part, Score, Staff, StaffMeasure,
+    Clef, Event, KeySignature, MeasureData, MeasureInfo, Part, Score, Staff, StaffMeasure, Voice,
     VoiceLocation,
 };
 
@@ -23,6 +23,21 @@ pub enum Command {
     RemoveEvent {
         at: VoiceLocation,
         index: usize,
+    },
+    InsertVoice {
+        staff: StaffId,
+        measure: usize,
+        index: usize,
+        voices: Vec<Voice>,
+    },
+    RemoveVoice {
+        staff: StaffId,
+        measure: usize,
+        index: usize,
+    },
+    SetVoiceEnd {
+        at: VoiceLocation,
+        end_tick: Option<u32>,
     },
     ReplaceEvent {
         at: VoiceLocation,
@@ -94,11 +109,12 @@ fn check_fits(content: &StaffMeasure, capacity: u32) -> Result<(), ModelError> {
     if content.voices.is_empty() {
         return Err(ModelError::Invalid("a measure needs at least one voice"));
     }
-    if content
-        .voices
-        .iter()
-        .any(|voice| voice.used_ticks() > capacity)
-    {
+    if content.voices.iter().any(|voice| {
+        voice.used_ticks() > capacity
+            || voice
+                .end_tick
+                .is_some_and(|end| end > capacity || end < voice.used_ticks())
+    }) {
         return Err(ModelError::MeasureOverfull);
     }
     Ok(())
@@ -122,7 +138,8 @@ impl Command {
                 if index > voice.events.len() {
                     return Err(ModelError::EventOutOfRange(index));
                 }
-                if voice.used_ticks() + event.duration.ticks() > capacity {
+                let new_end = voice.used_ticks() + event.duration.ticks();
+                if new_end > capacity || voice.end_tick.is_some_and(|end| new_end > end) {
                     return Err(ModelError::MeasureOverfull);
                 }
                 voice.events.insert(index, event);
@@ -137,6 +154,84 @@ impl Command {
                 let event = voice.events.remove(index);
                 Ok(Command::InsertEvent { at, index, event })
             }
+            Command::InsertVoice {
+                staff,
+                measure,
+                index,
+                voices,
+            } => {
+                check_measure_index(score, measure)?;
+                if voices.len() != score.measures.len() - measure {
+                    return Err(ModelError::Invalid(
+                        "voice data must cover every affected measure",
+                    ));
+                }
+                for (voice, info) in voices.iter().zip(&score.measures[measure..]) {
+                    if voice.used_ticks() > info.capacity() {
+                        return Err(ModelError::MeasureOverfull);
+                    }
+                    for event in &voice.events {
+                        event.validate()?;
+                    }
+                }
+                let target = score.staff_mut(staff)?;
+                if target.measures[measure..]
+                    .iter()
+                    .any(|content| content.voices.len() < index)
+                {
+                    return Err(ModelError::Invalid(
+                        "voice index is not available in every affected measure",
+                    ));
+                }
+                for (content, voice) in target.measures[measure..].iter_mut().zip(voices) {
+                    content.voices.insert(index, voice);
+                }
+                Ok(Command::RemoveVoice {
+                    staff,
+                    measure,
+                    index,
+                })
+            }
+            Command::RemoveVoice {
+                staff,
+                measure,
+                index,
+            } => {
+                if index == 0 {
+                    return Err(ModelError::Invalid("the original voice cannot be removed"));
+                }
+                check_measure_index(score, measure)?;
+                let target = score.staff_mut(staff)?;
+                if target.measures[measure..]
+                    .iter()
+                    .any(|content| content.voices.len() <= index)
+                {
+                    return Err(ModelError::Invalid(
+                        "voice does not exist in every affected measure",
+                    ));
+                }
+                let voices = target.measures[measure..]
+                    .iter_mut()
+                    .map(|content| content.voices.remove(index))
+                    .collect();
+                Ok(Command::InsertVoice {
+                    staff,
+                    measure,
+                    index,
+                    voices,
+                })
+            }
+            Command::SetVoiceEnd { at, end_tick } => {
+                let capacity = score.measure_capacity(at.measure)?;
+                let voice = score.voice_mut(at)?;
+                if end_tick.is_some_and(|end| end > capacity || end < voice.used_ticks()) {
+                    return Err(ModelError::Invalid(
+                        "voice end must follow its events within the measure",
+                    ));
+                }
+                let old = mem::replace(&mut voice.end_tick, end_tick);
+                Ok(Command::SetVoiceEnd { at, end_tick: old })
+            }
             Command::ReplaceEvent { at, index, event } => {
                 event.validate()?;
                 let capacity = score.measure_capacity(at.measure)?;
@@ -146,7 +241,7 @@ impl Command {
                     .get(index)
                     .ok_or(ModelError::EventOutOfRange(index))?;
                 let used = voice.used_ticks() - old.duration.ticks() + event.duration.ticks();
-                if used > capacity {
+                if used > capacity || voice.end_tick.is_some_and(|end| used > end) {
                     return Err(ModelError::MeasureOverfull);
                 }
                 let old = mem::replace(&mut voice.events[index], event);
