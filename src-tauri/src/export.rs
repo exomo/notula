@@ -13,6 +13,7 @@ pub enum ExportFormat {
     Pdf,
     Png,
     Svg,
+    MusicXml,
 }
 
 impl ExportFormat {
@@ -21,6 +22,7 @@ impl ExportFormat {
             "pdf" => Ok(Self::Pdf),
             "png" => Ok(Self::Png),
             "svg" => Ok(Self::Svg),
+            "musicxml" => Ok(Self::MusicXml),
             _ => Err(format!("Unsupported export format: {value}")),
         }
     }
@@ -30,6 +32,7 @@ impl ExportFormat {
             Self::Pdf => "pdf",
             Self::Png => "png",
             Self::Svg => "svg",
+            Self::MusicXml => "musicxml",
         }
     }
 
@@ -38,6 +41,7 @@ impl ExportFormat {
             Self::Pdf => "PDF document",
             Self::Png => "PNG image",
             Self::Svg => "SVG image",
+            Self::MusicXml => "MusicXML score",
         }
     }
 }
@@ -53,6 +57,7 @@ pub fn export_render_list(
 fn render_bytes(list: &RenderList, format: ExportFormat) -> Result<Vec<u8>, String> {
     let svg = render_list_svg(list);
     match format {
+        ExportFormat::MusicXml => Err("MusicXML export uses the score format exporter.".to_owned()),
         ExportFormat::Svg => Ok(svg.into_bytes()),
         ExportFormat::Pdf => {
             let tree = parse_svg(&svg)?;

@@ -1,5 +1,7 @@
 //! Native `.notula` file format: a zip archive holding a manifest and the score as JSON.
 
+pub mod musicxml;
+
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};

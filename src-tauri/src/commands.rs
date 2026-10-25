@@ -42,6 +42,12 @@ pub struct PlaybackStatus {
 }
 
 #[derive(Serialize)]
+pub struct OpenScoreResult {
+    edited: Edited,
+    unsupported: Vec<String>,
+}
+
+#[derive(Serialize)]
 pub struct EventArticulations {
     articulations: Vec<Articulation>,
     is_rest: bool,
@@ -745,22 +751,45 @@ pub async fn new_score(
 }
 
 #[tauri::command]
-pub async fn open_score(app: AppHandle, state: State<'_, AppState>) -> Reply<Option<Edited>> {
-    if !confirm_discard(&app, &state) {
-        return Ok(None);
-    }
+pub async fn open_score(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Reply<Option<OpenScoreResult>> {
     let Some(picked) = app
         .dialog()
         .file()
         .add_filter("Notula score", &[notula_format::EXTENSION])
+        .add_filter("MusicXML score", &["musicxml", "xml", "mxl"])
         .blocking_pick_file()
     else {
         return Ok(None);
     };
     let path = picked.into_path().map_err(text)?;
-    let score = notula_format::load(&path).map_err(text)?;
+    let is_musicxml = path.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("musicxml")
+            || extension.eq_ignore_ascii_case("xml")
+            || extension.eq_ignore_ascii_case("mxl")
+    });
+    let (score, unsupported) = if is_musicxml {
+        let imported = notula_format::musicxml::import_file(&path).map_err(text)?;
+        (imported.score, imported.unsupported)
+    } else if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(notula_format::EXTENSION))
+    {
+        (notula_format::load(&path).map_err(text)?, Vec::new())
+    } else {
+        return Err("Unsupported score file extension.".to_owned());
+    };
+    if !confirm_discard(&app, &state) {
+        return Ok(None);
+    }
     let doc = Document::from_score(score);
-    Ok(Some(replace_document(&app, &state, doc, Some(path))))
+    let native_path = (!is_musicxml).then_some(path);
+    Ok(Some(OpenScoreResult {
+        edited: replace_document(&app, &state, doc, native_path),
+        unsupported,
+    }))
 }
 
 /// Saves to the current file, or asks for one; returns `None` when the user cancelled.
@@ -810,7 +839,7 @@ pub async fn export_score(
     app: AppHandle,
     state: State<'_, AppState>,
     format: String,
-) -> Reply<Option<()>> {
+) -> Reply<Option<Vec<String>>> {
     let format = ExportFormat::parse(&format)?;
     let Some(picked) = app
         .dialog()
@@ -829,9 +858,14 @@ pub async fn export_score(
         path.set_extension(format.extension());
     }
     let session = state.lock();
+    if matches!(format, ExportFormat::MusicXml) {
+        return notula_format::musicxml::export_file(session.doc.score(), &path)
+            .map(Some)
+            .map_err(text);
+    }
     let render_list = notula_layout::layout(session.doc.score(), &LayoutOptions { width: 80.0 });
     export_render_list(&render_list, format, &path)?;
-    Ok(Some(()))
+    Ok(Some(Vec::new()))
 }
 
 #[tauri::command]

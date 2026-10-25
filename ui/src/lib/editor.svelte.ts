@@ -175,8 +175,11 @@ class Editor {
     await this.refreshPlaybackStatus();
   }
 
-  async exportScore(format: "pdf" | "png" | "svg") {
-    await this.run(() => api.exportScore(format));
+  async exportScore(format: "pdf" | "png" | "svg" | "musicxml") {
+    const unsupported = await this.run(() => api.exportScore(format));
+    if (unsupported?.length) {
+      this.message = `Export omitted unsupported features: ${unsupported.join(", ")}`;
+    }
   }
 
   async selectEvent(id: number) {
@@ -591,9 +594,13 @@ class Editor {
   }
 
   async open() {
-    const edited = await this.run(() => api.openScore());
-    if (edited) this.insertHistory = [];
-    this.apply(edited ?? null, true);
+    const result = await this.run(() => api.openScore());
+    if (!result) return;
+    this.insertHistory = [];
+    this.apply(result.edited, true);
+    if (result.unsupported.length) {
+      this.message = `Imported with unsupported features: ${result.unsupported.join(", ")}`;
+    }
   }
 
   async save(saveAs = false) {

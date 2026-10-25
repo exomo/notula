@@ -61,6 +61,11 @@ export interface Edited {
   restored_insert: boolean;
 }
 
+export interface OpenScoreResult {
+  edited: Edited;
+  unsupported: string[];
+}
+
 export interface PitchEdited {
   edited: Edited;
   pitch: Pitch;
@@ -198,9 +203,10 @@ export const api = {
   updateScoreProperties: (update: ScorePropertiesUpdate) =>
     invoke<Edited>("update_score_properties", { update }),
   newScore: (setup: ScoreSetup) => invoke<Edited | null>("new_score", { setup }),
-  openScore: () => invoke<Edited | null>("open_score"),
+  openScore: () => invoke<OpenScoreResult | null>("open_score"),
   saveScore: (saveAs: boolean) => invoke<Status | null>("save_score", { saveAs }),
-  exportScore: (format: "pdf" | "png" | "svg") => invoke<void | null>("export_score", { format }),
+  exportScore: (format: "pdf" | "png" | "svg" | "musicxml") =>
+    invoke<string[] | null>("export_score", { format }),
   selectSoundfont: () => invoke<string | null>("select_soundfont"),
   restoreSoundfont: () => invoke<string | null>("restore_soundfont"),
   playScore: () => invoke<void>("play_score"),

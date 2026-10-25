@@ -102,7 +102,7 @@
 
   function exportChanged(event: Event) {
     const select = event.currentTarget as HTMLSelectElement;
-    const format = select.value as "pdf" | "png" | "svg" | "";
+    const format = select.value as "pdf" | "png" | "svg" | "musicxml" | "";
     select.value = "";
     if (format) {
       fileMenuOpen = false;
@@ -319,6 +319,7 @@
       <option value="pdf">PDF</option>
       <option value="png">PNG image</option>
       <option value="svg">SVG image</option>
+      <option value="musicxml">MusicXML score</option>
     </select>
   </div>
 {/if}
