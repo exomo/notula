@@ -4,7 +4,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use noten_layout::{LayoutOptions, RenderList};
 use noten_model::edit::{self, Cursor};
 use noten_model::{
-    Document, Duration, EventId, KeySignature, Pitch, Step, TimeSignature, TimeSignatureDisplay,
+    Document, Duration, EventId, EventKind, KeySignature, Pitch, Step, TimeSignature,
+    TimeSignatureDisplay,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
@@ -46,6 +47,44 @@ fn text(error: impl ToString) -> String {
     error.to_string()
 }
 
+fn pitch_for_chord_position(position: Pitch, pitches: &[Pitch]) -> Pitch {
+    pitches
+        .iter()
+        .copied()
+        .find(|pitch| pitch.diatonic_index() == position.diatonic_index())
+        .unwrap_or(position)
+}
+
+fn chord_pitch_at_position(position: Pitch, pitches: &[Pitch]) -> Option<Pitch> {
+    pitches
+        .iter()
+        .copied()
+        .find(|pitch| pitch.diatonic_index() == position.diatonic_index())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{chord_pitch_at_position, pitch_for_chord_position};
+    use noten_model::{Pitch, Step};
+
+    #[test]
+    fn chord_hit_uses_existing_pitch_accidental_at_the_staff_position() {
+        let key_pitch = Pitch::new(Step::F, 1, 4);
+        let natural_pitch = Pitch::new(Step::F, 0, 4);
+
+        assert_eq!(
+            pitch_for_chord_position(key_pitch, &[natural_pitch]),
+            natural_pitch
+        );
+        assert_eq!(
+            chord_pitch_at_position(key_pitch, &[natural_pitch]),
+            Some(natural_pitch)
+        );
+        assert_eq!(chord_pitch_at_position(key_pitch, &[]), None);
+        assert_eq!(pitch_for_chord_position(key_pitch, &[]), key_pitch);
+    }
+}
+
 /// What the UI needs after a change. A `None` cursor or selection means "unchanged".
 #[derive(Serialize)]
 pub struct Edited {
@@ -55,6 +94,12 @@ pub struct Edited {
     inserted: Option<EventId>,
     undo_cursor: Option<Cursor>,
     restored_insert: bool,
+}
+
+#[derive(Serialize)]
+pub struct PitchEdited {
+    edited: Edited,
+    pitch: Pitch,
 }
 
 pub fn update_title(app: &AppHandle, session: &Session) {
@@ -120,6 +165,7 @@ pub fn render_score(state: State<AppState>, width: f32) -> RenderList {
 pub struct HitInfo {
     cursor: Cursor,
     pitch: Pitch,
+    chord_pitch: Option<Pitch>,
     note: Option<EventId>,
 }
 
@@ -162,10 +208,26 @@ pub fn hit_test(
     } else {
         edit::cursor_at_staff_hit(score, cursor)?
     };
+    let note = edit::note_at_cursor(score, cursor);
+    let pitches = note
+        .and_then(|id| edit::locate(score, id))
+        .and_then(|located| {
+            let staff = score.staff(located.cursor.staff).ok()?;
+            let event = staff.measures[located.cursor.measure].voices[located.cursor.voice]
+                .events
+                .get(located.index)?;
+            match &event.kind {
+                EventKind::Chord { pitches, .. } => Some(pitches.as_slice()),
+                EventKind::Rest => None,
+            }
+        });
     Some(HitInfo {
         cursor,
-        pitch: hit.pitch,
-        note: edit::note_at_cursor(score, cursor),
+        pitch: pitches.map_or(hit.pitch, |pitches| {
+            pitch_for_chord_position(hit.pitch, pitches)
+        }),
+        chord_pitch: pitches.and_then(|pitches| chord_pitch_at_position(hit.pitch, pitches)),
+        note,
     })
 }
 
@@ -223,9 +285,11 @@ pub fn enter_step(
     step: Step,
     duration: Duration,
     hold_cursor: bool,
+    alter: Option<i8>,
 ) -> Reply<Edited> {
     let mut session = state.lock();
-    let entry = edit::enter_step(&mut session.doc, cursor, step, duration).map_err(text)?;
+    let entry = edit::enter_step_with_alter(&mut session.doc, cursor, step, duration, alter)
+        .map_err(text)?;
     Ok(finish_entry(&app, &session, cursor, entry, hold_cursor))
 }
 
@@ -275,6 +339,24 @@ pub fn transpose_semitones(
 }
 
 #[tauri::command]
+pub fn transpose_chord_pitch(
+    app: AppHandle,
+    state: State<AppState>,
+    event: EventId,
+    pitch: Pitch,
+    semitones: i8,
+) -> Reply<PitchEdited> {
+    let mut session = state.lock();
+    let pitch =
+        edit::transpose_chord_pitch(&mut session.doc, event, pitch, semitones).map_err(text)?;
+    let cursor = cursor_of(&session, event);
+    Ok(PitchEdited {
+        edited: finish(&app, &session, cursor, Some(event)),
+        pitch,
+    })
+}
+
+#[tauri::command]
 pub fn transpose_octaves(
     app: AppHandle,
     state: State<AppState>,
@@ -306,9 +388,10 @@ pub fn add_note_above(
     state: State<AppState>,
     event: EventId,
     step: Step,
+    alter: Option<i8>,
 ) -> Reply<Edited> {
     let mut session = state.lock();
-    edit::add_note_above(&mut session.doc, event, step).map_err(text)?;
+    edit::add_note_above_with_alter(&mut session.doc, event, step, alter).map_err(text)?;
     let cursor = cursor_of(&session, event);
     Ok(finish(&app, &session, cursor, Some(event)))
 }

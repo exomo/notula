@@ -32,9 +32,9 @@
     {#if editor.message}
       <span class="error">{editor.message}</span>
     {:else if editor.inputMode}
-      <span>A–G enter notes · 1–7 duration · . dot · 0 rest · ←/→ move cursor · Alt+arrows move by measure/staff · Shift+click adds to chord · Esc leaves</span>
+      <span>A–G enter notes · 1–7 duration · . dot · 0 rest · ←/→ move cursor · Alt+↑/↓ changes voice, then staff · Ctrl+wheel zooms · click a chord tone to target it · ↑/↓ moves target tone or chord · Ctrl+↑/↓ moves an octave · Shift+click adds to chord · Esc leaves</span>
     {:else}
-      <span>Click a note to select it · ←/→ move cursor · Alt+arrows move by measure/staff · N starts note input · ↑/↓ moves a note · Delete removes it</span>
+      <span>Click a note to select it; click a chord tone to target it · ←/→ move cursor · Alt+↑/↓ changes voice, then staff · Ctrl+wheel zooms · ↑/↓ moves target tone or chord · Ctrl+↑/↓ moves an octave · Delete removes it</span>
     {/if}
   </footer>
 </main>
@@ -48,8 +48,9 @@
   main {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
-    height: 100%;
+    height: 100dvh;
     min-height: 0;
+    overflow: hidden;
   }
 
   footer {

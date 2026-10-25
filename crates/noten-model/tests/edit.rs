@@ -261,6 +261,26 @@ fn toggling_chord_pitches_adds_and_removes_without_clearing_the_chord() {
 }
 
 #[test]
+fn transposing_one_chord_tone_leaves_the_other_tones_unchanged() {
+    let (mut doc, cursor) = setup(1);
+    let event = enter_note(&mut doc, cursor, c4(), dur(NoteValue::Quarter))
+        .unwrap()
+        .event;
+    let e4 = Pitch::new(Step::E, 0, 4);
+    edit::add_pitch_to_chord(&mut doc, event, e4).unwrap();
+
+    let changed = edit::transpose_chord_pitch(&mut doc, event, e4, 1).unwrap();
+
+    assert_eq!(changed, Pitch::new(Step::F, 0, 4));
+    let EventKind::Chord { pitches, .. } = event_at(&doc, cursor, 0).kind else {
+        panic!("expected a chord");
+    };
+    assert!(pitches.contains(&c4()));
+    assert!(pitches.contains(&changed));
+    assert!(!pitches.contains(&e4));
+}
+
+#[test]
 fn cursor_reaches_incomplete_measure_end_before_empty_measure_and_distant_event() {
     let (mut doc, cursor) = setup(3);
     let first = enter_note(&mut doc, cursor, c4(), dur(NoteValue::Quarter))
@@ -1008,6 +1028,44 @@ fn letters_follow_the_key_signature() {
     .unwrap();
     enter_step(&mut doc, cursor, Step::F, dur(NoteValue::Quarter)).unwrap();
     assert_eq!(events(&doc, cursor.staff, 0)[0].1.unwrap().alter, 1);
+}
+
+#[test]
+fn natural_override_enters_a_note_against_the_key_signature() {
+    let (mut doc, cursor) = setup(1);
+    doc.execute(Command::SetKeySignature {
+        measure: 0,
+        key_signature: KeySignature { fifths: 1 },
+    })
+    .unwrap();
+
+    edit::enter_step_with_alter(&mut doc, cursor, Step::F, dur(NoteValue::Quarter), Some(0))
+        .unwrap();
+
+    assert_eq!(
+        events(&doc, cursor.staff, 0)[0].1.unwrap(),
+        Pitch::new(Step::F, 0, 4)
+    );
+}
+
+#[test]
+fn natural_override_adds_a_natural_pitch_to_a_chord() {
+    let (mut doc, cursor) = setup(1);
+    doc.execute(Command::SetKeySignature {
+        measure: 0,
+        key_signature: KeySignature { fifths: 1 },
+    })
+    .unwrap();
+    let event = enter_note(&mut doc, cursor, c4(), dur(NoteValue::Quarter))
+        .unwrap()
+        .event;
+
+    edit::add_note_above_with_alter(&mut doc, event, Step::F, Some(0)).unwrap();
+
+    let EventKind::Chord { pitches, .. } = event_at(&doc, cursor, 0).kind else {
+        panic!("expected a chord");
+    };
+    assert!(pitches.contains(&Pitch::new(Step::F, 0, 4)));
 }
 
 #[test]

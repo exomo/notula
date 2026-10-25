@@ -355,6 +355,16 @@ pub fn enter_step(
     step: Step,
     duration: Duration,
 ) -> Result<Entry, ModelError> {
+    enter_step_with_alter(doc, cursor, step, duration, None)
+}
+
+pub fn enter_step_with_alter(
+    doc: &mut Document,
+    cursor: Cursor,
+    step: Step,
+    duration: Duration,
+    alter: Option<i8>,
+) -> Result<Entry, ModelError> {
     let score = doc.score();
     let key = score
         .measures
@@ -365,7 +375,7 @@ pub fn enter_step(
     let octave = (reference - i16::from(step.index()) + 3).div_euclid(7);
     let pitch = Pitch::new(
         step,
-        key.alter(step),
+        alter.unwrap_or_else(|| key.alter(step)),
         i8::try_from(octave).unwrap_or(i8::MAX),
     );
     enter_note(doc, cursor, pitch, duration)
@@ -444,6 +454,36 @@ pub fn transpose_semitones(
     })
 }
 
+pub fn transpose_chord_pitch(
+    doc: &mut Document,
+    id: EventId,
+    pitch: Pitch,
+    semitones: i8,
+) -> Result<Pitch, ModelError> {
+    let (located, event) = find(doc.score(), id)?;
+    let EventKind::Chord { pitches, tied } = &event.kind else {
+        return Err(ModelError::Invalid("a rest has no pitch"));
+    };
+    let index = pitches
+        .iter()
+        .position(|&existing| existing == pitch)
+        .ok_or(ModelError::Invalid("pitch is not part of the chord"))?;
+    let changed = Pitch::from_midi(pitch.midi() + i16::from(semitones), semitones > 0)
+        .ok_or(ModelError::Invalid("pitch is outside the MIDI range"))?;
+    let mut pitches = pitches.clone();
+    pitches[index] = changed;
+    let kind = EventKind::Chord {
+        pitches,
+        tied: *tied,
+    };
+    doc.execute(Command::ReplaceEvent {
+        at: located.cursor.at(),
+        index: located.index,
+        event: Event { kind, ..event },
+    })?;
+    Ok(changed)
+}
+
 pub fn transpose_octaves(doc: &mut Document, id: EventId, octaves: i8) -> Result<(), ModelError> {
     edit_pitches(doc, id, |pitch| {
         let moved = Pitch {
@@ -465,6 +505,15 @@ pub fn set_alter(doc: &mut Document, id: EventId, alter: i8) -> Result<(), Model
 
 /// Stacks the given letter on top of a chord, in the first octave above its highest note.
 pub fn add_note_above(doc: &mut Document, id: EventId, step: Step) -> Result<(), ModelError> {
+    add_note_above_with_alter(doc, id, step, None)
+}
+
+pub fn add_note_above_with_alter(
+    doc: &mut Document,
+    id: EventId,
+    step: Step,
+    alter: Option<i8>,
+) -> Result<(), ModelError> {
     let (located, event) = find(doc.score(), id)?;
     let EventKind::Chord { pitches, tied } = &event.kind else {
         return Err(ModelError::Invalid("a rest cannot hold a chord"));
@@ -478,7 +527,7 @@ pub fn add_note_above(doc: &mut Document, id: EventId, step: Step) -> Result<(),
     let key = doc.score().measures[located.cursor.measure].key_signature;
     let pitch = Pitch::new(
         step,
-        key.alter(step),
+        alter.unwrap_or_else(|| key.alter(step)),
         i8::try_from(target.div_euclid(7)).unwrap_or(i8::MAX),
     );
     pitch.validate()?;

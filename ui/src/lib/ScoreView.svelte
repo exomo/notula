@@ -5,11 +5,31 @@
 
   let clientWidth = $state(0);
   let list = $state<RenderList | null>(null);
+  let view = $state<HTMLDivElement | null>(null);
   let svg = $state<SVGSVGElement | null>(null);
   let caretElement = $state<SVGLineElement | null>(null);
   let playbackCaretElement = $state<SVGLineElement | null>(null);
   let error = $state<string | null>(null);
   let request = 0;
+  let caretScrollFrame = 0;
+  let expectedScroll: { left: number; top: number; expires: number } | null = null;
+
+  $effect(() => {
+    editor.setNoteEditor(svg);
+  });
+
+  $effect(() => {
+    const element = view;
+    if (!element) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      if (event.deltaY < 0) editor.zoomIn();
+      else if (event.deltaY > 0) editor.zoomOut();
+    };
+    element.addEventListener("wheel", onWheel, { passive: false });
+    return () => element.removeEventListener("wheel", onWheel);
+  });
 
   $effect(() => {
     editor.layoutWidth = clientWidth / editor.zoom;
@@ -72,15 +92,81 @@
     return { x, area };
   });
 
+  function keepCaretVisible(element: SVGLineElement | null) {
+    if (!element || !view) return;
+    const viewport = view.getBoundingClientRect();
+    const caretBounds = element.getBoundingClientRect();
+    const margin = 12;
+    let scrollTop = view.scrollTop;
+    let scrollLeft = view.scrollLeft;
+    if (caretBounds.top < viewport.top + margin) {
+      scrollTop -= viewport.top + margin - caretBounds.top;
+    } else if (caretBounds.bottom > viewport.bottom - margin) {
+      scrollTop += caretBounds.bottom - (viewport.bottom - margin);
+    }
+    if (caretBounds.left < viewport.left + margin) {
+      scrollLeft -= viewport.left + margin - caretBounds.left;
+    } else if (caretBounds.right > viewport.right - margin) {
+      scrollLeft += caretBounds.right - (viewport.right - margin);
+    }
+    if (scrollTop !== view.scrollTop || scrollLeft !== view.scrollLeft) {
+      view.scrollTop = scrollTop;
+      view.scrollLeft = scrollLeft;
+      expectedScroll = {
+        top: view.scrollTop,
+        left: view.scrollLeft,
+        expires: performance.now() + 250,
+      };
+    }
+  }
+
+  function scheduleCaretVisibility() {
+    if (caretScrollFrame) cancelAnimationFrame(caretScrollFrame);
+    caretScrollFrame = requestAnimationFrame(() => {
+      caretScrollFrame = 0;
+      keepCaretVisible(caretElement);
+    });
+  }
+
+  function onViewScroll() {
+    if (!caret || !view || !caretElement) return;
+    const isExpected =
+      expectedScroll !== null &&
+      performance.now() <= expectedScroll.expires &&
+      Math.abs(view.scrollTop - expectedScroll.top) < 1 &&
+      Math.abs(view.scrollLeft - expectedScroll.left) < 1;
+    expectedScroll = null;
+    if (isExpected) return;
+    if (!editor.inputMode) return;
+
+    const viewport = view.getBoundingClientRect();
+    const caretBounds = caretElement.getBoundingClientRect();
+    const margin = 12;
+    if (
+      caretBounds.top < viewport.top + margin ||
+      caretBounds.bottom > viewport.bottom - margin ||
+      caretBounds.left < viewport.left + margin ||
+      caretBounds.right > viewport.right - margin
+    ) {
+      editor.inputMode = false;
+    }
+  }
+
   $effect(() => {
-    // Keep the insertion point visible while entering notes.
-    if (editor.inputMode && caret) caretElement?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (!caret) return;
+    caret.x;
+    caret.area;
+    editor.cursor?.tick;
+    scheduleCaretVisibility();
   });
 
   $effect(() => {
-    if (editor.playbackPlaying && playbackCaret) {
-      playbackCaretElement?.scrollIntoView({ block: "nearest", inline: "nearest" });
-    }
+    if (editor.inputMode && caret) scheduleCaretVisibility();
+  });
+
+  $effect(() => {
+    if (editor.playbackPlaying && playbackCaret)
+      requestAnimationFrame(() => keepCaretVisible(playbackCaretElement));
   });
 
   function onclick(event: MouseEvent) {
@@ -97,7 +183,7 @@
   }
 </script>
 
-<div class="view" bind:clientWidth>
+<div class="view" bind:this={view} bind:clientWidth onscroll={onViewScroll}>
   {#if error}
     <p class="error">{error}</p>
   {:else if list}
@@ -106,6 +192,7 @@
       bind:this={svg}
       class="paper"
       class:input={editor.inputMode}
+      tabindex="-1"
       width={list.width * editor.zoom}
       height={list.height * editor.zoom}
       viewBox="0 0 {list.width} {list.height}"
@@ -164,6 +251,7 @@
             class="glyph"
             class:selected
             class:active-voice={editor.cursor !== null && item.staff === editor.cursor.staff && item.voice === editor.cursor.voice}
+            class:selected-tone={editor.selectedTone !== null && editor.selectedTone.event === item.event && Math.abs(item.y - editor.selectedTone.y) < 0.01}
             data-event={item.event}
             x={item.x}
             y={item.y}
@@ -192,6 +280,8 @@
 <style>
   .view {
     height: 100%;
+    min-height: 0;
+    min-width: 0;
     overflow: auto;
     scrollbar-gutter: stable;
     background: #d8d8d8;
@@ -239,6 +329,10 @@
   .glyph {
     font-family: "Bravura";
     user-select: none;
+  }
+
+  .glyph.selected-tone {
+    fill: #c24d2c;
   }
 
   .staff-highlight {

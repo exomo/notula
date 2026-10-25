@@ -29,6 +29,7 @@ pub fn run() {
             commands::set_duration,
             commands::delete_event,
             commands::transpose_semitones,
+            commands::transpose_chord_pitch,
             commands::transpose_octaves,
             commands::set_alter,
             commands::add_note_above,

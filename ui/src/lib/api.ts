@@ -49,9 +49,15 @@ export interface Edited {
   restored_insert: boolean;
 }
 
+export interface PitchEdited {
+  edited: Edited;
+  pitch: Pitch;
+}
+
 export interface HitInfo {
   cursor: Cursor;
   pitch: Pitch;
+  chord_pitch: Pitch | null;
   note: number | null;
 }
 
@@ -116,8 +122,13 @@ export const api = {
     invoke<CursorPosition | null>("move_cursor", { cursor, selected, forward, movement }),
   enterNote: (cursor: Cursor, pitch: Pitch, duration: Duration, holdCursor = false) =>
     invoke<Edited>("enter_note", { cursor, pitch, duration, holdCursor }),
-  enterStep: (cursor: Cursor, step: Step, duration: Duration, holdCursor = false) =>
-    invoke<Edited>("enter_step", { cursor, step, duration, holdCursor }),
+  enterStep: (
+    cursor: Cursor,
+    step: Step,
+    duration: Duration,
+    holdCursor = false,
+    alter: number | null = null,
+  ) => invoke<Edited>("enter_step", { cursor, step, duration, holdCursor, alter }),
   enterRest: (cursor: Cursor, duration: Duration) =>
     invoke<Edited>("enter_rest", { cursor, duration }),
   setDuration: (event: number, duration: Duration) =>
@@ -125,11 +136,13 @@ export const api = {
   deleteEvent: (event: number) => invoke<Edited>("delete_event", { event }),
   transposeSemitones: (event: number, semitones: number) =>
     invoke<Edited>("transpose_semitones", { event, semitones }),
+  transposeChordPitch: (event: number, pitch: Pitch, semitones: number) =>
+    invoke<PitchEdited>("transpose_chord_pitch", { event, pitch, semitones }),
   transposeOctaves: (event: number, octaves: number) =>
     invoke<Edited>("transpose_octaves", { event, octaves }),
   setAlter: (event: number, alter: number) => invoke<Edited>("set_alter", { event, alter }),
-  addNoteAbove: (event: number, step: Step) =>
-    invoke<Edited>("add_note_above", { event, step }),
+  addNoteAbove: (event: number, step: Step, alter: number | null = null) =>
+    invoke<Edited>("add_note_above", { event, step, alter }),
   addPitchToChord: (event: number, pitch: Pitch) =>
     invoke<Edited>("add_pitch_to_chord", { event, pitch }),
   removePitchFromChord: (event: number, pitch: Pitch) =>

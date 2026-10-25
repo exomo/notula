@@ -60,6 +60,14 @@
     }
   }
 
+  function returnFocusToEditor(event: MouseEvent) {
+    if (!(event.target as Element).closest("button")) return;
+    requestAnimationFrame(() => {
+      if (fileMenuOpen || document.querySelector("dialog[open]")) return;
+      editor.focusNoteEditor();
+    });
+  }
+
   function runFileAction(action: () => void) {
     fileMenuOpen = false;
     action();
@@ -92,7 +100,13 @@
 
 <svelte:window onclick={onWindowClick} />
 
-<header role="toolbar" aria-label="Score editor toolbar" tabindex="0" onkeydown={onFileKeydown}>
+<header
+  role="toolbar"
+  aria-label="Score editor toolbar"
+  tabindex="0"
+  onkeydown={onFileKeydown}
+  onclick={returnFocusToEditor}
+>
   <div class="group file-menu">
     <button
       bind:this={fileMenuTrigger}
@@ -161,9 +175,11 @@
     {#each ACCIDENTALS as accidental}
       <button
         class="smufl"
+        class:active={editor.inputMode && editor.entryAlter === accidental.alter}
+        aria-pressed={editor.inputMode && editor.entryAlter === accidental.alter}
         aria-label={accidental.label}
         title={accidental.label}
-        disabled={!hasSelection}
+        disabled={!hasSelection && !editor.inputMode}
         onclick={() => editor.setAlter(accidental.alter)}>{accidental.glyph}</button
       >
     {/each}
