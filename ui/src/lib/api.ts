@@ -29,6 +29,8 @@ export interface Cursor {
   tick: number;
 }
 
+export type TimeSignatureDisplay = "numeric" | "common" | "alla_breve";
+
 export interface Status {
   can_undo: boolean;
   can_redo: boolean;
@@ -134,10 +136,18 @@ export const api = {
     invoke<Edited>("remove_pitch_from_chord", { event, pitch }),
   togglePitchInChord: (event: number, pitch: Pitch) =>
     invoke<Edited>("toggle_pitch_in_chord", { event, pitch }),
-  insertMeasure: (after: number | null, cursor: Cursor | null) =>
-    invoke<Edited>("insert_measure", { after, cursor }),
-  setTimeSignature: (measure: number, numerator: number, denominator: number) =>
-    invoke<Edited>("set_time_signature", { measure, numerator, denominator }),
+  insertMeasure: (measure: number, before: boolean, cursor: Cursor) =>
+    invoke<Edited>("insert_measure", { measure, before, cursor }),
+  removeMeasure: (measure: number, cursor: Cursor) =>
+    invoke<Edited>("remove_measure", { measure, cursor }),
+  setTimeSignature: (
+    measure: number,
+    numerator: number,
+    denominator: number,
+    display: TimeSignatureDisplay,
+  ) => invoke<Edited>("set_time_signature", { measure, numerator, denominator, display }),
+  setKeySignature: (measure: number, fifths: number) =>
+    invoke<Edited>("set_key_signature", { measure, fifths }),
   togglePickup: (measure: number, cursor: Cursor | null) =>
     invoke<Edited>("toggle_pickup", { measure, cursor }),
   undo: (

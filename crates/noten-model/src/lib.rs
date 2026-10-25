@@ -11,7 +11,9 @@ mod pitch;
 mod score;
 
 pub use command::Command;
-pub use duration::{Duration, MAX_DOTS, NoteValue, TICKS_PER_QUARTER, TimeSignature};
+pub use duration::{
+    Duration, MAX_DOTS, NoteValue, TICKS_PER_QUARTER, TimeSignature, TimeSignatureDisplay,
+};
 pub use error::ModelError;
 pub use history::Document;
 pub use ids::{EventId, PartId, StaffId};

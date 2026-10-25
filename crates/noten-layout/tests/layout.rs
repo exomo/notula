@@ -1,11 +1,13 @@
 use noten_layout::{Item, LayoutOptions, RenderList, Shape, hit_test, layout};
 use noten_model::{
     Clef, Command, Document, Duration, Event, EventId, EventKind, KeySignature, NoteValue, Pitch,
-    StaffId, Step, TimeSignature, VoiceLocation,
+    StaffId, Step, TimeSignature, TimeSignatureDisplay, VoiceLocation,
 };
 
 const STAFF_LINE: f32 = 0.13;
 const SHARP: char = '\u{E262}';
+const FLAT: char = '\u{E260}';
+const NATURAL: char = '\u{E261}';
 const BLACK_HEAD: char = '\u{E0A4}';
 const HALF_HEAD: char = '\u{E0A3}';
 
@@ -389,6 +391,111 @@ fn key_signature_is_repeated_at_each_system_start() {
         })
         .count();
     assert_eq!(sharps, 2 * systems);
+}
+
+#[test]
+fn key_changes_cancel_removed_accidentals_before_drawing_the_new_signature() {
+    for (new_fifths, expected_naturals, expected_flats) in [(-3, 1, 3), (0, 1, 0)] {
+        let mut b = Builder::new(&[("", &[Clef::Treble])]);
+        b.measures(2);
+        for (measure, fifths) in [(0, 1), (1, new_fifths)] {
+            b.doc
+                .execute(Command::SetKeySignature {
+                    measure,
+                    key_signature: KeySignature { fifths },
+                })
+                .unwrap();
+        }
+        let list = b.layout(120.0);
+        let first = list.areas.iter().find(|area| area.measure == 0).unwrap();
+        let changed = list.areas.iter().find(|area| area.measure == 1).unwrap();
+        let glyphs: Vec<_> = list
+            .items
+            .iter()
+            .filter_map(|item| match item.shape {
+                Shape::Glyph { x, glyph, .. } if x >= first.x_end && x < changed.x_start => {
+                    Some(glyph)
+                }
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            glyphs.iter().filter(|&&glyph| glyph == NATURAL).count(),
+            expected_naturals
+        );
+        assert_eq!(
+            glyphs.iter().filter(|&&glyph| glyph == FLAT).count(),
+            expected_flats
+        );
+        assert_eq!(glyphs.iter().filter(|&&glyph| glyph == SHARP).count(), 0);
+    }
+}
+
+#[test]
+fn common_and_cut_time_render_their_symbols_instead_of_numeric_digits() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    b.measures(2);
+    b.doc
+        .execute(Command::Batch {
+            commands: vec![
+                Command::SetTimeSignatureDisplay {
+                    measure: 0,
+                    display: TimeSignatureDisplay::Common,
+                },
+                Command::SetTimeSignature {
+                    measure: 1,
+                    time_signature: TimeSignature {
+                        numerator: 2,
+                        denominator: 2,
+                    },
+                },
+                Command::SetTimeSignatureDisplay {
+                    measure: 1,
+                    display: TimeSignatureDisplay::AllaBreve,
+                },
+            ],
+        })
+        .unwrap();
+
+    let list = b.layout(100.0);
+    let common = list
+        .items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.shape,
+                Shape::Glyph {
+                    glyph: '\u{E08A}',
+                    ..
+                }
+            )
+        })
+        .count();
+    let cut = list
+        .items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.shape,
+                Shape::Glyph {
+                    glyph: '\u{E08B}',
+                    ..
+                }
+            )
+        })
+        .count();
+    let numeric_digits = list
+        .items
+        .iter()
+        .filter(|item| {
+            matches!(item.shape, Shape::Glyph { glyph, .. } if ('\u{E080}'..='\u{E089}').contains(&glyph))
+        })
+        .count();
+
+    assert_eq!(common, 1);
+    assert_eq!(cut, 1);
+    assert_eq!(numeric_digits, 0);
 }
 
 #[test]

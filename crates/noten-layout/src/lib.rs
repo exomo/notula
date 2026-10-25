@@ -90,10 +90,18 @@ fn prefix_for(score: &Score, measure: usize, first_in_system: bool) -> Prefix {
     let info = score.measures[measure];
     let previous = measure.checked_sub(1).map(|p| score.measures[p]);
     let key_changed = previous.is_some_and(|p| p.key_signature != info.key_signature);
-    let time_changed = previous.is_none_or(|p| p.time_signature != info.time_signature);
+    let time_changed = previous.is_none_or(|p| {
+        p.time_signature != info.time_signature
+            || p.time_signature_display != info.time_signature_display
+    });
     Prefix {
         clef: first_in_system,
-        key: info.key_signature.fifths != 0 && (first_in_system || key_changed),
+        key: info.key_signature.fifths != 0 && first_in_system || key_changed,
+        cancel_key: if key_changed {
+            previous.map(|previous| previous.key_signature.fifths)
+        } else {
+            None
+        },
         time: time_changed,
     }
 }
@@ -385,6 +393,8 @@ impl Layouter<'_> {
                     measure,
                     next_measure: system.measures.clone().nth(offset + 1),
                     time_signature: info.time_signature,
+                    time_signature_display: info.time_signature_display,
+                    key_fifths: info.key_signature.fifths,
                     x_start: body_start,
                     x_end: body_end,
                     y_top: y_top + row,

@@ -4,7 +4,8 @@ use noten_model::edit::{
 };
 use noten_model::{
     Articulation, Clef, Command, Document, Duration, Dynamic, EventKind, Hairpin, KeySignature,
-    MeasureInfo, ModelError, NoteValue, Pitch, Score, StaffId, Step, TimeSignature, VoiceLocation,
+    MeasureInfo, ModelError, NoteValue, Pitch, Score, StaffId, Step, TimeSignature,
+    TimeSignatureDisplay, VoiceLocation,
 };
 
 fn dur(value: NoteValue) -> Duration {
@@ -706,6 +707,99 @@ fn a_time_signature_change_lasts_until_the_next_change() {
 }
 
 #[test]
+fn common_and_alla_breve_styles_change_the_meter_and_undo_as_one_edit() {
+    let (mut doc, _) = setup(5);
+    edit::change_time_signature_with_display(
+        &mut doc,
+        3,
+        TimeSignature {
+            numerator: 2,
+            denominator: 2,
+        },
+        TimeSignatureDisplay::AllaBreve,
+    )
+    .unwrap();
+    edit::change_time_signature_with_display(
+        &mut doc,
+        1,
+        TimeSignature::COMMON,
+        TimeSignatureDisplay::Common,
+    )
+    .unwrap();
+
+    assert_eq!(
+        doc.score().measures[0].time_signature_display,
+        TimeSignatureDisplay::Numeric
+    );
+    assert_eq!(
+        doc.score().measures[1].time_signature,
+        TimeSignature::COMMON
+    );
+    assert_eq!(
+        doc.score().measures[1].time_signature_display,
+        TimeSignatureDisplay::Common
+    );
+    assert_eq!(
+        doc.score().measures[2].time_signature_display,
+        TimeSignatureDisplay::Common
+    );
+    assert_eq!(
+        doc.score().measures[3].time_signature_display,
+        TimeSignatureDisplay::AllaBreve
+    );
+    assert_eq!(
+        doc.score().measures[3].time_signature.ticks_per_measure(),
+        3840
+    );
+
+    assert!(doc.undo().unwrap());
+    assert_eq!(
+        doc.score().measures[1].time_signature_display,
+        TimeSignatureDisplay::Numeric
+    );
+    assert!(doc.undo().unwrap());
+    assert_eq!(
+        doc.score().measures[3].time_signature_display,
+        TimeSignatureDisplay::Numeric
+    );
+    assert_eq!(
+        doc.score().measures[3].time_signature,
+        TimeSignature::COMMON
+    );
+}
+
+#[test]
+fn a_key_signature_change_lasts_until_the_next_change_and_undoes() {
+    let (mut doc, _) = setup(6);
+    doc.execute(Command::SetKeySignature {
+        measure: 3,
+        key_signature: KeySignature { fifths: 4 },
+    })
+    .unwrap();
+
+    edit::change_key_signature(&mut doc, 1, KeySignature { fifths: -2 }).unwrap();
+    assert_eq!(
+        doc.score()
+            .measures
+            .iter()
+            .map(|info| info.key_signature.fifths)
+            .collect::<Vec<_>>(),
+        [0, -2, -2, 4, 0, 0]
+    );
+
+    edit::change_key_signature(&mut doc, 4, KeySignature { fifths: 2 }).unwrap();
+    assert_eq!(doc.score().measures[4].key_signature.fifths, 2);
+    assert_eq!(doc.score().measures[5].key_signature.fifths, 2);
+    assert!(doc.undo().unwrap());
+    assert_eq!(doc.score().measures[4].key_signature.fifths, 0);
+    assert_eq!(doc.score().measures[5].key_signature.fifths, 0);
+    assert_eq!(
+        edit::change_key_signature(&mut doc, 0, KeySignature { fifths: 8 }),
+        Err(ModelError::Invalid("key signature must be within -7..=7"))
+    );
+}
+
+#[test]
 fn a_time_signature_change_must_fit_all_affected_measures() {
     let (mut doc, mut cursor) = setup(4);
     cursor.measure = 3;
@@ -742,6 +836,40 @@ fn inserting_a_measure_follows_the_signature_of_its_section() {
         edit::insert_measure_after(&mut doc, 99),
         Err(ModelError::MeasureOutOfRange(99))
     );
+}
+
+#[test]
+fn inserting_before_the_first_measure_inherits_its_signature() {
+    let (mut doc, _) = setup(1);
+    edit::change_time_signature(&mut doc, 0, time(3, 4)).unwrap();
+
+    edit::insert_measure_at(&mut doc, 0).unwrap();
+
+    assert_eq!(doc.score().measures.len(), 2);
+    assert_eq!(doc.score().measures[0].time_signature, time(3, 4));
+    assert_eq!(doc.score().measures[1].time_signature, time(3, 4));
+    assert!(doc.undo().unwrap());
+    assert_eq!(doc.score().measures.len(), 1);
+}
+
+#[test]
+fn an_empty_trailing_measure_from_note_entry_can_be_removed_and_restored() {
+    let (mut doc, mut cursor) = setup(1);
+    for _ in 0..4 {
+        cursor = enter_note(&mut doc, cursor, c4(), dur(NoteValue::Quarter))
+            .unwrap()
+            .next;
+    }
+    assert_eq!(doc.score().measures.len(), 2);
+    assert!(events(&doc, cursor.staff, 1).is_empty());
+
+    edit::remove_measure(&mut doc, 1).unwrap();
+    assert_eq!(doc.score().measures.len(), 1);
+    assert_eq!(events(&doc, cursor.staff, 0).len(), 4);
+
+    assert!(doc.undo().unwrap());
+    assert_eq!(doc.score().measures.len(), 2);
+    assert!(events(&doc, cursor.staff, 1).is_empty());
 }
 
 #[test]

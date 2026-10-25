@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { TimeSignatureDisplay } from "./api";
   import { editor } from "./editor.svelte";
 
   const DENOMINATORS = [1, 2, 4, 8, 16, 32];
@@ -6,6 +7,7 @@
   let dialog = $state<HTMLDialogElement | null>(null);
   let numerator = $state(4);
   let denominator = $state(4);
+  let display = $state<TimeSignatureDisplay>("numeric");
 
   const measure = $derived(editor.cursor?.measure ?? 0);
 
@@ -13,10 +15,12 @@
     if (!dialog) return;
     if (editor.timeSignatureOpen && !dialog.open) {
       const current = editor.areas.find((a) => a.measure === measure)?.time_signature;
+      const area = editor.areas.find((a) => a.measure === measure);
       if (current) {
         numerator = current.numerator;
         denominator = current.denominator;
       }
+      display = area?.time_signature_display ?? "numeric";
       editor.message = null;
       dialog.showModal();
     } else if (!editor.timeSignatureOpen && dialog.open) {
@@ -26,9 +30,20 @@
 
   const valid = $derived(Number.isInteger(numerator) && numerator >= 1 && numerator <= 32);
 
+  function changeDisplay(value: TimeSignatureDisplay) {
+    display = value;
+    if (value === "common") {
+      numerator = 4;
+      denominator = 4;
+    } else if (value === "alla_breve") {
+      numerator = 2;
+      denominator = 2;
+    }
+  }
+
   async function apply(event: SubmitEvent) {
     event.preventDefault();
-    if (await editor.setTimeSignature(numerator, denominator)) editor.timeSignatureOpen = false;
+    if (await editor.setTimeSignature(numerator, denominator, display)) editor.timeSignatureOpen = false;
   }
 </script>
 
@@ -39,15 +54,26 @@
       Applies from measure {measure + 1} until the next time signature change.
     </p>
 
-    <div class="time">
-      <input type="number" min="1" max="32" bind:value={numerator} aria-label="Beats per measure" />
-      /
-      <select bind:value={denominator} aria-label="Beat unit">
-        {#each DENOMINATORS as d}
-          <option value={d}>{d}</option>
-        {/each}
+    <label>
+      Display
+      <select value={display} onchange={(event) => changeDisplay(event.currentTarget.value as TimeSignatureDisplay)}>
+        <option value="numeric">Numeric</option>
+        <option value="common">Common time (4/4)</option>
+        <option value="alla_breve">Alla breve (2/2)</option>
       </select>
-    </div>
+    </label>
+
+    {#if display === "numeric"}
+      <div class="time">
+        <input type="number" min="1" max="32" bind:value={numerator} aria-label="Beats per measure" />
+        /
+        <select bind:value={denominator} aria-label="Beat unit">
+          {#each DENOMINATORS as d}
+            <option value={d}>{d}</option>
+          {/each}
+        </select>
+      </div>
+    {/if}
 
     {#if editor.message}
       <p class="error">{editor.message}</p>

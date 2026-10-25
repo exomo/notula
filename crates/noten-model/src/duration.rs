@@ -54,6 +54,15 @@ pub struct TimeSignature {
     pub denominator: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeSignatureDisplay {
+    #[default]
+    Numeric,
+    Common,
+    AllaBreve,
+}
+
 impl TimeSignature {
     pub const COMMON: TimeSignature = TimeSignature {
         numerator: 4,

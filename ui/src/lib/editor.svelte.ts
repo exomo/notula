@@ -7,6 +7,7 @@ import {
   type PlaybackStatus,
   type Status,
   type Step,
+  type TimeSignatureDisplay,
 } from "./api";
 import type { MeasureArea } from "./render";
 
@@ -50,6 +51,7 @@ class Editor {
   newScoreOpen = $state(false);
   scorePropertiesOpen = $state(false);
   timeSignatureOpen = $state(false);
+  keySignatureOpen = $state(false);
   /** Where measures are on screen, as of the latest layout. */
   areas = $state<MeasureArea[]>([]);
   playbackPlaying = $state(false);
@@ -72,6 +74,10 @@ class Editor {
 
   get canZoomOut() {
     return this.zoom > MIN_ZOOM;
+  }
+
+  get canDeleteMeasure() {
+    return this.cursor !== null && new Set(this.areas.map((area) => area.measure)).size > 1;
   }
 
   private apply(edited: Edited | null, exactSelection = false) {
@@ -299,20 +305,40 @@ class Editor {
     }
   }
 
-  async insertMeasure() {
+  async insertMeasure(before: boolean) {
     const cursor = this.cursor;
-    this.apply(
-      (await this.run(() => api.insertMeasure(cursor?.measure ?? null, cursor))) ?? null,
-    );
+    if (!cursor) {
+      this.message = "Click on a measure first.";
+      return;
+    }
+    this.apply((await this.run(() => api.insertMeasure(cursor.measure, before, cursor))) ?? null, true);
+  }
+
+  async removeMeasure(measure: number) {
+    const cursor = this.cursor;
+    if (!cursor) return;
+    this.apply((await this.run(() => api.removeMeasure(measure, cursor))) ?? null, true);
   }
 
   /** The time signature is applied from the cursor's measure up to the next change. */
-  async setTimeSignature(numerator: number, denominator: number): Promise<boolean> {
+  async setTimeSignature(
+    numerator: number,
+    denominator: number,
+    display: TimeSignatureDisplay,
+  ): Promise<boolean> {
     const cursor = this.requireCursor();
     if (!cursor) return false;
     const edited = await this.run(() =>
-      api.setTimeSignature(cursor.measure, numerator, denominator),
+      api.setTimeSignature(cursor.measure, numerator, denominator, display),
     );
+    this.apply(edited ?? null);
+    return edited !== undefined;
+  }
+
+  async setKeySignature(fifths: number): Promise<boolean> {
+    const cursor = this.requireCursor();
+    if (!cursor) return false;
+    const edited = await this.run(() => api.setKeySignature(cursor.measure, fifths));
     this.apply(edited ?? null);
     return edited !== undefined;
   }

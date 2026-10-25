@@ -23,6 +23,8 @@
   let fileMenuTrigger = $state<HTMLButtonElement | null>(null);
   let fileMenuPanel = $state<HTMLDivElement | null>(null);
   let fileMenuPosition = $state({ left: 0, top: 0 });
+  let measureDeleteDialog = $state<HTMLDialogElement | null>(null);
+  let pendingDeleteMeasure = $state<number | null>(null);
 
   function toggleFileMenu() {
     if (fileMenuOpen) {
@@ -61,6 +63,20 @@
   function runFileAction(action: () => void) {
     fileMenuOpen = false;
     action();
+  }
+
+  function askDeleteMeasure() {
+    const cursor = editor.cursor;
+    if (!cursor || !editor.canDeleteMeasure) return;
+    pendingDeleteMeasure = cursor.measure;
+    measureDeleteDialog?.showModal();
+  }
+
+  function confirmDeleteMeasure() {
+    const measure = pendingDeleteMeasure;
+    measureDeleteDialog?.close();
+    pendingDeleteMeasure = null;
+    if (measure !== null) void editor.removeMeasure(measure);
   }
 
   function exportChanged(event: Event) {
@@ -154,8 +170,14 @@
   </div>
 
   <div class="group">
-    <button onclick={() => editor.insertMeasure()} title="Insert a measure after the cursor">
-      + Measure
+    <button onclick={() => editor.insertMeasure(true)} disabled={!editor.cursor} title="Insert a measure before the current measure">
+      Insert before
+    </button>
+    <button onclick={() => editor.insertMeasure(false)} disabled={!editor.cursor} title="Insert a measure after the current measure">
+      Insert after
+    </button>
+    <button onclick={askDeleteMeasure} disabled={!editor.canDeleteMeasure} title="Delete the current measure">
+      Delete measure
     </button>
     <button
       onclick={() => {
@@ -165,6 +187,15 @@
       title="Change the time signature from the cursor's measure (T)"
     >
       Time signature
+    </button>
+    <button
+      onclick={() => {
+        if (editor.cursor) editor.keySignatureOpen = true;
+        else editor.message = "Click on a measure first.";
+      }}
+      title="Change the key signature from the current measure until the next key change"
+    >
+      Key signature
     </button>
     <button
       onclick={() => editor.togglePickup()}
@@ -180,6 +211,15 @@
     <button onclick={() => editor.zoomIn()} disabled={!editor.canZoomIn} aria-label="Zoom in">+</button>
   </div>
 </header>
+
+<dialog bind:this={measureDeleteDialog} class="measure-delete-dialog" onclose={() => (pendingDeleteMeasure = null)}>
+  <h2>Delete measure {pendingDeleteMeasure === null ? "" : pendingDeleteMeasure + 1}?</h2>
+  <p>This removes the entire measure, including all notes and rests in every staff. You can undo this change.</p>
+  <div class="measure-delete-actions">
+    <button type="button" onclick={() => measureDeleteDialog?.close()}>Cancel</button>
+    <button type="button" class="confirm-delete" onclick={confirmDeleteMeasure}>Delete measure</button>
+  </div>
+</dialog>
 
 {#if fileMenuOpen}
   <div
@@ -358,5 +398,27 @@
     select {
       padding-inline: 0.4rem;
     }
+  }
+
+  .measure-delete-dialog {
+    width: min(28rem, calc(100vw - 2rem));
+    padding: 1rem 1.25rem;
+  }
+
+  .measure-delete-dialog h2,
+  .measure-delete-dialog p {
+    margin: 0 0 0.75rem;
+  }
+
+  .measure-delete-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+  }
+
+  .confirm-delete {
+    border-color: var(--danger);
+    background: var(--danger);
+    color: white;
   }
 </style>

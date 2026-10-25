@@ -1,4 +1,4 @@
-use noten_model::{EventId, StaffId, TimeSignature};
+use noten_model::{EventId, StaffId, TimeSignature, TimeSignatureDisplay};
 use serde::Serialize;
 
 /// Coordinates are in staff spaces (the distance between two staff lines), y pointing down.
@@ -18,6 +18,8 @@ pub struct MeasureArea {
     /// Following measure in this system, if this is not the system's final bar.
     pub next_measure: Option<usize>,
     pub time_signature: TimeSignature,
+    pub time_signature_display: TimeSignatureDisplay,
+    pub key_fifths: i8,
     /// The part of the measure after clef and signatures, up to the barline.
     pub x_start: f32,
     pub x_end: f32,

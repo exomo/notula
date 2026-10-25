@@ -18,6 +18,8 @@ pub const STEM_ANCHOR_OFFSET: f32 = 0.168;
 pub const BRACE: char = '\u{E000}';
 pub const BRACE_WIDTH_PER_HEIGHT: f32 = 0.277 / 4.0;
 pub const AUGMENTATION_DOT: char = '\u{E1E7}';
+pub const TIME_COMMON: char = '\u{E08A}';
+pub const TIME_CUT_COMMON: char = '\u{E08B}';
 
 pub struct ClefGlyph {
     pub glyph: char,

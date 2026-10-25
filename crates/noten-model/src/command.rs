@@ -3,7 +3,7 @@ use std::mem;
 
 use serde::{Deserialize, Serialize};
 
-use crate::duration::TimeSignature;
+use crate::duration::{TimeSignature, TimeSignatureDisplay};
 use crate::error::ModelError;
 use crate::ids::{PartId, StaffId};
 use crate::score::{
@@ -39,6 +39,10 @@ pub enum Command {
     SetTimeSignature {
         measure: usize,
         time_signature: TimeSignature,
+    },
+    SetTimeSignatureDisplay {
+        measure: usize,
+        display: TimeSignatureDisplay,
     },
     SetKeySignature {
         measure: usize,
@@ -197,9 +201,26 @@ impl Command {
                 time_signature,
             } => {
                 check_measure_index(score, measure)?;
+                let old_info = score.measures[measure];
+                let display = match old_info.time_signature_display {
+                    TimeSignatureDisplay::Common if time_signature != TimeSignature::COMMON => {
+                        TimeSignatureDisplay::Numeric
+                    }
+                    TimeSignatureDisplay::AllaBreve
+                        if time_signature
+                            != (TimeSignature {
+                                numerator: 2,
+                                denominator: 2,
+                            }) =>
+                    {
+                        TimeSignatureDisplay::Numeric
+                    }
+                    current => current,
+                };
                 let candidate = MeasureInfo {
                     time_signature,
-                    ..score.measures[measure]
+                    time_signature_display: display,
+                    ..old_info
                 };
                 candidate.validate()?;
                 let capacity = candidate.capacity();
@@ -207,9 +228,33 @@ impl Command {
                     check_fits(&staff.measures[measure], capacity)?;
                 }
                 let old = mem::replace(&mut score.measures[measure].time_signature, time_signature);
-                Ok(Command::SetTimeSignature {
+                let old_display =
+                    mem::replace(&mut score.measures[measure].time_signature_display, display);
+                Ok(Command::Batch {
+                    commands: vec![
+                        Command::SetTimeSignature {
+                            measure,
+                            time_signature: old,
+                        },
+                        Command::SetTimeSignatureDisplay {
+                            measure,
+                            display: old_display,
+                        },
+                    ],
+                })
+            }
+            Command::SetTimeSignatureDisplay { measure, display } => {
+                check_measure_index(score, measure)?;
+                let candidate = MeasureInfo {
+                    time_signature_display: display,
+                    ..score.measures[measure]
+                };
+                candidate.validate()?;
+                let old =
+                    mem::replace(&mut score.measures[measure].time_signature_display, display);
+                Ok(Command::SetTimeSignatureDisplay {
                     measure,
-                    time_signature: old,
+                    display: old,
                 })
             }
             Command::SetMeasureLength { measure, length } => {

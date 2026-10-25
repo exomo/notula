@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::command::Command;
-use crate::duration::{Duration, NoteValue, TimeSignature};
+use crate::duration::{Duration, NoteValue, TimeSignature, TimeSignatureDisplay};
 use crate::error::ModelError;
 use crate::history::Document;
 use crate::ids::{EventId, StaffId};
@@ -833,15 +833,26 @@ pub fn append_measure(doc: &mut Document) -> Result<(), ModelError> {
     insert_measure_after(doc, last)
 }
 
-/// Inserts an empty measure that takes over the signatures of the one before it.
+/// Inserts an empty measure that takes over the signatures active at its position.
+pub fn insert_measure_at(doc: &mut Document, index: usize) -> Result<(), ModelError> {
+    if index > doc.score().measures.len() {
+        return Err(ModelError::MeasureOutOfRange(index));
+    }
+    let data = doc.score().blank_measure(index);
+    doc.execute(Command::InsertMeasure { index, data })
+}
+
+/// Inserts an empty measure after `measure`.
 pub fn insert_measure_after(doc: &mut Document, measure: usize) -> Result<(), ModelError> {
-    let score = doc.score();
-    if measure >= score.measures.len() {
+    if measure >= doc.score().measures.len() {
         return Err(ModelError::MeasureOutOfRange(measure));
     }
-    let index = measure + 1;
-    let data = score.blank_measure(index);
-    doc.execute(Command::InsertMeasure { index, data })
+    insert_measure_at(doc, measure + 1)
+}
+
+/// Removes a measure and all its staff content as a single undoable edit.
+pub fn remove_measure(doc: &mut Document, measure: usize) -> Result<(), ModelError> {
+    doc.execute(Command::RemoveMeasure { index: measure })
 }
 
 /// Changes the time signature from `measure` up to the next time signature change.
@@ -850,23 +861,75 @@ pub fn change_time_signature(
     measure: usize,
     time_signature: TimeSignature,
 ) -> Result<(), ModelError> {
+    change_time_signature_with_display(doc, measure, time_signature, TimeSignatureDisplay::Numeric)
+}
+
+pub fn change_time_signature_with_display(
+    doc: &mut Document,
+    measure: usize,
+    time_signature: TimeSignature,
+    display: TimeSignatureDisplay,
+) -> Result<(), ModelError> {
     time_signature.validate()?;
+    let score = doc.score();
+    let old_info = score
+        .measures
+        .get(measure)
+        .ok_or(ModelError::MeasureOutOfRange(measure))?;
+    let candidate = crate::score::MeasureInfo {
+        time_signature,
+        time_signature_display: display,
+        ..*old_info
+    };
+    candidate.validate()?;
+    let old = old_info.time_signature;
+    let old_display = old_info.time_signature_display;
+    if old == time_signature && old_display == display {
+        return Ok(());
+    }
+    let commands = score.measures[measure..]
+        .iter()
+        .take_while(|info| info.time_signature == old && info.time_signature_display == old_display)
+        .enumerate()
+        .flat_map(|(offset, _)| {
+            [
+                Command::SetTimeSignature {
+                    measure: measure + offset,
+                    time_signature,
+                },
+                Command::SetTimeSignatureDisplay {
+                    measure: measure + offset,
+                    display,
+                },
+            ]
+        })
+        .collect();
+    doc.execute(Command::Batch { commands })
+}
+
+/// Changes the key signature from `measure` through the current key section.
+pub fn change_key_signature(
+    doc: &mut Document,
+    measure: usize,
+    key_signature: crate::score::KeySignature,
+) -> Result<(), ModelError> {
+    key_signature.validate()?;
     let score = doc.score();
     let old = score
         .measures
         .get(measure)
         .ok_or(ModelError::MeasureOutOfRange(measure))?
-        .time_signature;
-    if old == time_signature {
+        .key_signature;
+    if old == key_signature {
         return Ok(());
     }
     let commands = score.measures[measure..]
         .iter()
-        .take_while(|info| info.time_signature == old)
+        .take_while(|info| info.key_signature == old)
         .enumerate()
-        .map(|(offset, _)| Command::SetTimeSignature {
+        .map(|(offset, _)| Command::SetKeySignature {
             measure: measure + offset,
-            time_signature,
+            key_signature,
         })
         .collect();
     doc.execute(Command::Batch { commands })

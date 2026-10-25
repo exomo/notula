@@ -3,7 +3,9 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use noten_layout::{LayoutOptions, RenderList};
 use noten_model::edit::{self, Cursor};
-use noten_model::{Document, Duration, EventId, Pitch, Step, TimeSignature};
+use noten_model::{
+    Document, Duration, EventId, KeySignature, Pitch, Step, TimeSignature, TimeSignatureDisplay,
+};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
@@ -338,20 +340,37 @@ pub fn toggle_pitch_in_chord(
     Ok(finish(&app, &session, cursor, Some(event)))
 }
 
-/// Inserts an empty measure after `after`, or at the end if no position is given.
+/// Inserts an empty measure before or after the current measure.
 #[tauri::command]
 pub fn insert_measure(
     app: AppHandle,
     state: State<AppState>,
-    after: Option<usize>,
+    measure: usize,
+    before: bool,
     cursor: Option<Cursor>,
 ) -> Reply<Edited> {
     let mut session = state.lock();
-    let after = after.unwrap_or(session.doc.score().measures.len() - 1);
-    edit::insert_measure_after(&mut session.doc, after).map_err(text)?;
-    // Entry continues in the new measure.
+    let index = if before { measure } else { measure + 1 };
+    edit::insert_measure_at(&mut session.doc, index).map_err(text)?;
     let cursor = cursor.map(|c| Cursor {
-        measure: after + 1,
+        measure: measure + 1,
+        tick: if before { c.tick } else { 0 },
+        ..c
+    });
+    Ok(finish(&app, &session, cursor, None))
+}
+
+#[tauri::command]
+pub fn remove_measure(
+    app: AppHandle,
+    state: State<AppState>,
+    measure: usize,
+    cursor: Option<Cursor>,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::remove_measure(&mut session.doc, measure).map_err(text)?;
+    let cursor = cursor.map(|c| Cursor {
+        measure: if measure == 0 { 0 } else { measure - 1 },
         tick: 0,
         ..c
     });
@@ -366,13 +385,27 @@ pub fn set_time_signature(
     measure: usize,
     numerator: u8,
     denominator: u8,
+    display: TimeSignatureDisplay,
 ) -> Reply<Edited> {
     let mut session = state.lock();
     let time_signature = TimeSignature {
         numerator,
         denominator,
     };
-    edit::change_time_signature(&mut session.doc, measure, time_signature).map_err(text)?;
+    edit::change_time_signature_with_display(&mut session.doc, measure, time_signature, display)
+        .map_err(text)?;
+    Ok(finish(&app, &session, None, None))
+}
+
+#[tauri::command]
+pub fn set_key_signature(
+    app: AppHandle,
+    state: State<AppState>,
+    measure: usize,
+    fifths: i8,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::change_key_signature(&mut session.doc, measure, KeySignature { fifths }).map_err(text)?;
     Ok(finish(&app, &session, None, None))
 }
 

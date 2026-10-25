@@ -32,18 +32,27 @@ pub fn key_alter(fifths: i8, step: Step) -> i8 {
 }
 
 /// Vertical positions of the key signature accidentals, in drawing order.
+#[cfg(test)]
 pub fn key_signature_ys(fifths: i8, clef: Clef) -> Vec<f32> {
+    key_signature_positions(fifths, clef)
+        .into_iter()
+        .map(|(_, y)| y)
+        .collect()
+}
+
+/// Pitch and vertical position for each accidental in a key signature.
+pub fn key_signature_positions(fifths: i8, clef: Clef) -> Vec<(Step, f32)> {
     let count = usize::from(fifths.unsigned_abs()).min(7);
     let bottom = bottom_line(clef);
     let to_y = |index: i16| 4.0 - f32::from(index - bottom) * 0.5;
 
     // Each accidental steps by a fourth or fifth to stay on the staff.
-    let (start, steps): (i16, [i16; 6]) = if fifths > 0 {
+    let (start, steps, pitches): (i16, [i16; 6], &[Step]) = if fifths > 0 {
         match clef {
-            Clef::Treble => (38, [-3, 4, -3, -3, 4, -3]),
-            Clef::Alto => (31, [-3, 4, -3, -3, 4, -3]),
-            Clef::Bass => (24, [-3, 4, -3, -3, 4, -3]),
-            Clef::Tenor => (24, [4, -3, 4, -3, 4, -3]),
+            Clef::Treble => (38, [-3, 4, -3, -3, 4, -3], &SHARP_ORDER),
+            Clef::Alto => (31, [-3, 4, -3, -3, 4, -3], &SHARP_ORDER),
+            Clef::Bass => (24, [-3, 4, -3, -3, 4, -3], &SHARP_ORDER),
+            Clef::Tenor => (24, [4, -3, 4, -3, 4, -3], &SHARP_ORDER),
         }
     } else {
         let start = match clef {
@@ -51,19 +60,38 @@ pub fn key_signature_ys(fifths: i8, clef: Clef) -> Vec<f32> {
             Clef::Alto | Clef::Tenor => 27,
             Clef::Bass => 20,
         };
-        (start, [3, -4, 3, -4, 3, -4])
+        (start, [3, -4, 3, -4, 3, -4], &FLAT_ORDER)
     };
 
     let mut index = start;
-    let mut ys = Vec::with_capacity(count);
+    let mut positions = Vec::with_capacity(count);
     for i in 0..count {
-        ys.push(to_y(index));
+        positions.push((pitches[i], to_y(index)));
         if let Some(step) = steps.get(i) {
             index += step;
         }
     }
-    ys
+    positions
 }
+
+const SHARP_ORDER: [Step; 7] = [
+    Step::F,
+    Step::C,
+    Step::G,
+    Step::D,
+    Step::A,
+    Step::E,
+    Step::B,
+];
+const FLAT_ORDER: [Step; 7] = [
+    Step::B,
+    Step::E,
+    Step::A,
+    Step::D,
+    Step::G,
+    Step::C,
+    Step::F,
+];
 
 #[cfg(test)]
 mod tests {

@@ -14,6 +14,8 @@ export interface MeasureArea {
   measure: number;
   next_measure: number | null;
   time_signature: { numerator: number; denominator: number };
+  time_signature_display: "numeric" | "common" | "alla_breve";
+  key_fifths: number;
   x_start: number;
   x_end: number;
   /** Top line of the staff. */

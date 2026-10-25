@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { editor } from "./lib/editor.svelte";
   import NewScoreDialog from "./lib/NewScoreDialog.svelte";
+  import KeySignatureDialog from "./lib/KeySignatureDialog.svelte";
   import ScorePropertiesDialog from "./lib/ScorePropertiesDialog.svelte";
   import ScoreView from "./lib/ScoreView.svelte";
   import TimeSignatureDialog from "./lib/TimeSignatureDialog.svelte";
@@ -16,7 +17,7 @@
   }
 
   function onkeydown(event: KeyboardEvent) {
-    if (isTyping(event.target) || editor.newScoreOpen || editor.scorePropertiesOpen || editor.timeSignatureOpen) return;
+    if (isTyping(event.target) || editor.newScoreOpen || editor.scorePropertiesOpen || editor.timeSignatureOpen || editor.keySignatureOpen) return;
     if (editor.handleKey(event)) event.preventDefault();
   }
 </script>
@@ -41,6 +42,7 @@
 <NewScoreDialog />
 <ScorePropertiesDialog />
 <TimeSignatureDialog />
+<KeySignatureDialog />
 
 <style>
   main {

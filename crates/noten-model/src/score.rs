@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::duration::{Duration, NoteValue, TimeSignature};
+use crate::duration::{Duration, NoteValue, TimeSignature, TimeSignatureDisplay};
 use crate::error::ModelError;
 use crate::ids::{EventId, PartId, StaffId};
 use crate::markings::Markings;
@@ -149,6 +149,8 @@ pub struct Part {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeasureInfo {
     pub time_signature: TimeSignature,
+    #[serde(default)]
+    pub time_signature_display: TimeSignatureDisplay,
     pub key_signature: KeySignature,
     /// Length in ticks when shorter than the time signature, as in a pickup measure (anacrusis).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -164,6 +166,21 @@ impl MeasureInfo {
 
     pub fn validate(self) -> Result<(), ModelError> {
         self.time_signature.validate()?;
+        match self.time_signature_display {
+            TimeSignatureDisplay::Numeric => {}
+            TimeSignatureDisplay::Common if self.time_signature == TimeSignature::COMMON => {}
+            TimeSignatureDisplay::AllaBreve
+                if self.time_signature
+                    == (TimeSignature {
+                        numerator: 2,
+                        denominator: 2,
+                    }) => {}
+            TimeSignatureDisplay::Common | TimeSignatureDisplay::AllaBreve => {
+                return Err(ModelError::Invalid(
+                    "symbolic time signature does not match its meter",
+                ));
+            }
+        }
         self.key_signature.validate()?;
         if let Some(length) = self.length {
             let grain = NoteValue::SixtyFourth.ticks();
