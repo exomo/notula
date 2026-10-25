@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 
 use notula_model::{
-    Articulation, Clef, EventId, EventKind, MeasureInfo, NoteValue, StaffMeasure, Step,
-    TICKS_PER_QUARTER, TimeSignature,
+    Articulation, Clef, EventId, EventKind, MeasureInfo, NoteValue, Pitch, SlurPlacement,
+    StaffMeasure, Step, TICKS_PER_QUARTER, TimeSignature,
 };
 
 use crate::smufl;
@@ -26,6 +26,7 @@ pub(crate) struct AccidentalPlan {
 }
 
 pub(crate) struct NotePlan {
+    pub pitch: Pitch,
     pub y: f32,
     /// Moved to the other side of the stem because a neighbour a second away is on this side.
     pub displaced: bool,
@@ -43,6 +44,13 @@ pub(crate) struct EventPlan {
     pub value: NoteValue,
     pub dots: u8,
     pub articulations: Vec<Articulation>,
+    pub tied: bool,
+    pub slur_start: bool,
+    pub slur_stop: bool,
+    pub slur_placement: SlurPlacement,
+    pub phrase_slur_start: bool,
+    pub phrase_slur_stop: bool,
+    pub phrase_slur_placement: SlurPlacement,
     pub stem_up: bool,
     pub body: Body,
     /// Space needed left of the column.
@@ -71,6 +79,7 @@ impl StaffPlan {
 }
 
 struct DraftNote {
+    pitch: Pitch,
     y: f32,
     diatonic: i16,
     accidental: Option<i8>,
@@ -82,6 +91,13 @@ struct Draft {
     value: NoteValue,
     dots: u8,
     articulations: Vec<Articulation>,
+    tied: bool,
+    slur_start: bool,
+    slur_stop: bool,
+    slur_placement: SlurPlacement,
+    phrase_slur_start: bool,
+    phrase_slur_stop: bool,
+    phrase_slur_placement: SlurPlacement,
     /// Empty for rests; otherwise sorted from the lowest to the highest pitch.
     notes: Vec<DraftNote>,
 }
@@ -120,6 +136,7 @@ pub(crate) fn plan_staff(
                             let mut notes: Vec<_> = pitches
                                 .iter()
                                 .map(|&pitch| DraftNote {
+                                    pitch,
                                     y: pitch_y(pitch, clef),
                                     diatonic: pitch.diatonic_index(),
                                     accidental: None,
@@ -135,6 +152,13 @@ pub(crate) fn plan_staff(
                         value: event.duration.value,
                         dots: event.duration.dots,
                         articulations: event.markings.articulations.clone(),
+                        tied: matches!(event.kind, EventKind::Chord { tied: true, .. }),
+                        slur_start: event.markings.slur_start,
+                        slur_stop: event.markings.slur_stop,
+                        slur_placement: event.markings.slur_placement,
+                        phrase_slur_start: event.markings.phrase_slur_start,
+                        phrase_slur_stop: event.markings.phrase_slur_stop,
+                        phrase_slur_placement: event.markings.phrase_slur_placement,
                         notes,
                     };
                     onset += event.duration.ticks();
@@ -312,6 +336,13 @@ fn finish_event(draft: &Draft, stem_up: bool) -> EventPlan {
             value: draft.value,
             dots: draft.dots,
             articulations: draft.articulations.clone(),
+            tied: draft.tied,
+            slur_start: draft.slur_start,
+            slur_stop: draft.slur_stop,
+            slur_placement: draft.slur_placement,
+            phrase_slur_start: draft.phrase_slur_start,
+            phrase_slur_stop: draft.phrase_slur_stop,
+            phrase_slur_placement: draft.phrase_slur_placement,
             stem_up,
             body: Body::Rest { y },
             left: 0.0,
@@ -389,6 +420,7 @@ fn finish_event(draft: &Draft, stem_up: bool) -> EventPlan {
         .iter()
         .enumerate()
         .map(|(i, note)| NotePlan {
+            pitch: note.pitch,
             y: note.y,
             displaced: displaced[i],
             accidental: note.accidental.zip(slot_of[i]).map(|(alter, slot)| {
@@ -407,6 +439,13 @@ fn finish_event(draft: &Draft, stem_up: bool) -> EventPlan {
         value: draft.value,
         dots: draft.dots,
         articulations: draft.articulations.clone(),
+        tied: draft.tied,
+        slur_start: draft.slur_start,
+        slur_stop: draft.slur_stop,
+        slur_placement: draft.slur_placement,
+        phrase_slur_start: draft.phrase_slur_start,
+        phrase_slur_stop: draft.phrase_slur_stop,
+        phrase_slur_placement: draft.phrase_slur_placement,
         stem_up,
         body: Body::Chord { notes },
         left,

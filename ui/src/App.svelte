@@ -29,7 +29,9 @@
   <ScoreView />
   <footer>
     <span class="mode">{editor.inputMode ? "Note input" : "Select"}</span>
-    {#if editor.message}
+    {#if editor.slurMode || editor.phraseSlurMode}
+      <span>{editor.phraseSlurMode ? "Phrase slur" : "Slur"}: click a start note, then an end note · Esc cancels</span>
+    {:else if editor.message}
       <span class="error">{editor.message}</span>
     {:else if editor.inputMode}
       <span>A–G enter notes · 1–7 duration · . dot · 0 rest · ←/→ move cursor · Alt+↑/↓ changes voice, then staff · Ctrl+wheel zooms · click a chord tone to target it · ↑/↓ moves target tone or chord · Ctrl+↑/↓ moves an octave · Shift+click adds to chord · Esc leaves</span>
@@ -46,9 +48,11 @@
 
 <style>
   main {
+    position: fixed;
+    inset: 0;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
-    height: 100dvh;
+    width: 100%;
     min-height: 0;
     overflow: hidden;
   }

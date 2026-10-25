@@ -64,6 +64,12 @@ pub enum Shape {
     Polygon {
         points: Vec<[f32; 2]>,
     },
+    WhitePolygon {
+        points: Vec<[f32; 2]>,
+    },
+    Tie {
+        points: Vec<[f32; 2]>,
+    },
     Knockout {
         x: f32,
         y: f32,
@@ -85,6 +91,12 @@ pub enum Shape {
         text: String,
         size: f32,
         anchor: Anchor,
+    },
+    Slur {
+        points: Vec<[f32; 2]>,
+    },
+    PhraseSlur {
+        points: Vec<[f32; 2]>,
     },
 }
 
@@ -126,6 +138,50 @@ impl Canvas {
             staff: None,
             voice: None,
             shape: Shape::Polygon {
+                points: points.iter().map(|&(x, y)| [round(x), round(y)]).collect(),
+            },
+        });
+    }
+
+    pub fn white_polygon(&mut self, points: &[(f32, f32)]) {
+        self.items.push(Item {
+            event: None,
+            staff: None,
+            voice: None,
+            shape: Shape::WhitePolygon {
+                points: points.iter().map(|&(x, y)| [round(x), round(y)]).collect(),
+            },
+        });
+    }
+
+    pub fn tie(&mut self, event: EventId, points: &[(f32, f32)]) {
+        self.items.push(Item {
+            event: Some(event),
+            staff: None,
+            voice: None,
+            shape: Shape::Tie {
+                points: points.iter().map(|&(x, y)| [round(x), round(y)]).collect(),
+            },
+        });
+    }
+
+    pub fn slur(&mut self, event: EventId, points: &[(f32, f32)]) {
+        self.items.push(Item {
+            event: Some(event),
+            staff: None,
+            voice: None,
+            shape: Shape::Slur {
+                points: points.iter().map(|&(x, y)| [round(x), round(y)]).collect(),
+            },
+        });
+    }
+
+    pub fn phrase_slur(&mut self, event: EventId, points: &[(f32, f32)]) {
+        self.items.push(Item {
+            event: Some(event),
+            staff: None,
+            voice: None,
+            shape: Shape::PhraseSlur {
                 points: points.iter().map(|&(x, y)| [round(x), round(y)]).collect(),
             },
         });

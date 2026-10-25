@@ -246,6 +246,18 @@
             data-event={item.event}
             points={item.points.map((p) => p.join(",")).join(" ")}
           />
+        {:else if item.type === "white_polygon"}
+          <polygon class="white-underlay" points={item.points.map((p) => p.join(",")).join(" ")} />
+        {:else if item.type === "tie" || item.type === "slur" || item.type === "phrase_slur"}
+          <polygon
+            class:tie={item.type === "tie"}
+            class:slur={item.type === "slur"}
+            class:phrase-slur={item.type === "phrase_slur"}
+            class:active-staff={editor.cursor !== null && item.staff === editor.cursor.staff}
+            class:selected
+            data-event={item.event}
+            points={item.points.map((p) => p.join(",")).join(" ")}
+          />
         {:else if item.type === "knockout"}
           <rect x={item.x} y={item.y} width={item.width} height={item.height} fill="white" />
         {:else if item.type === "glyph"}
@@ -311,6 +323,10 @@
     fill: black;
   }
 
+  polygon.white-underlay {
+    fill: white;
+  }
+
   line.selected {
     stroke: #1a73e8;
   }
@@ -324,7 +340,12 @@
     fill: #087f70;
   }
 
+  polygon.active-staff {
+    fill: #087f70;
+  }
+
   polygon.selected,
+  polygon.tie.selected,
   text.selected {
     fill: #1a73e8;
   }

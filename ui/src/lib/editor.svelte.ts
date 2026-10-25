@@ -8,6 +8,7 @@ import {
   type NoteValue,
   type Pitch,
   type PlaybackStatus,
+  type SlurPlacement,
   type Status,
   type Step,
   type TimeSignatureDisplay,
@@ -45,6 +46,11 @@ class Editor {
   selected = $state<number | null>(null);
   eventArticulations = $state<EventArticulations | null>(null);
   selectedTone = $state<{ event: number; pitch: Pitch; y: number } | null>(null);
+  slurMode = $state(false);
+  slurStart = $state<number | null>(null);
+  phraseSlurMode = $state(false);
+  phraseSlurStart = $state<number | null>(null);
+  slurPlacement = $state<SlurPlacement>("auto");
   inputMode = $state(false);
   entryAlter = $state<number | null>(null);
   duration = $state<Duration>({ value: "Quarter", dots: 0 });
@@ -224,6 +230,14 @@ class Editor {
       this.selected = null;
       return;
     }
+    if (this.slurMode || this.phraseSlurMode) {
+      if (hit.note === null) {
+        this.message = "Choose a note as the endpoint.";
+        return;
+      }
+      await this.chooseSlurEvent(hit.note, hit.cursor, this.phraseSlurMode);
+      return;
+    }
     if (this.inputMode) {
       const cursor = this.cursor;
       const note = hit.note;
@@ -261,6 +275,10 @@ class Editor {
   async clickEvent(id: number, x: number, y: number, shift = false) {
     const eventCursor = await this.run(() => api.selectEvent(id));
     if (!eventCursor) return;
+    if (this.slurMode || this.phraseSlurMode) {
+      await this.chooseSlurEvent(id, eventCursor, this.phraseSlurMode);
+      return;
+    }
     if (!this.inputMode) {
       this.cursor = eventCursor;
       this.selected = id;
@@ -333,6 +351,76 @@ class Editor {
     return state !== null && (!state.is_rest || articulation === "Fermata");
   }
 
+  hasTie() {
+    return this.eventArticulations?.tied ?? false;
+  }
+
+  canToggleTie() {
+    const state = this.eventArticulations;
+    return state !== null && !state.is_rest && (state.tied || state.tie_possible);
+  }
+
+  toggleSlurMode() {
+    if (this.slurMode) {
+      this.cancelSlurMode();
+      return;
+    }
+    this.phraseSlurMode = false;
+    this.phraseSlurStart = null;
+    this.slurMode = true;
+    this.slurStart = this.selected;
+    this.message = this.slurStart === null ? null : "Slur start selected. Click the ending note.";
+  }
+
+  togglePhraseSlurMode() {
+    if (this.phraseSlurMode) {
+      this.cancelSlurMode();
+      return;
+    }
+    this.slurMode = false;
+    this.slurStart = null;
+    this.phraseSlurMode = true;
+    this.phraseSlurStart = this.selected;
+    this.message = this.phraseSlurStart === null
+      ? null
+      : "Phrase start selected. Click the ending note.";
+  }
+
+  cancelSlurMode() {
+    this.slurMode = false;
+    this.slurStart = null;
+    this.phraseSlurMode = false;
+    this.phraseSlurStart = null;
+    this.message = null;
+  }
+
+  private async chooseSlurEvent(event: number, cursor: Cursor, phrase: boolean) {
+    this.cursor = cursor;
+    this.selected = event;
+    this.selectedTone = null;
+    const start = phrase ? this.phraseSlurStart : this.slurStart;
+    if (start === null) {
+      if (phrase) this.phraseSlurStart = event;
+      else this.slurStart = event;
+      this.message = phrase
+        ? "Phrase start selected. Click the ending note."
+        : "Slur start selected. Click the ending note.";
+      return;
+    }
+    this.cancelSlurMode();
+    if (event === start) {
+      this.message = "Slur endpoints must be different notes.";
+      return;
+    }
+    const edited = await this.run(() => phrase
+      ? api.togglePhraseSlur(start, event, this.slurPlacement)
+      : api.toggleSlur(start, event, this.slurPlacement));
+    if (edited) {
+      this.apply(edited);
+      await this.refreshArticulations(event);
+    }
+  }
+
   async refreshArticulations(event: number | null = this.selected) {
     const request = ++this.articulationRequest;
     if (event === null) {
@@ -354,6 +442,15 @@ class Editor {
     const event = this.selected;
     if (event === null || !this.canToggleArticulation(articulation)) return;
     const edited = await this.run(() => api.toggleArticulation(event, articulation));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshArticulations(event);
+  }
+
+  async toggleTie() {
+    const event = this.selected;
+    if (event === null || !this.canToggleTie()) return;
+    const edited = await this.run(() => api.toggleTie(event));
     if (!edited) return;
     this.apply(edited);
     await this.refreshArticulations(event);
@@ -679,7 +776,8 @@ class Editor {
         void this.toggleDot();
         return true;
       case "Escape":
-        if (this.inputMode) this.disableInputMode();
+        if (this.slurMode || this.phraseSlurMode) this.cancelSlurMode();
+        else if (this.inputMode) this.disableInputMode();
         else this.selected = null;
         return true;
       case "Delete":

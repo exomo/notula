@@ -9,8 +9,8 @@ use std::path::Path;
 
 use notula_model::{
     Articulation, Clef, Command, Document, Duration, Dynamic, Event, EventKind, Hairpin,
-    KeySignature, Markings, MeasureInfo, NoteValue, Pitch, Score, Step, TICKS_PER_QUARTER,
-    TimeSignature, TimeSignatureDisplay, Voice, VoiceLocation,
+    KeySignature, Markings, MeasureInfo, NoteValue, Pitch, Score, SlurPlacement, Step,
+    TICKS_PER_QUARTER, TimeSignature, TimeSignatureDisplay, Voice, VoiceLocation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +38,7 @@ pub enum MusicXmlError {
 }
 
 pub fn export(score: &Score) -> MusicXmlExport {
+    let mut unsupported = BTreeSet::new();
     let mut xml = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n<score-partwise version=\"4.0\">\n",
     );
@@ -76,6 +77,13 @@ pub fn export(score: &Score) -> MusicXmlExport {
 
     for (part_index, part) in score.parts.iter().enumerate() {
         let id = part_id(part_index);
+        let (ties, has_dangling_ties) = tie_marks(part, &score.measures);
+        if has_dangling_ties {
+            remember(
+                &mut unsupported,
+                "ties without matching adjacent pitches (omitted)",
+            );
+        }
         let _ = writeln!(xml, "  <part id=\"{id}\">");
         for (measure_index, info) in score.measures.iter().enumerate() {
             let implicit = if info.length.is_some() {
@@ -141,6 +149,7 @@ pub fn export(score: &Score) -> MusicXmlExport {
                             voice_index + 1,
                             staff_index + 1,
                             info.key_signature.fifths,
+                            ties.get(&event.id).unwrap_or(&TieMarks::default()),
                         );
                         onset += event.duration.ticks();
                     }
@@ -163,8 +172,87 @@ pub fn export(score: &Score) -> MusicXmlExport {
 
     MusicXmlExport {
         xml,
-        unsupported: Vec::new(),
+        unsupported: unsupported.into_iter().collect(),
     }
+}
+
+#[derive(Default)]
+struct TieMarks {
+    starts: Vec<Pitch>,
+    stops: Vec<Pitch>,
+}
+
+fn tie_marks(
+    part: &notula_model::Part,
+    measures: &[MeasureInfo],
+) -> (HashMap<notula_model::EventId, TieMarks>, bool) {
+    let mut marks = HashMap::<notula_model::EventId, TieMarks>::new();
+    for staff in &part.staves {
+        let voice_count = staff
+            .measures
+            .iter()
+            .map(|measure| measure.voices.len())
+            .max()
+            .unwrap_or(0);
+        for voice_index in 0..voice_count {
+            let mut previous: Option<(notula_model::EventId, u64, Vec<Pitch>, bool)> = None;
+            let mut measure_start = 0_u64;
+            for (measure_index, measure) in staff.measures.iter().enumerate() {
+                let mut onset = measure_start;
+                if let Some(voice) = measure.voices.get(voice_index) {
+                    for event in &voice.events {
+                        let pitches = match &event.kind {
+                            EventKind::Chord { pitches, .. } => pitches.clone(),
+                            EventKind::Rest => Vec::new(),
+                        };
+                        if let Some((previous_id, previous_end, previous_pitches, tied)) =
+                            previous.take()
+                        {
+                            if tied && previous_end == onset {
+                                let common: Vec<_> = pitches
+                                    .iter()
+                                    .copied()
+                                    .filter(|pitch| previous_pitches.contains(pitch))
+                                    .collect();
+                                if !common.is_empty() {
+                                    marks.entry(previous_id).or_default().starts.extend(&common);
+                                    marks.entry(event.id).or_default().stops.extend(common);
+                                }
+                            }
+                        }
+                        let tied = matches!(event.kind, EventKind::Chord { tied: true, .. });
+                        previous = Some((
+                            event.id,
+                            onset + u64::from(event.duration.ticks()),
+                            pitches,
+                            tied,
+                        ));
+                        onset += u64::from(event.duration.ticks());
+                    }
+                }
+                measure_start += u64::from(
+                    measures
+                        .get(measure_index)
+                        .copied()
+                        .unwrap_or_default()
+                        .capacity(),
+                );
+            }
+        }
+    }
+    let has_dangling_ties = part.staves.iter().any(|staff| {
+        staff
+            .measures
+            .iter()
+            .flat_map(|measure| &measure.voices)
+            .any(|voice| {
+                voice.events.iter().any(|event| {
+                    matches!(event.kind, EventKind::Chord { tied: true, .. })
+                        && marks.get(&event.id).is_none_or(|tie| tie.starts.is_empty())
+                })
+            })
+    });
+    (marks, has_dangling_ties)
 }
 
 pub fn export_file(score: &Score, path: &Path) -> Result<Vec<String>, MusicXmlError> {
@@ -292,7 +380,14 @@ fn step(value: notula_model::Step) -> char {
     }
 }
 
-fn write_event(xml: &mut String, event: &Event, voice: usize, staff: usize, fifths: i8) {
+fn write_event(
+    xml: &mut String,
+    event: &Event,
+    voice: usize,
+    staff: usize,
+    fifths: i8,
+    ties: &TieMarks,
+) {
     let pitches = match &event.kind {
         EventKind::Rest => vec![None],
         EventKind::Chord { pitches, .. } => pitches.iter().copied().map(Some).collect(),
@@ -315,6 +410,14 @@ fn write_event(xml: &mut String, event: &Event, voice: usize, staff: usize, fift
             xml.push_str("<rest/>");
         }
         let _ = write!(xml, "<duration>{}</duration>", event.duration.ticks());
+        if let Some(pitch) = pitch {
+            if ties.stops.contains(&pitch) {
+                xml.push_str("<tie type=\"stop\"/>");
+            }
+            if ties.starts.contains(&pitch) {
+                xml.push_str("<tie type=\"start\"/>");
+            }
+        }
         let _ = write!(
             xml,
             "<voice>{voice}</voice><type>{}</type>",
@@ -323,11 +426,20 @@ fn write_event(xml: &mut String, event: &Event, voice: usize, staff: usize, fift
         for _ in 0..dots {
             xml.push_str("<dot/>");
         }
-        if matches!(event.kind, EventKind::Chord { tied: true, .. }) && pitch.is_some() {
-            xml.push_str("<tie type=\"start\"/>");
-        }
         let _ = write!(xml, "<staff>{staff}</staff>");
-        write_markings(xml, event, fifths, pitch_index == 0);
+        write_markings(
+            xml,
+            event,
+            pitch_index == 0,
+            pitch.is_some_and(|pitch| ties.starts.contains(&pitch)),
+            pitch.is_some_and(|pitch| ties.stops.contains(&pitch)),
+            pitch_index == 0 && event.markings.slur_start,
+            pitch_index == 0 && event.markings.slur_stop,
+            event.markings.slur_placement,
+            pitch_index == 0 && event.markings.phrase_slur_start,
+            pitch_index == 0 && event.markings.phrase_slur_stop,
+            event.markings.phrase_slur_placement,
+        );
         if let Some(pitch) = pitch {
             if pitch.alter != (notula_model::KeySignature { fifths }).alter(pitch.step) {
                 let accidental = match pitch.alter {
@@ -345,7 +457,19 @@ fn write_event(xml: &mut String, event: &Event, voice: usize, staff: usize, fift
     }
 }
 
-fn write_markings(xml: &mut String, event: &Event, _fifths: i8, include_articulations: bool) {
+fn write_markings(
+    xml: &mut String,
+    event: &Event,
+    include_articulations: bool,
+    tie_start: bool,
+    tie_stop: bool,
+    slur_start: bool,
+    slur_stop: bool,
+    slur_placement: SlurPlacement,
+    phrase_slur_start: bool,
+    phrase_slur_stop: bool,
+    phrase_slur_placement: SlurPlacement,
+) {
     let articulations = &event.markings.articulations;
     let fermata = articulations.contains(&Articulation::Fermata);
     let ordinary: Vec<&str> = articulations
@@ -359,11 +483,48 @@ fn write_markings(xml: &mut String, event: &Event, _fifths: i8, include_articula
             Articulation::Fermata => None,
         })
         .collect();
-    let tied = matches!(event.kind, EventKind::Chord { tied: true, .. });
-    if (include_articulations && (!ordinary.is_empty() || fermata)) || tied {
+    if (include_articulations && (!ordinary.is_empty() || fermata))
+        || tie_start
+        || tie_stop
+        || slur_start
+        || slur_stop
+        || phrase_slur_start
+        || phrase_slur_stop
+    {
         xml.push_str("<notations>");
-        if tied {
+        if tie_stop {
+            xml.push_str("<tied type=\"stop\"/>");
+        }
+        if tie_start {
             xml.push_str("<tied type=\"start\"/>");
+        }
+        if slur_stop {
+            xml.push_str("<slur type=\"stop\"/>");
+        }
+        if slur_start {
+            match slur_placement {
+                SlurPlacement::Auto => xml.push_str("<slur type=\"start\" number=\"1\"/>"),
+                SlurPlacement::Above => {
+                    xml.push_str("<slur type=\"start\" number=\"1\" placement=\"above\"/>")
+                }
+                SlurPlacement::Below => {
+                    xml.push_str("<slur type=\"start\" number=\"1\" placement=\"below\"/>")
+                }
+            }
+        }
+        if phrase_slur_stop {
+            xml.push_str("<slur type=\"stop\" number=\"2\"/>");
+        }
+        if phrase_slur_start {
+            match phrase_slur_placement {
+                SlurPlacement::Auto => xml.push_str("<slur type=\"start\" number=\"2\"/>"),
+                SlurPlacement::Above => {
+                    xml.push_str("<slur type=\"start\" number=\"2\" placement=\"above\"/>")
+                }
+                SlurPlacement::Below => {
+                    xml.push_str("<slur type=\"start\" number=\"2\" placement=\"below\"/>")
+                }
+            }
         }
         if include_articulations && fermata {
             xml.push_str("<fermata type=\"upright\"/>");
@@ -767,6 +928,36 @@ fn parse_markings(node: roxmltree::Node<'_, '_>, unsupported: &mut BTreeSet<Stri
                 // Ties are stored on the note that starts the tie.
             }
         }
+        for slur in elements(notation, "slur") {
+            match slur.attribute("type") {
+                Some("start") => {
+                    let placement = match slur.attribute("placement") {
+                        Some("above") => SlurPlacement::Above,
+                        Some("below") => SlurPlacement::Below,
+                        Some("auto") | None => SlurPlacement::Auto,
+                        Some(_) => {
+                            remember(unsupported, "slur placement");
+                            SlurPlacement::Auto
+                        }
+                    };
+                    if slur.attribute("number") == Some("2") {
+                        markings.phrase_slur_start = true;
+                        markings.phrase_slur_placement = placement;
+                    } else {
+                        markings.slur_start = true;
+                        markings.slur_placement = placement;
+                    }
+                }
+                Some("stop") => {
+                    if slur.attribute("number") == Some("2") {
+                        markings.phrase_slur_stop = true;
+                    } else {
+                        markings.slur_stop = true;
+                    }
+                }
+                _ => remember(unsupported, "slur type"),
+            }
+        }
         for child in notation.children().filter(|child| child.is_element()) {
             if !matches!(
                 child.tag_name().name(),
@@ -776,9 +967,6 @@ fn parse_markings(node: roxmltree::Node<'_, '_>, unsupported: &mut BTreeSet<Stri
                     unsupported,
                     format!("notation: {}", child.tag_name().name()),
                 );
-            }
-            if child.has_tag_name("slur") {
-                remember(unsupported, "slurs");
             }
         }
     }
@@ -1333,6 +1521,20 @@ mod tests {
             event,
         })
         .unwrap();
+        let continuation = Event::new(
+            doc.new_event_id(),
+            Duration::new(NoteValue::Quarter, 0),
+            EventKind::Chord {
+                pitches: vec![Pitch::new(Step::C, 0, 4), Pitch::new(Step::E, 0, 4)],
+                tied: false,
+            },
+        );
+        doc.execute(Command::InsertEvent {
+            at,
+            index: 1,
+            event: continuation,
+        })
+        .unwrap();
 
         let result = export(doc.score());
         let xml = roxmltree::Document::parse(&result.xml).unwrap();
@@ -1348,17 +1550,29 @@ mod tests {
             xml.descendants()
                 .filter(|node| node.has_tag_name("note"))
                 .count(),
-            2
+            4
         );
         assert_eq!(
             xml.descendants()
                 .filter(|node| node.has_tag_name("chord"))
                 .count(),
-            1
+            2
         );
         assert_eq!(
             xml.descendants()
                 .filter(|node| node.has_tag_name("tie"))
+                .count(),
+            4
+        );
+        assert_eq!(
+            xml.descendants()
+                .filter(|node| node.has_tag_name("tie") && node.attribute("type") == Some("start"))
+                .count(),
+            2
+        );
+        assert_eq!(
+            xml.descendants()
+                .filter(|node| node.has_tag_name("tie") && node.attribute("type") == Some("stop"))
                 .count(),
             2
         );
@@ -1366,7 +1580,7 @@ mod tests {
             xml.descendants()
                 .filter(|node| node.has_tag_name("tied"))
                 .count(),
-            2
+            4
         );
         assert_eq!(
             xml.descendants()
@@ -1375,6 +1589,47 @@ mod tests {
             1
         );
         assert!(result.unsupported.is_empty());
+    }
+
+    #[test]
+    fn export_reports_ties_without_a_matching_next_pitch() {
+        let mut doc = Document::new();
+        let part = doc.new_part("Part", &[Clef::Treble]);
+        doc.execute(Command::AddPart { index: 0, part }).unwrap();
+        let event = Event::new(
+            doc.new_event_id(),
+            Duration::new(NoteValue::Quarter, 0),
+            EventKind::Chord {
+                pitches: vec![Pitch::new(Step::C, 0, 4)],
+                tied: true,
+            },
+        );
+        let at = VoiceLocation {
+            staff: doc.score().parts[0].staves[0].id,
+            measure: 0,
+            voice: 0,
+        };
+        doc.execute(Command::InsertEvent {
+            at,
+            index: 0,
+            event,
+        })
+        .unwrap();
+
+        let exported = export(doc.score());
+        let xml = roxmltree::Document::parse(&exported.xml).unwrap();
+        assert_eq!(
+            xml.descendants()
+                .filter(|node| node.has_tag_name("tie"))
+                .count(),
+            0
+        );
+        assert!(
+            exported
+                .unsupported
+                .iter()
+                .any(|feature| feature.contains("ties without matching adjacent pitches"))
+        );
     }
 
     #[test]
@@ -1398,6 +1653,12 @@ mod tests {
                 articulations: vec![Articulation::Marcato],
                 dynamic: Some(Dynamic::Mf),
                 hairpin: Some(Hairpin::Crescendo),
+                slur_start: false,
+                slur_stop: false,
+                slur_placement: SlurPlacement::Auto,
+                phrase_slur_start: false,
+                phrase_slur_stop: false,
+                phrase_slur_placement: SlurPlacement::Auto,
             },
         };
         let at = VoiceLocation {
@@ -1409,6 +1670,20 @@ mod tests {
             at,
             index: 0,
             event,
+        })
+        .unwrap();
+        let continuation = Event::new(
+            doc.new_event_id(),
+            Duration::new(NoteValue::Quarter, 0),
+            EventKind::Chord {
+                pitches: vec![Pitch::new(Step::G, 1, 5), Pitch::new(Step::B, 0, 5)],
+                tied: false,
+            },
+        );
+        doc.execute(Command::InsertEvent {
+            at,
+            index: 1,
+            event: continuation,
         })
         .unwrap();
 
@@ -1438,16 +1713,100 @@ mod tests {
     }
 
     #[test]
-    fn import_reports_unsupported_notations() {
-        let xml = r#"<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Part</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes><note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><notations><slur type="start"/></notations></note></measure></part></score-partwise>"#;
+    fn import_supports_slur_notations() {
+        let xml = r#"<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Part</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes><note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><notations><slur type="start" number="1" placement="above"/><slur type="start" number="2" placement="below"/></notations></note></measure></part></score-partwise>"#;
         let imported = import(xml).unwrap();
-        assert!(imported.unsupported.iter().any(|item| item == "slurs"));
+        assert!(imported.unsupported.is_empty());
+        assert!(
+            imported.score.parts[0].staves[0].measures[0].voices[0].events[0]
+                .markings
+                .slur_start
+        );
+        assert_eq!(
+            imported.score.parts[0].staves[0].measures[0].voices[0].events[0]
+                .markings
+                .slur_placement,
+            SlurPlacement::Above
+        );
+        let markings = &imported.score.parts[0].staves[0].measures[0].voices[0].events[0].markings;
+        assert!(markings.phrase_slur_start);
+        assert_eq!(markings.phrase_slur_placement, SlurPlacement::Below);
         assert_eq!(
             imported.score.parts[0].staves[0].measures[0].voices[0]
                 .events
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn slur_ranges_roundtrip_through_musicxml() {
+        let mut doc = Document::new();
+        let part = doc.new_part("Part", &[Clef::Treble]);
+        doc.execute(Command::AddPart { index: 0, part }).unwrap();
+        let at = VoiceLocation {
+            staff: doc.score().parts[0].staves[0].id,
+            measure: 0,
+            voice: 0,
+        };
+        let mut start = Event::new(
+            doc.new_event_id(),
+            Duration::new(NoteValue::Quarter, 0),
+            EventKind::Chord {
+                pitches: vec![Pitch::new(Step::C, 0, 4)],
+                tied: false,
+            },
+        );
+        start.markings.slur_start = true;
+        start.markings.slur_placement = SlurPlacement::Below;
+        start.markings.phrase_slur_start = true;
+        start.markings.phrase_slur_placement = SlurPlacement::Above;
+        let mut end = Event::new(
+            doc.new_event_id(),
+            Duration::new(NoteValue::Quarter, 0),
+            EventKind::Chord {
+                pitches: vec![Pitch::new(Step::D, 0, 4)],
+                tied: false,
+            },
+        );
+        end.markings.slur_stop = true;
+        end.markings.phrase_slur_stop = true;
+        doc.execute(Command::InsertEvent {
+            at,
+            index: 0,
+            event: start,
+        })
+        .unwrap();
+        doc.execute(Command::InsertEvent {
+            at,
+            index: 1,
+            event: end,
+        })
+        .unwrap();
+
+        let exported = export(doc.score());
+        assert!(
+            exported
+                .xml
+                .contains("<slur type=\"start\" number=\"1\" placement=\"below\"/>")
+        );
+        assert!(
+            exported
+                .xml
+                .contains("<slur type=\"start\" number=\"2\" placement=\"above\"/>")
+        );
+        let imported = import(&exported.xml).unwrap();
+        let events = &imported.score.parts[0].staves[0].measures[0].voices[0].events;
+        assert!(events[0].markings.slur_start);
+        assert!(events[1].markings.slur_stop);
+        assert_eq!(events[0].markings.slur_placement, SlurPlacement::Below);
+        assert!(events[0].markings.phrase_slur_start);
+        assert!(events[1].markings.phrase_slur_stop);
+        assert_eq!(
+            events[0].markings.phrase_slur_placement,
+            SlurPlacement::Above
+        );
+        assert!(imported.unsupported.is_empty());
     }
 
     #[test]

@@ -1082,6 +1082,101 @@ fn deleting_turns_a_note_into_a_rest_and_keeps_its_id() {
 }
 
 #[test]
+fn ties_toggle_on_chords_and_undo() {
+    let (mut doc, cursor) = setup(1);
+    let id = enter_note(&mut doc, cursor, c4(), dur(NoteValue::Quarter))
+        .unwrap()
+        .event;
+
+    edit::toggle_tie(&mut doc, id).unwrap();
+    assert!(matches!(
+        event_at(&doc, cursor, 0).kind,
+        EventKind::Chord { tied: true, .. }
+    ));
+    assert!(doc.undo().unwrap());
+    assert!(matches!(
+        event_at(&doc, cursor, 0).kind,
+        EventKind::Chord { tied: false, .. }
+    ));
+}
+
+#[test]
+fn slur_ranges_toggle_on_notes_and_undo_together() {
+    let (mut doc, cursor) = setup(1);
+    let start = enter_note(&mut doc, cursor, c4(), dur(NoteValue::Quarter))
+        .unwrap()
+        .event;
+    let end_cursor = Cursor {
+        tick: dur(NoteValue::Quarter).ticks(),
+        ..cursor
+    };
+    let end = enter_note(
+        &mut doc,
+        end_cursor,
+        Pitch::new(Step::D, 0, 4),
+        dur(NoteValue::Quarter),
+    )
+    .unwrap()
+    .event;
+
+    edit::toggle_slur(&mut doc, start, end, notula_model::SlurPlacement::Above).unwrap();
+    assert!(event_at(&doc, cursor, 0).markings.slur_start);
+    assert_eq!(
+        event_at(&doc, cursor, 0).markings.slur_placement,
+        notula_model::SlurPlacement::Above
+    );
+    assert!(event_at(&doc, end_cursor, 1).markings.slur_stop);
+    assert!(doc.undo().unwrap());
+    assert!(!event_at(&doc, cursor, 0).markings.slur_start);
+    assert!(!event_at(&doc, end_cursor, 1).markings.slur_stop);
+}
+
+#[test]
+fn phrase_slur_ranges_are_independent_and_undo_together() {
+    let (mut doc, cursor) = setup(1);
+    let start = enter_note(&mut doc, cursor, c4(), dur(NoteValue::Quarter))
+        .unwrap()
+        .event;
+    let middle_cursor = Cursor {
+        tick: dur(NoteValue::Quarter).ticks(),
+        ..cursor
+    };
+    let middle = enter_note(
+        &mut doc,
+        middle_cursor,
+        Pitch::new(Step::D, 0, 4),
+        dur(NoteValue::Quarter),
+    )
+    .unwrap()
+    .event;
+    let end_cursor = Cursor {
+        tick: dur(NoteValue::Quarter).ticks() * 2,
+        ..cursor
+    };
+    let end = enter_note(
+        &mut doc,
+        end_cursor,
+        Pitch::new(Step::E, 0, 4),
+        dur(NoteValue::Quarter),
+    )
+    .unwrap()
+    .event;
+
+    edit::toggle_slur(&mut doc, start, middle, notula_model::SlurPlacement::Above).unwrap();
+    edit::toggle_phrase_slur(&mut doc, start, end, notula_model::SlurPlacement::Below).unwrap();
+    assert!(event_at(&doc, cursor, 0).markings.slur_start);
+    assert!(event_at(&doc, cursor, 0).markings.phrase_slur_start);
+    assert!(event_at(&doc, end_cursor, 2).markings.phrase_slur_stop);
+    assert_eq!(
+        event_at(&doc, cursor, 0).markings.phrase_slur_placement,
+        notula_model::SlurPlacement::Below
+    );
+    assert!(doc.undo().unwrap());
+    assert!(!event_at(&doc, cursor, 0).markings.phrase_slur_start);
+    assert!(event_at(&doc, cursor, 0).markings.slur_start);
+}
+
+#[test]
 fn changing_the_duration_keeps_pitch_and_id() {
     let (mut doc, cursor) = setup(1);
     let entry = enter_note(&mut doc, cursor, c4(), dur(NoteValue::Quarter)).unwrap();

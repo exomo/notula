@@ -207,6 +207,37 @@
         onclick={() => editor.toggleArticulation(item.articulation)}>{item.glyph}</button
       >
     {/each}
+    <button
+      class:active={editor.hasTie()}
+      aria-pressed={editor.hasTie()}
+      aria-label="Tie to next note"
+      title="Tie matching pitches to the next note"
+      disabled={!editor.canToggleTie()}
+      onclick={() => editor.toggleTie()}>Tie</button
+    >
+    <button
+      class:active={editor.slurMode}
+      aria-pressed={editor.slurMode}
+      aria-label="Create a slur"
+      title="Select a start note, then an end note to add or remove a slur"
+      onclick={() => editor.toggleSlurMode()}>{editor.slurMode ? "Cancel slur" : "Slur"}</button
+    >
+    <button
+      class:active={editor.phraseSlurMode}
+      aria-pressed={editor.phraseSlurMode}
+      aria-label="Create a phrase slur"
+      title="Select a start note, then an end note to add or remove an overlapping phrase slur"
+      onclick={() => editor.togglePhraseSlurMode()}>{editor.phraseSlurMode ? "Cancel phrase" : "Phrase"}</button
+    >
+    <select
+      aria-label="Slur placement"
+      title="Choose where new slurs are placed"
+      bind:value={editor.slurPlacement}
+    >
+      <option value="auto">Slur: Auto</option>
+      <option value="above">Slur: Above</option>
+      <option value="below">Slur: Below</option>
+    </select>
   </div>
 
   <div class="group">
@@ -338,6 +369,7 @@
 
   .group {
     display: flex;
+    flex: 0 0 auto;
     align-items: center;
     gap: 0.3rem;
     padding: 0 0.55rem;

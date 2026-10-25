@@ -10,12 +10,13 @@ mod staff;
 
 use std::ops::Range;
 
-use notula_model::{NoteValue, Pitch, Score, Staff, StaffId};
+use notula_model::{EventKind, NoteValue, Pitch, Score, Staff, StaffId};
 
 use measure::{MeasureMetrics, measure_metrics};
 use prefix::Prefix;
 use render::Canvas;
 pub use render::{Anchor, Item, MeasureArea, RenderList, Shape};
+use smufl::notehead;
 
 pub struct LayoutOptions {
     /// Available width in staff spaces; systems are broken to fit.
@@ -154,6 +155,120 @@ struct Layouter<'a> {
     staves: Vec<&'a Staff>,
     metrics: Vec<MeasureMetrics>,
     rows: Rows,
+}
+
+struct PlacedNote {
+    pitch: Pitch,
+    x: f32,
+    y: f32,
+    width: f32,
+}
+
+struct PlacedEvent {
+    id: notula_model::EventId,
+    tied: bool,
+    slur_start: bool,
+    slur_stop: bool,
+    slur_placement: notula_model::SlurPlacement,
+    phrase_slur_start: bool,
+    phrase_slur_stop: bool,
+    phrase_slur_placement: notula_model::SlurPlacement,
+    start_tick: u64,
+    end_tick: u64,
+    staff: StaffId,
+    staff_top: f32,
+    voice: usize,
+    stem_up: bool,
+    notes: Vec<PlacedNote>,
+}
+
+fn event_details(
+    score: &Score,
+    id: notula_model::EventId,
+) -> Option<(StaffId, usize, u64, notula_model::Event)> {
+    let located = notula_model::edit::locate(score, id)?;
+    let staff = score.staff(located.cursor.staff).ok()?;
+    let event = staff.measures[located.cursor.measure].voices[located.cursor.voice]
+        .events
+        .get(located.index)?
+        .clone();
+    let measure_start: u64 = score.measures[..located.cursor.measure]
+        .iter()
+        .map(|measure| u64::from(measure.capacity()))
+        .sum();
+    Some((
+        located.cursor.staff,
+        located.cursor.voice,
+        measure_start + u64::from(located.cursor.tick),
+        event,
+    ))
+}
+
+fn slur_endpoint(
+    score: &Score,
+    event: notula_model::EventId,
+    forward: bool,
+    phrase: bool,
+) -> Option<notula_model::EventId> {
+    let (staff, voice, _, current) = event_details(score, event)?;
+    let boundary = if phrase {
+        if forward {
+            current.markings.phrase_slur_start
+        } else {
+            current.markings.phrase_slur_stop
+        }
+    } else if forward {
+        current.markings.slur_start
+    } else {
+        current.markings.slur_stop
+    };
+    if !boundary {
+        return None;
+    }
+    let mut candidate = notula_model::edit::adjacent_event(score, event, forward)?;
+    loop {
+        let (candidate_staff, candidate_voice, _, candidate_event) =
+            event_details(score, candidate)?;
+        if candidate_staff != staff || candidate_voice != voice {
+            return None;
+        }
+        if if phrase {
+            if forward {
+                candidate_event.markings.phrase_slur_stop
+            } else {
+                candidate_event.markings.phrase_slur_start
+            }
+        } else if forward {
+            candidate_event.markings.slur_stop
+        } else {
+            candidate_event.markings.slur_start
+        } {
+            return Some(candidate);
+        }
+        candidate = notula_model::edit::adjacent_event(score, candidate, forward)?;
+    }
+}
+
+fn slur_is_above(event: &PlacedEvent) -> bool {
+    match event.slur_placement {
+        notula_model::SlurPlacement::Auto => event.stem_up,
+        notula_model::SlurPlacement::Above => true,
+        notula_model::SlurPlacement::Below => false,
+    }
+}
+
+fn slur_anchor(event: &PlacedEvent, above: bool) -> Option<&PlacedNote> {
+    if above {
+        event
+            .notes
+            .iter()
+            .min_by(|left, right| left.y.total_cmp(&right.y))
+    } else {
+        event
+            .notes
+            .iter()
+            .max_by(|left, right| left.y.total_cmp(&right.y))
+    }
 }
 
 pub fn layout(score: &Score, options: &LayoutOptions) -> RenderList {
@@ -401,6 +516,11 @@ impl Layouter<'_> {
 
         let mut cursor = x_start;
         let mut foreground_fermatas = Vec::new();
+        let mut placed_events = Vec::new();
+        let mut measure_tick: u64 = self.score.measures[..system.measures.start]
+            .iter()
+            .map(|measure| u64::from(measure.capacity()))
+            .sum();
         for (offset, measure) in system.measures.clone().enumerate() {
             let info = self.score.measures[measure];
             let metrics = &self.metrics[measure];
@@ -433,7 +553,7 @@ impl Layouter<'_> {
                 });
             }
 
-            for (plan, &row) in metrics.plans.iter().zip(&rows.y) {
+            for (staff_index, (plan, &row)) in metrics.plans.iter().zip(&rows.y).enumerate() {
                 let y0 = y_top + row;
                 if plan.is_empty() {
                     let value = if info.length.is_some() {
@@ -445,8 +565,48 @@ impl Layouter<'_> {
                     let x = (body_start + body_end - width) / 2.0;
                     canvas.glyph(None, x, y0 + rest_y, glyph, 4.0);
                 }
-                for voice in &plan.voices {
+                for (voice_index, voice) in plan.voices.iter().enumerate() {
                     emit::emit_voice(canvas, voice, y0, &x_of);
+                    for event in &voice.events {
+                        let (tied, stem_up) = (event.tied, event.stem_up);
+                        let notes = match &event.body {
+                            engrave::Body::Rest { .. } => Vec::new(),
+                            engrave::Body::Chord { notes } => {
+                                let x = x_of(event.onset);
+                                let width = notehead(event.value).1;
+                                notes
+                                    .iter()
+                                    .map(|note| PlacedNote {
+                                        pitch: note.pitch,
+                                        x: emit::head_x(note, event, x, width),
+                                        y: y0 + note.y,
+                                        width,
+                                    })
+                                    .collect()
+                            }
+                        };
+                        let start_tick = measure_tick + u64::from(event.onset);
+                        placed_events.push(PlacedEvent {
+                            id: event.id,
+                            tied,
+                            slur_start: event.slur_start,
+                            slur_stop: event.slur_stop,
+                            slur_placement: event.slur_placement,
+                            phrase_slur_start: event.phrase_slur_start,
+                            phrase_slur_stop: event.phrase_slur_stop,
+                            phrase_slur_placement: event.phrase_slur_placement,
+                            start_tick,
+                            end_tick: start_tick
+                                + u64::from(
+                                    notula_model::Duration::new(event.value, event.dots).ticks(),
+                                ),
+                            staff: self.staves[staff_index].id,
+                            staff_top: y0,
+                            voice: voice_index,
+                            stem_up,
+                            notes,
+                        });
+                    }
                 }
                 foreground_fermatas.extend(emit::fermatas(&plan.voices, y0, &x_of));
             }
@@ -470,11 +630,266 @@ impl Layouter<'_> {
                 }
             }
             cursor = body_end;
+            measure_tick += u64::from(info.capacity());
         }
 
         for (event, x, y) in foreground_fermatas {
             canvas.knockout(x - 1.1, y - 1.5, 2.2, 1.6);
             canvas.centered_glyph(Some(event), x, y, smufl::FERMATA_ABOVE, 4.0);
+        }
+        for source in placed_events.iter().filter(|event| event.tied) {
+            let Some(next_id) = notula_model::edit::adjacent_event(self.score, source.id, true)
+            else {
+                continue;
+            };
+            if let Some(target) = placed_events.iter().find(|event| event.id == next_id) {
+                if source.staff == target.staff
+                    && source.voice == target.voice
+                    && source.end_tick == target.start_tick
+                {
+                    for note in &source.notes {
+                        let Some(next_note) =
+                            target.notes.iter().find(|next| next.pitch == note.pitch)
+                        else {
+                            continue;
+                        };
+                        emit::emit_tie(
+                            canvas,
+                            source.id,
+                            note.x + note.width - 0.05,
+                            next_note.x + 0.05,
+                            (note.y + next_note.y) / 2.0,
+                            source.stem_up,
+                        );
+                    }
+                }
+                continue;
+            }
+
+            let Some((staff, voice, target_start, target)) = event_details(self.score, next_id)
+            else {
+                continue;
+            };
+            if staff != source.staff || voice != source.voice || source.end_tick != target_start {
+                continue;
+            }
+            let EventKind::Chord { pitches, .. } = target.kind else {
+                continue;
+            };
+            for note in &source.notes {
+                if pitches.contains(&note.pitch) {
+                    emit::emit_tie(
+                        canvas,
+                        source.id,
+                        (note.x + note.width - 0.05).min(cursor - 0.9),
+                        cursor - 0.3,
+                        note.y,
+                        source.stem_up,
+                    );
+                }
+            }
+        }
+        let first_measure = system.measures.start;
+        let first_body_start = x_start
+            + prefix_for(self.score, first_measure, true).width(self.score.measures[first_measure]);
+        for target in &placed_events {
+            let Some(previous_id) =
+                notula_model::edit::adjacent_event(self.score, target.id, false)
+            else {
+                continue;
+            };
+            if placed_events.iter().any(|event| event.id == previous_id) {
+                continue;
+            }
+            let Some((staff, voice, source_start, source)) = event_details(self.score, previous_id)
+            else {
+                continue;
+            };
+            let EventKind::Chord {
+                pitches,
+                tied: true,
+            } = source.kind
+            else {
+                continue;
+            };
+            let source_end = source_start + u64::from(source.duration.ticks());
+            if staff != target.staff || voice != target.voice || source_end != target.start_tick {
+                continue;
+            }
+            for note in &target.notes {
+                if pitches.contains(&note.pitch) {
+                    emit::emit_tie(
+                        canvas,
+                        previous_id,
+                        first_body_start + 0.1,
+                        note.x + 0.05,
+                        note.y,
+                        target.stem_up,
+                    );
+                }
+            }
+        }
+
+        for source in placed_events.iter().filter(|event| event.slur_start) {
+            let Some(end_id) = slur_endpoint(self.score, source.id, true, false) else {
+                continue;
+            };
+            let above = slur_is_above(source);
+            if let Some(target) = placed_events.iter().find(|event| event.id == end_id) {
+                let (Some(start_note), Some(end_note)) =
+                    (slur_anchor(source, above), slur_anchor(target, above))
+                else {
+                    continue;
+                };
+                emit::emit_slur(
+                    canvas,
+                    source.id,
+                    start_note.x + start_note.width - 0.08,
+                    end_note.x + 0.08,
+                    start_note.y + if above { -0.28 } else { 0.28 },
+                    end_note.y + if above { -0.28 } else { 0.28 },
+                    above,
+                );
+            } else {
+                let Some(start_note) = slur_anchor(source, above) else {
+                    continue;
+                };
+                emit::emit_slur(
+                    canvas,
+                    source.id,
+                    start_note.x + start_note.width - 0.08,
+                    cursor - 0.3,
+                    start_note.y + if above { -0.28 } else { 0.28 },
+                    start_note.y + if above { -0.28 } else { 0.28 },
+                    above,
+                );
+            }
+        }
+
+        for target in placed_events.iter().filter(|event| event.slur_stop) {
+            let Some(start_id) = slur_endpoint(self.score, target.id, false, false) else {
+                continue;
+            };
+            if placed_events.iter().any(|event| event.id == start_id) {
+                continue;
+            }
+            let Some((_, _, _, source_event)) = event_details(self.score, start_id) else {
+                continue;
+            };
+            let above = match source_event.markings.slur_placement {
+                notula_model::SlurPlacement::Auto => target.stem_up,
+                notula_model::SlurPlacement::Above => true,
+                notula_model::SlurPlacement::Below => false,
+            };
+            let Some(end_note) = slur_anchor(target, above) else {
+                continue;
+            };
+            emit::emit_slur(
+                canvas,
+                start_id,
+                first_body_start + 0.3,
+                end_note.x + 0.08,
+                end_note.y + if above { -0.28 } else { 0.28 },
+                end_note.y + if above { -0.28 } else { 0.28 },
+                above,
+            );
+        }
+
+        for source in placed_events.iter().filter(|event| event.phrase_slur_start) {
+            let Some(end_id) = slur_endpoint(self.score, source.id, true, true) else {
+                continue;
+            };
+            let above = match source.phrase_slur_placement {
+                notula_model::SlurPlacement::Auto => source.stem_up,
+                notula_model::SlurPlacement::Above => true,
+                notula_model::SlurPlacement::Below => false,
+            };
+            let boundary_y = |event: &PlacedEvent| {
+                if above {
+                    event.staff_top - 0.38
+                } else {
+                    event.staff_top + STAFF_HEIGHT + 0.38
+                }
+            };
+            if let Some(target) = placed_events.iter().find(|event| event.id == end_id) {
+                emit::emit_phrase_slur(
+                    canvas,
+                    source.id,
+                    source
+                        .notes
+                        .iter()
+                        .map(|note| note.x + note.width)
+                        .fold(f32::NEG_INFINITY, f32::max)
+                        - 0.08,
+                    target
+                        .notes
+                        .iter()
+                        .map(|note| note.x)
+                        .fold(f32::INFINITY, f32::min)
+                        + 0.08,
+                    boundary_y(source),
+                    boundary_y(target),
+                    above,
+                );
+            } else {
+                if source.notes.is_empty() {
+                    continue;
+                }
+                emit::emit_phrase_slur(
+                    canvas,
+                    source.id,
+                    source
+                        .notes
+                        .iter()
+                        .map(|note| note.x + note.width)
+                        .fold(f32::NEG_INFINITY, f32::max)
+                        - 0.08,
+                    cursor - 0.3,
+                    boundary_y(source),
+                    boundary_y(source),
+                    above,
+                );
+            }
+        }
+
+        for target in placed_events.iter().filter(|event| event.phrase_slur_stop) {
+            let Some(start_id) = slur_endpoint(self.score, target.id, false, true) else {
+                continue;
+            };
+            if placed_events.iter().any(|event| event.id == start_id) {
+                continue;
+            }
+            let Some((_, _, _, source_event)) = event_details(self.score, start_id) else {
+                continue;
+            };
+            let above = match source_event.markings.phrase_slur_placement {
+                notula_model::SlurPlacement::Auto => target.stem_up,
+                notula_model::SlurPlacement::Above => true,
+                notula_model::SlurPlacement::Below => false,
+            };
+            if target.notes.is_empty() {
+                continue;
+            }
+            let end_x = target
+                .notes
+                .iter()
+                .map(|note| note.x)
+                .fold(f32::INFINITY, f32::min)
+                + 0.08;
+            let boundary_y = if above {
+                target.staff_top - 0.38
+            } else {
+                target.staff_top + STAFF_HEIGHT + 0.38
+            };
+            emit::emit_phrase_slur(
+                canvas,
+                start_id,
+                first_body_start + 0.3,
+                end_x,
+                boundary_y,
+                boundary_y,
+                above,
+            );
         }
     }
 }

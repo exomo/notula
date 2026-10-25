@@ -17,6 +17,7 @@ export type Articulation =
   | "Accent"
   | "Marcato"
   | "Fermata";
+export type SlurPlacement = "auto" | "above" | "below";
 
 export interface Pitch {
   step: Step;
@@ -32,6 +33,8 @@ export interface Duration {
 export interface EventArticulations {
   articulations: Articulation[];
   is_rest: boolean;
+  tied: boolean;
+  tie_possible: boolean;
 }
 
 export interface Cursor {
@@ -152,6 +155,11 @@ export const api = {
     invoke<Edited>("set_duration", { event, duration }),
   toggleArticulation: (event: number, articulation: Articulation) =>
     invoke<Edited>("toggle_articulation", { event, articulation }),
+  toggleTie: (event: number) => invoke<Edited>("toggle_tie", { event }),
+  toggleSlur: (start: number, end: number, placement: SlurPlacement) =>
+    invoke<Edited>("toggle_slur", { start, end, placement }),
+  togglePhraseSlur: (start: number, end: number, placement: SlurPlacement) =>
+    invoke<Edited>("toggle_phrase_slur", { start, end, placement }),
   eventArticulations: (event: number) =>
     invoke<EventArticulations | null>("event_articulations", { event }),
   deleteEvent: (event: number) => invoke<Edited>("delete_event", { event }),

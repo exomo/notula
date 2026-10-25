@@ -6,6 +6,7 @@ use notula_model::{
 };
 
 const STAFF_LINE: f32 = 0.13;
+const STAFF_HEIGHT: f32 = 4.0;
 const SHARP: char = '\u{E262}';
 const FLAT: char = '\u{E260}';
 const NATURAL: char = '\u{E261}';
@@ -75,6 +76,13 @@ impl Builder {
 
 fn c4() -> Pitch {
     Pitch::new(Step::C, 0, 4)
+}
+
+fn tie_polygons(list: &RenderList, event: EventId) -> usize {
+    list.items
+        .iter()
+        .filter(|item| item.event == Some(event) && matches!(item.shape, Shape::Tie { .. }))
+        .count()
 }
 
 fn glyph_x(list: &RenderList, event: EventId, glyph: char) -> f32 {
@@ -154,6 +162,234 @@ fn fermata_is_above_simultaneous_voices_and_drawn_in_foreground() {
             ..
         }
     )));
+}
+
+#[test]
+fn tied_chord_engravings_join_matching_pitches() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let source = b.append(
+        0,
+        0,
+        EventKind::Chord {
+            pitches: vec![c4(), Pitch::new(Step::E, 0, 4)],
+            tied: true,
+        },
+        NoteValue::Quarter,
+    );
+    b.append(
+        0,
+        0,
+        EventKind::Chord {
+            pitches: vec![c4(), Pitch::new(Step::G, 0, 4)],
+            tied: false,
+        },
+        NoteValue::Quarter,
+    );
+
+    let list = b.layout(100.0);
+    assert_eq!(tie_polygons(&list, source), 1);
+    let tie = list
+        .items
+        .iter()
+        .find(|item| item.event == Some(source) && matches!(item.shape, Shape::Tie { .. }))
+        .unwrap();
+    assert_eq!(tie.staff, Some(b.staves[0]));
+    assert_eq!(tie.voice, Some(0));
+    assert!(
+        list.items
+            .iter()
+            .any(|item| matches!(item.shape, Shape::WhitePolygon { .. }))
+    );
+    assert!(
+        list.items
+            .iter()
+            .all(|item| !matches!(item.shape, Shape::Knockout { .. }))
+    );
+}
+
+#[test]
+fn slurs_connect_range_endpoints_with_different_pitches() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let start = b.note(0, 0, c4(), NoteValue::Quarter);
+    let end = b.note(0, 0, Pitch::new(Step::D, 0, 4), NoteValue::Quarter);
+    edit::toggle_slur(&mut b.doc, start, end, notula_model::SlurPlacement::Auto).unwrap();
+
+    let list = b.layout(100.0);
+    let slur = list
+        .items
+        .iter()
+        .find(|item| item.event == Some(start) && matches!(item.shape, Shape::Slur { .. }))
+        .unwrap();
+    assert_eq!(slur.staff, Some(b.staves[0]));
+    assert_eq!(slur.voice, Some(0));
+    let Shape::Slur { points } = &slur.shape else {
+        unreachable!();
+    };
+    assert!((points[6][1] - points[19][1]).abs() > 0.17);
+    let source_y = list
+        .items
+        .iter()
+        .find_map(|item| match (&item.shape, item.event) {
+            (
+                Shape::Glyph {
+                    y,
+                    glyph: BLACK_HEAD,
+                    ..
+                },
+                Some(id),
+            ) if id == start => Some(*y),
+            _ => None,
+        })
+        .unwrap();
+    assert!(points[0][1] < source_y);
+}
+
+#[test]
+fn slur_below_placement_anchors_under_the_noteheads() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let start = b.note(0, 0, c4(), NoteValue::Quarter);
+    let end = b.note(0, 0, Pitch::new(Step::D, 0, 4), NoteValue::Quarter);
+    edit::toggle_slur(&mut b.doc, start, end, notula_model::SlurPlacement::Below).unwrap();
+
+    let list = b.layout(100.0);
+    let slur = list
+        .items
+        .iter()
+        .find(|item| item.event == Some(start) && matches!(item.shape, Shape::Slur { .. }))
+        .unwrap();
+    let Shape::Slur { points } = &slur.shape else {
+        unreachable!();
+    };
+    let source_y = list
+        .items
+        .iter()
+        .find_map(|item| match (&item.shape, item.event) {
+            (
+                Shape::Glyph {
+                    y,
+                    glyph: BLACK_HEAD,
+                    ..
+                },
+                Some(id),
+            ) if id == start => Some(*y),
+            _ => None,
+        })
+        .unwrap();
+    assert!(points[0][1] > source_y);
+}
+
+#[test]
+fn phrase_slur_can_overlap_an_ordinary_slur() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let start = b.note(0, 0, c4(), NoteValue::Quarter);
+    let middle = b.note(0, 0, Pitch::new(Step::D, 0, 4), NoteValue::Quarter);
+    let end = b.note(0, 0, Pitch::new(Step::E, 0, 4), NoteValue::Quarter);
+    edit::toggle_slur(
+        &mut b.doc,
+        start,
+        middle,
+        notula_model::SlurPlacement::Above,
+    )
+    .unwrap();
+    edit::toggle_phrase_slur(&mut b.doc, start, end, notula_model::SlurPlacement::Below).unwrap();
+
+    let list = b.layout(100.0);
+    assert!(
+        list.items
+            .iter()
+            .any(|item| { item.event == Some(start) && matches!(item.shape, Shape::Slur { .. }) })
+    );
+    assert!(list.items.iter().any(|item| {
+        item.event == Some(start) && matches!(item.shape, Shape::PhraseSlur { .. })
+    }));
+    let phrase = list
+        .items
+        .iter()
+        .find(|item| item.event == Some(start) && matches!(item.shape, Shape::PhraseSlur { .. }))
+        .unwrap();
+    let Shape::PhraseSlur { points } = &phrase.shape else {
+        unreachable!();
+    };
+    let staff_top = list
+        .areas
+        .iter()
+        .find(|area| area.staff == b.staves[0])
+        .unwrap()
+        .y_top;
+    assert!(
+        points
+            .iter()
+            .all(|point| point[1] > staff_top + STAFF_HEIGHT)
+    );
+}
+
+#[test]
+fn phrase_slur_above_stays_outside_staff_lines() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let start = b.note(0, 0, c4(), NoteValue::Quarter);
+    let end = b.note(0, 0, Pitch::new(Step::D, 0, 4), NoteValue::Quarter);
+    edit::toggle_phrase_slur(&mut b.doc, start, end, notula_model::SlurPlacement::Above).unwrap();
+
+    let list = b.layout(100.0);
+    let phrase = list
+        .items
+        .iter()
+        .find(|item| item.event == Some(start) && matches!(item.shape, Shape::PhraseSlur { .. }))
+        .unwrap();
+    let Shape::PhraseSlur { points } = &phrase.shape else {
+        unreachable!();
+    };
+    let staff_top = list
+        .areas
+        .iter()
+        .find(|area| area.staff == b.staves[0])
+        .unwrap()
+        .y_top;
+    assert!(points.iter().all(|point| point[1] < staff_top));
+}
+
+#[test]
+fn tied_chords_continue_across_a_barline_on_the_same_system() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    b.measures(2);
+    let source = b.note(0, 0, c4(), NoteValue::Whole);
+    edit::toggle_tie(&mut b.doc, source).unwrap();
+    b.note(0, 1, c4(), NoteValue::Whole);
+
+    let list = b.layout(100.0);
+    assert_eq!(
+        list.areas
+            .iter()
+            .filter(|area| area.staff == b.staves[0])
+            .count(),
+        2
+    );
+    assert_eq!(tie_polygons(&list, source), 1);
+}
+
+#[test]
+fn tied_chords_continue_across_system_breaks() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    b.measures(2);
+    let source = b.note(0, 0, c4(), NoteValue::Whole);
+    edit::toggle_tie(&mut b.doc, source).unwrap();
+    b.note(0, 1, c4(), NoteValue::Whole);
+
+    let list = b.layout(12.0);
+    let systems: Vec<_> = list
+        .areas
+        .iter()
+        .filter(|area| area.staff == b.staves[0])
+        .collect();
+    assert_eq!(systems.len(), 2);
+    assert_ne!(systems[0].y_top, systems[1].y_top);
+    let ties: Vec<_> = list
+        .items
+        .iter()
+        .filter(|item| item.event == Some(source) && matches!(item.shape, Shape::Tie { .. }))
+        .map(|item| item.shape.clone())
+        .collect();
+    assert_eq!(ties.len(), 2, "{ties:?}");
 }
 
 fn staff_lines(list: &RenderList) -> Vec<&Item> {

@@ -121,6 +121,22 @@ fn render_list_svg(list: &RenderList) -> String {
                     .join(" ");
                 svg.push_str(&format!("<polygon points=\"{points}\" fill=\"black\"/>"));
             }
+            Shape::WhitePolygon { points } => {
+                let points = points
+                    .iter()
+                    .map(|point| format!("{},{}", point[0], point[1]))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                svg.push_str(&format!("<polygon points=\"{points}\" fill=\"white\"/>"));
+            }
+            Shape::Tie { points } | Shape::Slur { points } | Shape::PhraseSlur { points } => {
+                let points = points
+                    .iter()
+                    .map(|point| format!("{},{}", point[0], point[1]))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                svg.push_str(&format!("<polygon points=\"{points}\" fill=\"black\"/>"));
+            }
             Shape::Knockout {
                 x,
                 y,

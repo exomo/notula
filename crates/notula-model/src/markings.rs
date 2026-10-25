@@ -41,6 +41,16 @@ pub enum Articulation {
     Fermata,
 }
 
+/// Preferred side for a slur. `Auto` follows the stem direction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlurPlacement {
+    #[default]
+    Auto,
+    Above,
+    Below,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Markings {
     /// Takes effect at this event and stays until the next dynamic.
@@ -51,14 +61,48 @@ pub struct Markings {
     /// Each articulation at most once.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub articulations: Vec<Articulation>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub slur_start: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub slur_stop: bool,
+    #[serde(default, skip_serializing_if = "SlurPlacement::is_auto")]
+    pub slur_placement: SlurPlacement,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub phrase_slur_start: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub phrase_slur_stop: bool,
+    #[serde(default, skip_serializing_if = "SlurPlacement::is_auto")]
+    pub phrase_slur_placement: SlurPlacement,
+}
+
+impl SlurPlacement {
+    fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
 }
 
 impl Markings {
     pub fn is_empty(&self) -> bool {
-        self.dynamic.is_none() && self.hairpin.is_none() && self.articulations.is_empty()
+        self.dynamic.is_none()
+            && self.hairpin.is_none()
+            && self.articulations.is_empty()
+            && !self.slur_start
+            && !self.slur_stop
+            && self.slur_placement == SlurPlacement::Auto
+            && !self.phrase_slur_start
+            && !self.phrase_slur_stop
+            && self.phrase_slur_placement == SlurPlacement::Auto
     }
 
     pub fn validate(&self, on_rest: bool) -> Result<(), ModelError> {
+        if on_rest
+            && (self.slur_start
+                || self.slur_stop
+                || self.phrase_slur_start
+                || self.phrase_slur_stop)
+        {
+            return Err(ModelError::Invalid("slurs can only be placed on notes"));
+        }
         for (index, articulation) in self.articulations.iter().enumerate() {
             if self.articulations[..index].contains(articulation) {
                 return Err(ModelError::Invalid("an articulation can only be used once"));
@@ -75,6 +119,12 @@ impl Markings {
     /// What remains when a note is replaced by a rest.
     pub fn for_rest(mut self) -> Self {
         self.articulations.retain(|a| *a == Articulation::Fermata);
+        self.slur_start = false;
+        self.slur_stop = false;
+        self.slur_placement = SlurPlacement::Auto;
+        self.phrase_slur_start = false;
+        self.phrase_slur_stop = false;
+        self.phrase_slur_placement = SlurPlacement::Auto;
         self
     }
 }
@@ -89,6 +139,12 @@ mod tests {
             dynamic: Some(Dynamic::F),
             hairpin: None,
             articulations: vec![Articulation::Staccato, Articulation::Fermata],
+            slur_start: false,
+            slur_stop: false,
+            slur_placement: SlurPlacement::Auto,
+            phrase_slur_start: false,
+            phrase_slur_stop: false,
+            phrase_slur_placement: SlurPlacement::Auto,
         };
         let rest = markings.for_rest();
         assert_eq!(rest.dynamic, Some(Dynamic::F));

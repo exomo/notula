@@ -51,6 +51,8 @@ pub struct OpenScoreResult {
 pub struct EventArticulations {
     articulations: Vec<Articulation>,
     is_rest: bool,
+    tied: bool,
+    tie_possible: bool,
 }
 
 type Reply<T> = Result<T, String>;
@@ -343,6 +345,42 @@ pub fn toggle_articulation(
 }
 
 #[tauri::command]
+pub fn toggle_tie(app: AppHandle, state: State<AppState>, event: EventId) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::toggle_tie(&mut session.doc, event).map_err(text)?;
+    let cursor = cursor_of(&session, event);
+    Ok(finish(&app, &session, cursor, Some(event)))
+}
+
+#[tauri::command]
+pub fn toggle_slur(
+    app: AppHandle,
+    state: State<AppState>,
+    start: EventId,
+    end: EventId,
+    placement: notula_model::SlurPlacement,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::toggle_slur(&mut session.doc, start, end, placement).map_err(text)?;
+    let cursor = cursor_of(&session, end);
+    Ok(finish(&app, &session, cursor, Some(end)))
+}
+
+#[tauri::command]
+pub fn toggle_phrase_slur(
+    app: AppHandle,
+    state: State<AppState>,
+    start: EventId,
+    end: EventId,
+    placement: notula_model::SlurPlacement,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::toggle_phrase_slur(&mut session.doc, start, end, placement).map_err(text)?;
+    let cursor = cursor_of(&session, end);
+    Ok(finish(&app, &session, cursor, Some(end)))
+}
+
+#[tauri::command]
 pub fn event_articulations(state: State<AppState>, event: EventId) -> Option<EventArticulations> {
     let session = state.lock();
     let located = edit::locate(session.doc.score(), event)?;
@@ -350,9 +388,35 @@ pub fn event_articulations(state: State<AppState>, event: EventId) -> Option<Eve
     let event = staff.measures[located.cursor.measure].voices[located.cursor.voice]
         .events
         .get(located.index)?;
+    let tied = matches!(event.kind, EventKind::Chord { tied: true, .. });
+    let tie_possible = tied
+        || match &event.kind {
+            EventKind::Chord { pitches, .. } => {
+                edit::adjacent_event(session.doc.score(), event.id, true)
+                    .and_then(|next| edit::locate(session.doc.score(), next))
+                    .and_then(|next| {
+                        let next_staff = session.doc.score().staff(next.cursor.staff).ok()?;
+                        let next_event = next_staff.measures[next.cursor.measure].voices
+                            [next.cursor.voice]
+                            .events
+                            .get(next.index)?;
+                        match &next_event.kind {
+                            EventKind::Chord {
+                                pitches: next_pitches,
+                                ..
+                            } => Some(pitches.iter().any(|pitch| next_pitches.contains(pitch))),
+                            EventKind::Rest => Some(false),
+                        }
+                    })
+                    .unwrap_or(false)
+            }
+            EventKind::Rest => false,
+        };
     Some(EventArticulations {
         articulations: event.markings.articulations.clone(),
         is_rest: matches!(event.kind, EventKind::Rest),
+        tied,
+        tie_possible,
     })
 }
 

@@ -22,11 +22,134 @@ struct Stem {
     near_y: f32,
 }
 
-fn head_x(note: &NotePlan, ev: &EventPlan, x: f32, head_width: f32) -> f32 {
+pub(crate) fn head_x(note: &NotePlan, ev: &EventPlan, x: f32, head_width: f32) -> f32 {
     match (note.displaced, ev.stem_up) {
         (false, _) => x,
         (true, true) => x + head_width - smufl::STEM_THICKNESS,
         (true, false) => x - head_width + smufl::STEM_THICKNESS,
+    }
+}
+
+pub(crate) fn emit_tie(
+    canvas: &mut Canvas,
+    event: EventId,
+    start_x: f32,
+    end_x: f32,
+    y: f32,
+    stem_up: bool,
+) {
+    emit_curve(canvas, event, start_x, end_x, y, y, stem_up, false);
+}
+
+pub(crate) fn emit_slur(
+    canvas: &mut Canvas,
+    event: EventId,
+    start_x: f32,
+    end_x: f32,
+    start_y: f32,
+    end_y: f32,
+    above: bool,
+) {
+    emit_curve(canvas, event, start_x, end_x, start_y, end_y, above, true);
+}
+
+pub(crate) fn emit_phrase_slur(
+    canvas: &mut Canvas,
+    event: EventId,
+    start_x: f32,
+    end_x: f32,
+    start_y: f32,
+    end_y: f32,
+    above: bool,
+) {
+    let width = end_x - start_x;
+    if width <= 0.4 {
+        return;
+    }
+    let direction = if above { -1.0 } else { 1.0 };
+    let depth = (width * 0.12).clamp(0.8, 3.0);
+    let thickness = 0.23;
+    let segments = 16;
+    let band = |outer_depth: f32, inner_depth: f32| {
+        let mut points = Vec::with_capacity((segments + 1) * 2);
+        for segment in 0..=segments {
+            let t = segment as f32 / segments as f32;
+            let curve = (std::f32::consts::PI * t).sin();
+            points.push((
+                start_x + width * t,
+                start_y + (end_y - start_y) * t + direction * outer_depth * curve,
+            ));
+        }
+        for segment in (0..=segments).rev() {
+            let t = segment as f32 / segments as f32;
+            let curve = (std::f32::consts::PI * t).sin();
+            points.push((
+                start_x + width * t,
+                start_y + (end_y - start_y) * t + direction * inner_depth * curve,
+            ));
+        }
+        points
+    };
+    canvas.white_polygon(&band(depth + 0.18, (depth - thickness - 0.18).max(0.08)));
+    canvas.phrase_slur(event, &band(depth, depth - thickness));
+}
+
+fn emit_curve(
+    canvas: &mut Canvas,
+    event: EventId,
+    start_x: f32,
+    end_x: f32,
+    start_y: f32,
+    end_y: f32,
+    direction_hint: bool,
+    slur: bool,
+) {
+    let width = end_x - start_x;
+    if width <= 0.4 {
+        return;
+    }
+    let direction = if slur {
+        if direction_hint { -1.0 } else { 1.0 }
+    } else if direction_hint {
+        1.0
+    } else {
+        -1.0
+    };
+    let depth = if slur {
+        (width * 0.12).clamp(0.5, 2.0)
+    } else {
+        (width * 0.24).clamp(0.5, 1.0)
+    };
+    let thickness = if slur { 0.18 } else { 0.12 };
+    let base_offset = if slur { 0.0 } else { direction * 0.12 };
+    let segments = 12;
+    let band = |outer_depth: f32, inner_depth: f32| {
+        let mut points = Vec::with_capacity((segments + 1) * 2);
+        for segment in 0..=segments {
+            let t = segment as f32 / segments as f32;
+            let curve = (std::f32::consts::PI * t).sin();
+            points.push((
+                start_x + width * t,
+                start_y + (end_y - start_y) * t + base_offset + direction * outer_depth * curve,
+            ));
+        }
+        for segment in (0..=segments).rev() {
+            let t = segment as f32 / segments as f32;
+            let curve = (std::f32::consts::PI * t).sin();
+            points.push((
+                start_x + width * t,
+                start_y + (end_y - start_y) * t + base_offset + direction * inner_depth * curve,
+            ));
+        }
+        points
+    };
+    let underlay = band(depth + 0.16, (depth - thickness - 0.16).max(0.08));
+    let curve = band(depth, depth - thickness);
+    canvas.white_polygon(&underlay);
+    if slur {
+        canvas.slur(event, &curve);
+    } else {
+        canvas.tie(event, &curve);
     }
 }
 
@@ -81,7 +204,7 @@ fn draw_articulations(
         if articulation == Articulation::Fermata {
             continue;
         }
-        let below = articulation != notula_model::Articulation::Fermata && ev.stem_up;
+        let below = ev.stem_up;
         let y = if below {
             let y = articulation_y(bottom + 0.75 + below_index as f32 * ARTICULATION_GAP, true);
             below_index += 1;

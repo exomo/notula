@@ -7,7 +7,7 @@ use crate::duration::{Duration, NoteValue, TimeSignature, TimeSignatureDisplay};
 use crate::error::ModelError;
 use crate::history::Document;
 use crate::ids::{EventId, StaffId};
-use crate::markings::{Articulation, Dynamic, Hairpin, Markings};
+use crate::markings::{Articulation, Dynamic, Hairpin, Markings, SlurPlacement};
 use crate::pitch::{Pitch, Step};
 use crate::score::{Clef, Event, EventKind, Score, Voice, VoiceLocation};
 
@@ -229,6 +229,12 @@ fn enter_event(
                 dynamic: replaced.markings.dynamic,
                 hairpin: replaced.markings.hairpin,
                 articulations: Vec::new(),
+                slur_start: false,
+                slur_stop: false,
+                slur_placement: SlurPlacement::Auto,
+                phrase_slur_start: false,
+                phrase_slur_stop: false,
+                phrase_slur_placement: SlurPlacement::Auto,
             })
             .unwrap_or_default();
 
@@ -664,6 +670,114 @@ pub fn toggle_articulation(
             }
             None => markings.articulations.push(articulation),
         }
+    })
+}
+
+/// Toggles whether a chord ties to the next event in its voice.
+pub fn toggle_tie(doc: &mut Document, id: EventId) -> Result<(), ModelError> {
+    let (located, mut event) = find(doc.score(), id)?;
+    let EventKind::Chord { tied, .. } = &mut event.kind else {
+        return Err(ModelError::Invalid("only chords can be tied"));
+    };
+    *tied = !*tied;
+    doc.execute(Command::ReplaceEvent {
+        at: located.cursor.at(),
+        index: located.index,
+        event,
+    })
+}
+
+/// Toggles a slur between two chord events in the same voice.
+pub fn toggle_slur(
+    doc: &mut Document,
+    start: EventId,
+    end: EventId,
+    placement: SlurPlacement,
+) -> Result<(), ModelError> {
+    let (start_location, mut start_event) = find(doc.score(), start)?;
+    let (end_location, mut end_event) = find(doc.score(), end)?;
+    if start_location.cursor.staff != end_location.cursor.staff
+        || start_location.cursor.voice != end_location.cursor.voice
+        || (start_location.cursor.measure, start_location.cursor.tick)
+            >= (end_location.cursor.measure, end_location.cursor.tick)
+    {
+        return Err(ModelError::Invalid(
+            "slur endpoints must be ordered in the same voice",
+        ));
+    }
+    if !matches!(start_event.kind, EventKind::Chord { .. })
+        || !matches!(end_event.kind, EventKind::Chord { .. })
+    {
+        return Err(ModelError::Invalid("slur endpoints must be notes"));
+    }
+    let remove = start_event.markings.slur_start && end_event.markings.slur_stop;
+    start_event.markings.slur_start = !remove;
+    end_event.markings.slur_stop = !remove;
+    start_event.markings.slur_placement = if remove {
+        SlurPlacement::Auto
+    } else {
+        placement
+    };
+    doc.execute(Command::Batch {
+        commands: vec![
+            Command::ReplaceEvent {
+                at: start_location.cursor.at(),
+                index: start_location.index,
+                event: start_event,
+            },
+            Command::ReplaceEvent {
+                at: end_location.cursor.at(),
+                index: end_location.index,
+                event: end_event,
+            },
+        ],
+    })
+}
+
+/// Toggles a phrase slur independently of ordinary slurs between two notes.
+pub fn toggle_phrase_slur(
+    doc: &mut Document,
+    start: EventId,
+    end: EventId,
+    placement: SlurPlacement,
+) -> Result<(), ModelError> {
+    let (start_location, mut start_event) = find(doc.score(), start)?;
+    let (end_location, mut end_event) = find(doc.score(), end)?;
+    if start_location.cursor.staff != end_location.cursor.staff
+        || start_location.cursor.voice != end_location.cursor.voice
+        || (start_location.cursor.measure, start_location.cursor.tick)
+            >= (end_location.cursor.measure, end_location.cursor.tick)
+    {
+        return Err(ModelError::Invalid(
+            "phrase slur endpoints must be ordered in the same voice",
+        ));
+    }
+    if !matches!(start_event.kind, EventKind::Chord { .. })
+        || !matches!(end_event.kind, EventKind::Chord { .. })
+    {
+        return Err(ModelError::Invalid("phrase slur endpoints must be notes"));
+    }
+    let remove = start_event.markings.phrase_slur_start && end_event.markings.phrase_slur_stop;
+    start_event.markings.phrase_slur_start = !remove;
+    end_event.markings.phrase_slur_stop = !remove;
+    start_event.markings.phrase_slur_placement = if remove {
+        SlurPlacement::Auto
+    } else {
+        placement
+    };
+    doc.execute(Command::Batch {
+        commands: vec![
+            Command::ReplaceEvent {
+                at: start_location.cursor.at(),
+                index: start_location.index,
+                event: start_event,
+            },
+            Command::ReplaceEvent {
+                at: end_location.cursor.at(),
+                index: end_location.index,
+                event: end_event,
+            },
+        ],
     })
 }
 
