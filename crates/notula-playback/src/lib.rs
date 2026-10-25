@@ -1,6 +1,6 @@
 //! Converts score events into a time-ordered stream of MIDI note events.
 
-use noten_model::{EventKind, Score, TICKS_PER_QUARTER};
+use notula_model::{EventKind, Score, TICKS_PER_QUARTER};
 
 pub const DEFAULT_TEMPO_BPM: u16 = 120;
 pub const DEFAULT_VELOCITY: u8 = 96;
@@ -131,7 +131,7 @@ pub fn tick_duration_seconds(ticks: u64, tempo_bpm: u16) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use noten_model::{
+    use notula_model::{
         Clef, Command, Document, Duration, EventKind, NoteValue, Pitch, Score, Step,
         edit::{self, Cursor, enter_note, enter_rest},
     };
@@ -260,7 +260,7 @@ mod tests {
     fn tied_notes_extend_one_sounding_span() {
         let (mut doc, cursor) = setup(1);
         let first = enter_note(&mut doc, cursor, c4(), quarter()).unwrap();
-        let location = noten_model::VoiceLocation {
+        let location = notula_model::VoiceLocation {
             staff: first.next.staff,
             measure: first.next.measure,
             voice: first.next.voice,
@@ -269,7 +269,7 @@ mod tests {
         doc.execute(Command::ReplaceEvent {
             at: location,
             index: 0,
-            event: noten_model::Event {
+            event: notula_model::Event {
                 kind: EventKind::Chord {
                     pitches: vec![c4()],
                     tied: true,
@@ -306,7 +306,7 @@ mod tests {
             ..treble_cursor
         };
         let first = enter_note(&mut doc, treble_cursor, c4(), quarter()).unwrap();
-        let location = noten_model::VoiceLocation {
+        let location = notula_model::VoiceLocation {
             staff: treble,
             measure: 0,
             voice: 0,
@@ -315,7 +315,7 @@ mod tests {
         doc.execute(Command::ReplaceEvent {
             at: location,
             index: 0,
-            event: noten_model::Event {
+            event: notula_model::Event {
                 kind: EventKind::Chord {
                     pitches: vec![c4()],
                     tied: true,

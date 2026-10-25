@@ -1,6 +1,6 @@
 //! Turns planned events into drawing primitives once their horizontal positions are known.
 
-use noten_model::NoteValue;
+use notula_model::NoteValue;
 
 use crate::engrave::{Body, EventPlan, NotePlan, VoicePlan, dot_advance};
 use crate::render::Canvas;

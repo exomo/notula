@@ -10,8 +10,8 @@ use manguebyte_core::AudioBuffer;
 use manguebyte_dsp::event::NoteRef;
 use manguebyte_dsp::{ProcessSpec, Processor};
 use manguebyte_sampler::{Instrument, Sampler};
-use noten_model::Score;
-use noten_playback::{
+use notula_model::Score;
+use notula_playback::{
     DEFAULT_TEMPO_BPM, PlaybackEvent, PlaybackEventKind, events, tick_duration_seconds,
 };
 use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
@@ -47,7 +47,7 @@ impl PlaybackController {
         let playing_on_thread = Arc::clone(&playing);
         let position_on_thread = Arc::clone(&position);
         let thread = thread::Builder::new()
-            .name("noten-audio".to_owned())
+            .name("notula-audio".to_owned())
             .spawn(move || {
                 run_audio_thread(
                     &path,

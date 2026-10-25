@@ -1,5 +1,5 @@
-use noten_layout::{Item, LayoutOptions, RenderList, Shape, hit_test, layout};
-use noten_model::{
+use notula_layout::{Item, LayoutOptions, RenderList, Shape, hit_test, layout};
+use notula_model::{
     Clef, Command, Document, Duration, Event, EventId, EventKind, KeySignature, NoteValue, Pitch,
     StaffId, Step, TimeSignature, TimeSignatureDisplay, VoiceLocation,
 };
@@ -154,7 +154,7 @@ fn hit_testing_at_a_measure_start_uses_that_measure() {
 fn rendered_events_identify_their_voice_and_measure_voice_count() {
     let mut b = Builder::new(&[("", &[Clef::Treble])]);
     let staff = b.staves[0];
-    let voice = noten_model::edit::add_voice(&mut b.doc, staff, 0).unwrap();
+    let voice = notula_model::edit::add_voice(&mut b.doc, staff, 0).unwrap();
     let event = Event::new(
         b.doc.new_event_id(),
         Duration::new(NoteValue::Quarter, 0),

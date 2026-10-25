@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use noten_model::Document;
-use noten_model::edit::Cursor;
+use notula_model::Document;
+use notula_model::edit::Cursor;
 use serde::Serialize;
 
 /// The open document together with where it lives on disk.
@@ -71,7 +71,7 @@ impl Session {
             .or_else(|| (!status.title.is_empty()).then_some(status.title))
             .unwrap_or_else(|| "Untitled".to_owned());
         let marker = if status.dirty { "*" } else { "" };
-        format!("{marker}{name} - Noten")
+        format!("{marker}{name} - Notula")
     }
 
     /// The start of the first staff, where entry begins in a new score.

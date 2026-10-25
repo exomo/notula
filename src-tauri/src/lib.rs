@@ -4,7 +4,7 @@ mod playback;
 mod session;
 mod setup;
 
-use noten_model::Document;
+use notula_model::Document;
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
@@ -73,7 +73,7 @@ pub fn run() {
                 .app_handle()
                 .dialog()
                 .message("The score has unsaved changes. Discard them?")
-                .title("Noten")
+                .title("Notula")
                 .buttons(MessageDialogButtons::OkCancelCustom(
                     "Discard".to_owned(),
                     "Cancel".to_owned(),
@@ -85,5 +85,5 @@ pub fn run() {
                 });
         })
         .run(tauri::generate_context!())
-        .expect("error while running Noten");
+        .expect("error while running Notula");
 }

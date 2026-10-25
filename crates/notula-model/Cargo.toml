@@ -1,6 +1,6 @@
 [package]
-name = "noten-layout"
-description = "Engraving layout: turns a score into a render list"
+name = "notula-model"
+description = "Score data model and edit commands"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,8 +10,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-noten-model.workspace = true
 serde.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -1,6 +1,6 @@
 //! Mapping between pitches and positions on a five-line staff.
 
-use noten_model::{Clef, KeySignature, Pitch, Step};
+use notula_model::{Clef, KeySignature, Pitch, Step};
 
 /// Distance of a staff position from the top line, in staff spaces (lines are at 0..=4).
 pub fn pitch_y(pitch: Pitch, clef: Clef) -> f32 {

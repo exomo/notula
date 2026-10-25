@@ -1,4 +1,4 @@
-use noten_model::{
+use notula_model::{
     Clef, Command, Document, Duration, Event, EventKind, ModelError, NoteValue, Pitch, Score,
     StaffId, Step, TimeSignature, VoiceLocation,
 };
@@ -206,9 +206,9 @@ fn measures_can_be_inserted_removed_and_restored() {
 #[test]
 fn staff_voices_are_added_removed_and_restored_across_all_measures() {
     let (mut doc, staff) = setup();
-    noten_model::edit::insert_measure_at(&mut doc, 1).unwrap();
-    noten_model::edit::insert_measure_at(&mut doc, 2).unwrap();
-    let voice = noten_model::edit::add_voice(&mut doc, staff, 1).unwrap();
+    notula_model::edit::insert_measure_at(&mut doc, 1).unwrap();
+    notula_model::edit::insert_measure_at(&mut doc, 2).unwrap();
+    let voice = notula_model::edit::add_voice(&mut doc, staff, 1).unwrap();
     assert_eq!(voice, 1);
     assert_eq!(
         doc.score().staff(staff).unwrap().measures[0].voices.len(),
@@ -233,7 +233,7 @@ fn staff_voices_are_added_removed_and_restored_across_all_measures() {
     .unwrap();
     let with_note = doc.score().clone();
 
-    noten_model::edit::remove_voice(&mut doc, staff, voice).unwrap();
+    notula_model::edit::remove_voice(&mut doc, staff, voice).unwrap();
     assert!(
         doc.score()
             .staff(staff)
@@ -245,7 +245,7 @@ fn staff_voices_are_added_removed_and_restored_across_all_measures() {
     assert!(doc.undo().unwrap());
     assert_eq!(doc.score(), &with_note);
 
-    noten_model::edit::insert_measure_at(&mut doc, 2).unwrap();
+    notula_model::edit::insert_measure_at(&mut doc, 2).unwrap();
     assert_eq!(
         doc.score().staff(staff).unwrap().measures[2].voices.len(),
         2
@@ -256,7 +256,7 @@ fn staff_voices_are_added_removed_and_restored_across_all_measures() {
 fn original_staff_voice_cannot_be_removed() {
     let (mut doc, staff) = setup();
     assert!(matches!(
-        noten_model::edit::remove_voice(&mut doc, staff, 0),
+        notula_model::edit::remove_voice(&mut doc, staff, 0),
         Err(ModelError::Invalid(_))
     ));
 }
@@ -264,9 +264,9 @@ fn original_staff_voice_cannot_be_removed() {
 #[test]
 fn ending_a_voice_at_a_measure_boundary_restores_single_voice_after_it() {
     let (mut doc, staff) = setup();
-    noten_model::edit::insert_measure_at(&mut doc, 1).unwrap();
-    noten_model::edit::insert_measure_at(&mut doc, 2).unwrap();
-    let voice = noten_model::edit::add_voice(&mut doc, staff, 0).unwrap();
+    notula_model::edit::insert_measure_at(&mut doc, 1).unwrap();
+    notula_model::edit::insert_measure_at(&mut doc, 2).unwrap();
+    let voice = notula_model::edit::add_voice(&mut doc, staff, 0).unwrap();
     for measure in [0, 1, 2] {
         let note = note(&mut doc, NoteValue::Quarter);
         doc.execute(Command::InsertEvent {
@@ -282,13 +282,13 @@ fn ending_a_voice_at_a_measure_boundary_restores_single_voice_after_it() {
     }
     let before_end = doc.score().clone();
 
-    noten_model::edit::end_voice_at(&mut doc, staff, 1, voice, 960).unwrap();
+    notula_model::edit::end_voice_at(&mut doc, staff, 1, voice, 960).unwrap();
     let measures = &doc.score().staff(staff).unwrap().measures;
     assert_eq!(measures[0].voices.len(), 2);
     assert_eq!(measures[1].voices.len(), 2);
     assert_eq!(measures[2].voices.len(), 1);
 
-    noten_model::edit::insert_measure_at(&mut doc, 2).unwrap();
+    notula_model::edit::insert_measure_at(&mut doc, 2).unwrap();
     assert_eq!(
         doc.score().staff(staff).unwrap().measures[2].voices.len(),
         1
@@ -302,7 +302,7 @@ fn ending_a_voice_at_a_measure_boundary_restores_single_voice_after_it() {
 #[test]
 fn ending_here_moves_the_remaining_note_into_the_primary_voice() {
     let (mut doc, staff) = setup();
-    let voice = noten_model::edit::add_voice(&mut doc, staff, 0).unwrap();
+    let voice = notula_model::edit::add_voice(&mut doc, staff, 0).unwrap();
     let first = note(&mut doc, NoteValue::Quarter);
     let first_id = first.id;
     let pickup = note(&mut doc, NoteValue::Quarter);
@@ -321,7 +321,7 @@ fn ending_here_moves_the_remaining_note_into_the_primary_voice() {
     }
     let before_end = doc.score().clone();
 
-    noten_model::edit::end_voice_at(&mut doc, staff, 0, voice, 960).unwrap();
+    notula_model::edit::end_voice_at(&mut doc, staff, 0, voice, 960).unwrap();
     let primary = doc
         .score()
         .voice(VoiceLocation {
@@ -352,7 +352,7 @@ fn ending_here_moves_the_remaining_note_into_the_primary_voice() {
 #[test]
 fn ending_here_is_safe_when_the_primary_voice_already_continues() {
     let (mut doc, staff) = setup();
-    let voice = noten_model::edit::add_voice(&mut doc, staff, 0).unwrap();
+    let voice = notula_model::edit::add_voice(&mut doc, staff, 0).unwrap();
     let primary_note = note(&mut doc, NoteValue::Half);
     let secondary_note = note(&mut doc, NoteValue::Quarter);
     doc.execute(Command::InsertEvent {
@@ -376,7 +376,7 @@ fn ending_here_is_safe_when_the_primary_voice_already_continues() {
     })
     .unwrap();
 
-    noten_model::edit::end_voice_at(&mut doc, staff, 0, voice, 960).unwrap();
+    notula_model::edit::end_voice_at(&mut doc, staff, 0, voice, 960).unwrap();
 
     let primary = doc
         .score()
@@ -512,7 +512,7 @@ fn clef_key_and_metadata_roundtrip() {
     .unwrap();
     doc.execute(Command::SetKeySignature {
         measure: 0,
-        key_signature: noten_model::KeySignature { fifths: 2 },
+        key_signature: notula_model::KeySignature { fifths: 2 },
     })
     .unwrap();
     doc.execute(Command::SetMetadata {
@@ -523,7 +523,7 @@ fn clef_key_and_metadata_roundtrip() {
     assert!(
         doc.execute(Command::SetKeySignature {
             measure: 0,
-            key_signature: noten_model::KeySignature { fifths: 9 },
+            key_signature: notula_model::KeySignature { fifths: 9 },
         })
         .is_err()
     );

@@ -7,7 +7,7 @@
 
         {
             "type": "node-terminal",
-            "name": "tauri dev (noten)",
+            "name": "tauri dev (notula)",
             "request": "launch",
             "command": "npm run tauri dev",
             "cwd": "${workspaceFolder}"

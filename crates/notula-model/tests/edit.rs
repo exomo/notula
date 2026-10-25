@@ -1,8 +1,8 @@
-use noten_model::edit::{
+use notula_model::edit::{
     self, Cursor, adjacent_event, enter_note, enter_rest, enter_step, locate, move_cursor,
     snap_cursor,
 };
-use noten_model::{
+use notula_model::{
     Articulation, Clef, Command, Document, Duration, Dynamic, EventKind, Hairpin, KeySignature,
     MeasureInfo, ModelError, NoteValue, Pitch, Score, StaffId, Step, TimeSignature,
     TimeSignatureDisplay, VoiceLocation,
@@ -54,7 +54,7 @@ fn c4() -> Pitch {
     Pitch::new(Step::C, 0, 4)
 }
 
-fn event_at(doc: &Document, cursor: Cursor, index: usize) -> noten_model::Event {
+fn event_at(doc: &Document, cursor: Cursor, index: usize) -> notula_model::Event {
     let at = VoiceLocation {
         staff: cursor.staff,
         measure: cursor.measure,
@@ -559,12 +559,12 @@ fn markings_survive_json_and_are_omitted_when_empty() {
     let marked = event_at(&doc, cursor, 0);
     let json = serde_json::to_string(&marked).unwrap();
     assert_eq!(
-        serde_json::from_str::<noten_model::Event>(&json).unwrap(),
+        serde_json::from_str::<notula_model::Event>(&json).unwrap(),
         marked
     );
 
     // Events written before markings existed have no such key.
-    let old = serde_json::from_value::<noten_model::Event>(plain).unwrap();
+    let old = serde_json::from_value::<notula_model::Event>(plain).unwrap();
     assert!(old.markings.is_empty());
 }
 

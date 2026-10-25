@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    noten_app_lib::run()
+    notula_app_lib::run()
 }

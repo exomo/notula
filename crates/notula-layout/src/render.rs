@@ -1,4 +1,4 @@
-use noten_model::{EventId, StaffId, TimeSignature, TimeSignatureDisplay};
+use notula_model::{EventId, StaffId, TimeSignature, TimeSignatureDisplay};
 use serde::Serialize;
 
 /// Coordinates are in staff spaces (the distance between two staff lines), y pointing down.

@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use noten_layout::{LayoutOptions, RenderList};
-use noten_model::edit::{self, Cursor};
-use noten_model::{
+use notula_layout::{LayoutOptions, RenderList};
+use notula_model::edit::{self, Cursor};
+use notula_model::{
     Document, Duration, EventId, EventKind, KeySignature, Pitch, Step, TimeSignature,
     TimeSignatureDisplay,
 };
@@ -65,7 +65,7 @@ fn chord_pitch_at_position(position: Pitch, pitches: &[Pitch]) -> Option<Pitch> 
 #[cfg(test)]
 mod tests {
     use super::{chord_pitch_at_position, pitch_for_chord_position};
-    use noten_model::{Pitch, Step};
+    use notula_model::{Pitch, Step};
 
     #[test]
     fn chord_hit_uses_existing_pitch_accidental_at_the_staff_position() {
@@ -158,7 +158,7 @@ pub fn current_state(app: AppHandle, state: State<AppState>) -> Edited {
 #[tauri::command]
 pub fn render_score(state: State<AppState>, width: f32) -> RenderList {
     let session = state.lock();
-    noten_layout::layout(session.doc.score(), &LayoutOptions { width })
+    notula_layout::layout(session.doc.score(), &LayoutOptions { width })
 }
 
 #[derive(Serialize)]
@@ -179,8 +179,8 @@ pub fn hit_test(
 ) -> Option<HitInfo> {
     let session = state.lock();
     let score = session.doc.score();
-    let list = noten_layout::layout(score, &LayoutOptions { width });
-    let hit = noten_layout::hit_test(score, &list, x, y)?;
+    let list = notula_layout::layout(score, &LayoutOptions { width });
+    let hit = notula_layout::hit_test(score, &list, x, y)?;
     let voice = voice.min(
         score.staff(hit.staff).ok()?.measures[hit.measure]
             .voices
@@ -476,7 +476,7 @@ pub fn remove_measure(
 pub fn add_voice(
     app: AppHandle,
     state: State<AppState>,
-    staff: noten_model::StaffId,
+    staff: notula_model::StaffId,
     measure: usize,
 ) -> Reply<Edited> {
     let mut session = state.lock();
@@ -499,7 +499,7 @@ pub fn add_voice(
 pub fn remove_voice(
     app: AppHandle,
     state: State<AppState>,
-    staff: noten_model::StaffId,
+    staff: notula_model::StaffId,
     measure: usize,
     voice: usize,
 ) -> Reply<Edited> {
@@ -523,7 +523,7 @@ pub fn remove_voice(
 pub fn end_voice(
     app: AppHandle,
     state: State<AppState>,
-    staff: noten_model::StaffId,
+    staff: notula_model::StaffId,
     measure: usize,
     voice: usize,
     tick: u32,
@@ -678,7 +678,7 @@ fn confirm_discard(app: &AppHandle, state: &AppState) -> bool {
     }
     app.dialog()
         .message("The score has unsaved changes. Discard them?")
-        .title("Noten")
+        .title("Notula")
         .buttons(MessageDialogButtons::OkCancelCustom(
             "Discard".to_owned(),
             "Cancel".to_owned(),
@@ -719,13 +719,13 @@ pub async fn open_score(app: AppHandle, state: State<'_, AppState>) -> Reply<Opt
     let Some(picked) = app
         .dialog()
         .file()
-        .add_filter("Noten score", &[noten_format::EXTENSION])
+        .add_filter("Notula score", &[notula_format::EXTENSION])
         .blocking_pick_file()
     else {
         return Ok(None);
     };
     let path = picked.into_path().map_err(text)?;
-    let score = noten_format::load(&path).map_err(text)?;
+    let score = notula_format::load(&path).map_err(text)?;
     let doc = Document::from_score(score);
     Ok(Some(replace_document(&app, &state, doc, Some(path))))
 }
@@ -748,8 +748,8 @@ pub async fn save_score(
             let Some(picked) = app
                 .dialog()
                 .file()
-                .add_filter("Noten score", &[noten_format::EXTENSION])
-                .set_file_name(format!("Untitled.{}", noten_format::EXTENSION))
+                .add_filter("Notula score", &[notula_format::EXTENSION])
+                .set_file_name(format!("Untitled.{}", notula_format::EXTENSION))
                 .blocking_save_file()
             else {
                 return Ok(None);
@@ -757,16 +757,16 @@ pub async fn save_score(
             let mut path = picked.into_path().map_err(text)?;
             if path
                 .extension()
-                .is_none_or(|e| e != noten_format::EXTENSION)
+                .is_none_or(|e| e != notula_format::EXTENSION)
             {
-                path.set_extension(noten_format::EXTENSION);
+                path.set_extension(notula_format::EXTENSION);
             }
             path
         }
     };
 
     let mut session = state.lock();
-    noten_format::save(session.doc.score(), &path).map_err(text)?;
+    notula_format::save(session.doc.score(), &path).map_err(text)?;
     session.mark_saved(path);
     update_title(&app, &session);
     Ok(Some(session.status()))
@@ -796,7 +796,7 @@ pub async fn export_score(
         path.set_extension(format.extension());
     }
     let session = state.lock();
-    let render_list = noten_layout::layout(session.doc.score(), &LayoutOptions { width: 80.0 });
+    let render_list = notula_layout::layout(session.doc.score(), &LayoutOptions { width: 80.0 });
     export_render_list(&render_list, format, &path)?;
     Ok(Some(()))
 }

@@ -1,6 +1,6 @@
 //! Codepoints and metrics from the SMuFL Bravura font, in staff spaces at the standard size.
 
-use noten_model::{Clef, NoteValue};
+use notula_model::{Clef, NoteValue};
 
 pub const STAFF_LINE_THICKNESS: f32 = 0.13;
 pub const STEM_THICKNESS: f32 = 0.12;

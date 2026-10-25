@@ -1,19 +1,19 @@
-//! Native `.noten` file format: a zip archive holding a manifest and the score as JSON.
+//! Native `.notula` file format: a zip archive holding a manifest and the score as JSON.
 
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
-use noten_model::{ModelError, Score};
+use notula_model::{ModelError, Score};
 use serde::{Deserialize, Serialize};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-pub const EXTENSION: &str = "noten";
+pub const EXTENSION: &str = "notula";
 /// Bumped whenever a change would make old readers misinterpret a file.
 pub const VERSION: u32 = 1;
 
-const FORMAT_NAME: &str = "noten";
+const FORMAT_NAME: &str = "notula";
 const MANIFEST: &str = "manifest.json";
 const SCORE: &str = "score.json";
 /// Guards against decompression bombs; real scores are far smaller.
@@ -33,8 +33,8 @@ pub enum FormatError {
     Zip(zip::result::ZipError),
     #[error("the score data is malformed: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("this is not a Noten file")]
-    NotNoten,
+    #[error("this is not a Notula file")]
+    NotNotula,
     #[error("the file was written by a newer version (format {found}, supported {supported})")]
     UnsupportedVersion { found: u32, supported: u32 },
     #[error("the file contains too much data")]
@@ -76,7 +76,7 @@ fn read_entry<R: Read + Seek>(
 ) -> Result<Vec<u8>, FormatError> {
     let entry = match archive.by_name(name) {
         Ok(entry) => entry,
-        Err(zip::result::ZipError::FileNotFound) => return Err(FormatError::NotNoten),
+        Err(zip::result::ZipError::FileNotFound) => return Err(FormatError::NotNotula),
         Err(other) => return Err(other.into()),
     };
     let mut data = Vec::new();
@@ -92,7 +92,7 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Score, FormatError> {
 
     let manifest: Manifest = serde_json::from_slice(&read_entry(&mut archive, MANIFEST)?)?;
     if manifest.format != FORMAT_NAME {
-        return Err(FormatError::NotNoten);
+        return Err(FormatError::NotNotula);
     }
     if manifest.version > VERSION {
         return Err(FormatError::UnsupportedVersion {

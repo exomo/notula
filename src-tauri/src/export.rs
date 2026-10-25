@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use base64::Engine;
-use noten_layout::{Anchor, RenderList, Shape};
+use notula_layout::{Anchor, RenderList, Shape};
 use resvg::usvg;
 use resvg::{tiny_skia, usvg::fontdb::Database};
 
@@ -161,7 +161,7 @@ mod tests {
             width: 20.0,
             height: 10.0,
             items: vec![
-                noten_layout::Item {
+                notula_layout::Item {
                     event: None,
                     staff: None,
                     voice: None,
@@ -173,7 +173,7 @@ mod tests {
                         anchor: Anchor::Start,
                     },
                 },
-                noten_layout::Item {
+                notula_layout::Item {
                     event: None,
                     staff: None,
                     voice: None,

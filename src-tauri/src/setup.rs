@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use noten_model::{
+use notula_model::{
     Clef, Command, Document, KeySignature, ModelError, PartId, Score, TimeSignature,
 };
 use serde::{Deserialize, Serialize};
@@ -510,7 +510,7 @@ pub fn default_score() -> Score {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use noten_model::{Duration, Event, EventKind, NoteValue, Pitch, Step, VoiceLocation};
+    use notula_model::{Duration, Event, EventKind, NoteValue, Pitch, Step, VoiceLocation};
 
     fn setup() -> ScoreSetup {
         ScoreSetup {

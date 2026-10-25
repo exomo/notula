@@ -1,6 +1,6 @@
 [package]
-name = "noten-playback"
-description = "Playback event generation for Noten scores"
+name = "notula-playback"
+description = "Playback event generation for Notula scores"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,4 +10,4 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-noten-model.workspace = true
+notula-model.workspace = true

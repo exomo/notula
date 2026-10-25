@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use noten_model::{Score, Staff, TICKS_PER_QUARTER};
+use notula_model::{Score, Staff, TICKS_PER_QUARTER};
 
 use crate::engrave::{StaffPlan, plan_staff};
 

@@ -1,8 +1,8 @@
 use std::io::{Cursor, Write};
 
-use noten_format::{FormatError, VERSION, load, read, save, write};
-use noten_model::edit;
-use noten_model::{
+use notula_format::{FormatError, VERSION, load, read, save, write};
+use notula_model::edit;
+use notula_model::{
     Articulation, Clef, Command, Document, Duration, Dynamic, Event, EventKind, Hairpin,
     ModelError, NoteValue, Pitch, Score, Step, VoiceLocation,
 };
@@ -70,11 +70,11 @@ fn roundtrip_keeps_the_score() {
 fn save_and_load_through_a_file() {
     let doc = sample();
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("piece.noten");
+    let path = dir.path().join("piece.notula");
 
     save(doc.score(), &path).unwrap();
     assert_eq!(&load(&path).unwrap(), doc.score());
-    assert!(!dir.path().join("piece.noten.tmp").exists());
+    assert!(!dir.path().join("piece.notula.tmp").exists());
 
     save(doc.score(), &path).unwrap();
     assert_eq!(&load(&path).unwrap(), doc.score());
@@ -84,11 +84,11 @@ fn save_and_load_through_a_file() {
 fn failed_save_leaves_the_existing_file_alone() {
     let doc = sample();
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("piece.noten");
+    let path = dir.path().join("piece.notula");
     save(doc.score(), &path).unwrap();
     let before = std::fs::read(&path).unwrap();
 
-    let missing = dir.path().join("no-such-folder").join("piece.noten");
+    let missing = dir.path().join("no-such-folder").join("piece.notula");
     assert!(matches!(
         save(doc.score(), &missing),
         Err(FormatError::Io(_))
@@ -97,7 +97,7 @@ fn failed_save_leaves_the_existing_file_alone() {
 }
 
 #[test]
-fn rejects_files_that_are_not_noten_archives() {
+fn rejects_files_that_are_not_notula_archives() {
     assert!(matches!(
         read(Cursor::new(b"plain text".to_vec())),
         Err(FormatError::Zip(_))
@@ -106,7 +106,7 @@ fn rejects_files_that_are_not_noten_archives() {
     let no_manifest = archive(&[("score.json", "{}")]);
     assert!(matches!(
         read(Cursor::new(no_manifest)),
-        Err(FormatError::NotNoten)
+        Err(FormatError::NotNotula)
     ));
 
     let doc = sample();
@@ -116,7 +116,7 @@ fn rejects_files_that_are_not_noten_archives() {
     ]);
     assert!(matches!(
         read(Cursor::new(other)),
-        Err(FormatError::NotNoten)
+        Err(FormatError::NotNotula)
     ));
 }
 
@@ -124,7 +124,7 @@ fn rejects_files_that_are_not_noten_archives() {
 fn rejects_newer_versions() {
     let doc = sample();
     let future = archive(&[
-        ("manifest.json", &manifest("noten", VERSION + 1)),
+        ("manifest.json", &manifest("notula", VERSION + 1)),
         ("score.json", &score_json(doc.score())),
     ]);
     assert!(matches!(
@@ -136,7 +136,7 @@ fn rejects_newer_versions() {
 #[test]
 fn rejects_malformed_and_inconsistent_scores() {
     let broken = archive(&[
-        ("manifest.json", &manifest("noten", VERSION)),
+        ("manifest.json", &manifest("notula", VERSION)),
         ("score.json", "{ not json"),
     ]);
     assert!(matches!(
@@ -172,7 +172,7 @@ fn rejects_malformed_and_inconsistent_scores() {
     })
     .unwrap();
     let corrupted = archive(&[
-        ("manifest.json", &manifest("noten", VERSION)),
+        ("manifest.json", &manifest("notula", VERSION)),
         ("score.json", &score_json(doc.score())),
     ]);
     assert!(matches!(
@@ -211,7 +211,7 @@ fn rejects_articulations_on_rests_in_a_file() {
     event["markings"] = serde_json::json!({ "articulations": ["Staccato"] });
 
     let corrupted = archive(&[
-        ("manifest.json", &manifest("noten", VERSION)),
+        ("manifest.json", &manifest("notula", VERSION)),
         ("score.json", &json.to_string()),
     ]);
     assert!(matches!(

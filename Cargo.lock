@@ -2318,7 +2318,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "noten-app"
+name = "notula-app"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
@@ -2326,10 +2326,10 @@ dependencies = [
  "manguebyte-core",
  "manguebyte-dsp",
  "manguebyte-sampler",
- "noten-format",
- "noten-layout",
- "noten-model",
- "noten-playback",
+ "notula-format",
+ "notula-layout",
+ "notula-model",
+ "notula-playback",
  "resvg",
  "rustysynth",
  "serde",
@@ -2340,10 +2340,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "noten-format"
+name = "notula-format"
 version = "0.1.0"
 dependencies = [
- "noten-model",
+ "notula-model",
  "serde",
  "serde_json",
  "tempfile",
@@ -2352,16 +2352,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "noten-layout"
+name = "notula-layout"
 version = "0.1.0"
 dependencies = [
- "noten-model",
+ "notula-model",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "noten-model"
+name = "notula-model"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -2370,10 +2370,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "noten-playback"
+name = "notula-playback"
 version = "0.1.0"
 dependencies = [
- "noten-model",
+ "notula-model",
 ]
 
 [[package]]

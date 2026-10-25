@@ -10,7 +10,7 @@ mod staff;
 
 use std::ops::Range;
 
-use noten_model::{NoteValue, Pitch, Score, Staff, StaffId};
+use notula_model::{NoteValue, Pitch, Score, Staff, StaffId};
 
 use measure::{MeasureMetrics, measure_metrics};
 use prefix::Prefix;
@@ -472,7 +472,7 @@ impl Layouter<'_> {
     }
 }
 
-fn short_name(part: &noten_model::Part) -> &str {
+fn short_name(part: &notula_model::Part) -> &str {
     if !part.short_name.is_empty() {
         return &part.short_name;
     }

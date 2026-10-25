@@ -1,6 +1,6 @@
 //! Clef, key signature and time signature at the start of a system or after a change.
 
-use noten_model::{Clef, KeySignature, MeasureInfo, Step, TimeSignatureDisplay};
+use notula_model::{Clef, KeySignature, MeasureInfo, Step, TimeSignatureDisplay};
 
 use crate::render::Canvas;
 use crate::smufl;

@@ -1,6 +1,6 @@
 [package]
-name = "noten-format"
-description = "Native .noten file format (versioned JSON in a zip)"
+name = "notula-format"
+description = "Native .notula file format (versioned JSON in a zip)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-noten-model.workspace = true
+notula-model.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

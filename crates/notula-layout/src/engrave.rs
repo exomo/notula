@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use noten_model::{
+use notula_model::{
     Clef, EventId, EventKind, MeasureInfo, NoteValue, StaffMeasure, Step, TICKS_PER_QUARTER,
     TimeSignature,
 };
@@ -412,7 +412,7 @@ fn finish_event(draft: &Draft, stem_up: bool) -> EventPlan {
 
 #[cfg(test)]
 mod tests {
-    use noten_model::{Duration, Event, KeySignature, Pitch, Voice};
+    use notula_model::{Duration, Event, KeySignature, Pitch, Voice};
 
     use super::*;
 
