@@ -21,5 +21,11 @@ tauri = { version = "2", features = [] }
 noten-model.workspace = true
 noten-layout.workspace = true
 noten-format.workspace = true
+noten-playback.workspace = true
 serde.workspace = true
+cpal.workspace = true
+rustysynth.workspace = true
+manguebyte-sampler = "0.1"
+manguebyte-core = "0.1"
+manguebyte-dsp = "0.1"
 tauri-plugin-dialog = "2"

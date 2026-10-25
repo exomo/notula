@@ -76,6 +76,12 @@ export interface ScoreSetup {
   pickup: number | null;
 }
 
+export interface PlaybackStatus {
+  playing: boolean;
+  instrument: string | null;
+  cursor: Cursor | null;
+}
+
 export const api = {
   currentState: () => invoke<Edited>("current_state"),
   renderScore: (width: number) => invoke<RenderList>("render_score", { width }),
@@ -124,4 +130,9 @@ export const api = {
   newScore: (setup: ScoreSetup) => invoke<Edited | null>("new_score", { setup }),
   openScore: () => invoke<Edited | null>("open_score"),
   saveScore: (saveAs: boolean) => invoke<Status | null>("save_score", { saveAs }),
+  selectSoundfont: () => invoke<string | null>("select_soundfont"),
+  restoreSoundfont: () => invoke<string | null>("restore_soundfont"),
+  playScore: () => invoke<void>("play_score"),
+  stopPlayback: () => invoke<void>("stop_playback"),
+  playbackStatus: () => invoke<PlaybackStatus>("playback_status"),
 };

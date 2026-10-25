@@ -1,4 +1,5 @@
 mod commands;
+mod playback;
 mod session;
 mod setup;
 
@@ -42,6 +43,11 @@ pub fn run() {
             commands::new_score,
             commands::open_score,
             commands::save_score,
+            commands::select_soundfont,
+            commands::restore_soundfont,
+            commands::play_score,
+            commands::stop_playback,
+            commands::playback_status,
         ])
         .on_window_event(|window, event| {
             let WindowEvent::CloseRequested { api, .. } = event else {

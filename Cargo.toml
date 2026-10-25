@@ -17,6 +17,9 @@ unsafe_code = "forbid"
 noten-model = { path = "crates/noten-model" }
 noten-layout = { path = "crates/noten-layout" }
 noten-format = { path = "crates/noten-format" }
+noten-playback = { path = "crates/noten-playback" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+cpal = "0.15"
+rustysynth = "1.3"

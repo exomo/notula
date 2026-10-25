@@ -34,6 +34,21 @@
     <button onclick={() => editor.redo()} disabled={!editor.status.can_redo} title="Redo (Ctrl+Y)">Redo</button>
   </div>
 
+  <div class="group playback">
+    <button onclick={() => editor.playScore()} disabled={editor.playbackPlaying || !editor.playbackInstrument} title="Play score">
+      Play
+    </button>
+    <button onclick={() => editor.stopPlayback()} disabled={!editor.playbackPlaying} title="Stop playback">
+      Stop
+    </button>
+    <button onclick={() => editor.selectSoundfont()} title="Choose a playback instrument (SF2, SF3, or SFZ)">
+      Instrument
+    </button>
+    {#if editor.playbackInstrument}
+      <span title={editor.playbackInstrument}>{editor.playbackInstrument}</span>
+    {/if}
+  </div>
+
   <div class="group">
     <button
       class:active={editor.inputMode}

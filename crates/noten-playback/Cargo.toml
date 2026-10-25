@@ -1,0 +1,13 @@
+[package]
+name = "noten-playback"
+description = "Playback event generation for Noten scores"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+noten-model.workspace = true

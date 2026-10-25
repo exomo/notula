@@ -8,23 +8,33 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
+use crate::playback::PlaybackController;
 use crate::session::{Session, Status};
 use crate::setup::{self, InstrumentInfo, ScoreSetup};
 
 pub struct AppState {
     session: Mutex<Session>,
+    playback: Mutex<Option<PlaybackController>>,
 }
 
 impl AppState {
     pub fn new(session: Session) -> Self {
         Self {
             session: Mutex::new(session),
+            playback: Mutex::new(None),
         }
     }
 
     pub fn lock(&self) -> MutexGuard<'_, Session> {
         self.session.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+#[derive(Serialize)]
+pub struct PlaybackStatus {
+    playing: bool,
+    instrument: Option<String>,
+    cursor: Option<Cursor>,
 }
 
 type Reply<T> = Result<T, String>;
@@ -548,4 +558,133 @@ pub async fn save_score(
     session.mark_saved(path);
     update_title(&app, &session);
     Ok(Some(session.status()))
+}
+
+#[tauri::command]
+pub async fn select_soundfont(app: AppHandle, state: State<'_, AppState>) -> Reply<Option<String>> {
+    let Some(path) = app
+        .dialog()
+        .file()
+        .add_filter("Instruments", &["sf2", "sf3", "sfz"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = path.into_path().map_err(text)?;
+    let controller = PlaybackController::load(&path)?;
+    persist_soundfont_path(&app, &path)?;
+    let display_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Instrument".to_owned());
+    *state
+        .playback
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(controller);
+    Ok(Some(display_name))
+}
+
+#[tauri::command]
+pub fn restore_soundfont(app: AppHandle, state: State<AppState>) -> Reply<Option<String>> {
+    let config = soundfont_config_path(&app)?;
+    let path = match std::fs::read_to_string(config) {
+        Ok(path) => PathBuf::from(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let controller = PlaybackController::load(&path)?;
+    let display_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Instrument".to_owned());
+    *state
+        .playback
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(controller);
+    Ok(Some(display_name))
+}
+
+fn persist_soundfont_path(app: &AppHandle, path: &std::path::Path) -> Reply<()> {
+    let config = soundfont_config_path(app)?;
+    let parent = config
+        .parent()
+        .ok_or_else(|| "Could not determine the application config directory.".to_owned())?;
+    std::fs::create_dir_all(parent).map_err(text)?;
+    std::fs::write(config, path.to_string_lossy().as_bytes()).map_err(text)
+}
+
+fn soundfont_config_path(app: &AppHandle) -> Reply<PathBuf> {
+    Ok(app
+        .path()
+        .app_config_dir()
+        .map_err(text)?
+        .join("playback-soundfont.txt"))
+}
+
+#[tauri::command]
+pub fn play_score(state: State<AppState>) -> Reply<()> {
+    let session = state.lock();
+    let playback = state
+        .playback
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let controller = playback
+        .as_ref()
+        .ok_or_else(|| "Choose an instrument before playing.".to_owned())?;
+    controller.play(session.doc.score())
+}
+
+#[tauri::command]
+pub fn stop_playback(state: State<AppState>) -> Reply<()> {
+    let playback = state
+        .playback
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(controller) = playback.as_ref() {
+        controller.stop()?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn playback_status(state: State<AppState>) -> PlaybackStatus {
+    let session = state.lock();
+    let playback = state
+        .playback
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let Some(controller) = playback.as_ref() else {
+        return PlaybackStatus {
+            playing: false,
+            instrument: None,
+            cursor: None,
+        };
+    };
+    let score = session.doc.score();
+    let mut tick = controller.position();
+    let mut cursor = None;
+    for (measure, info) in score.measures.iter().enumerate() {
+        let capacity = u64::from(info.capacity());
+        if tick < capacity || measure + 1 == score.measures.len() {
+            cursor = score.staves().next().map(|staff| Cursor {
+                staff: staff.id,
+                measure,
+                voice: 0,
+                tick: tick.min(capacity) as u32,
+            });
+            break;
+        }
+        tick -= capacity;
+    }
+    PlaybackStatus {
+        playing: controller.is_playing(),
+        instrument: controller
+            .instrument_path()
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned()),
+        cursor,
+    }
 }

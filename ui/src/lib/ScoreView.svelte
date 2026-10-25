@@ -7,6 +7,7 @@
   let list = $state<RenderList | null>(null);
   let svg = $state<SVGSVGElement | null>(null);
   let caretElement = $state<SVGLineElement | null>(null);
+  let playbackCaretElement = $state<SVGLineElement | null>(null);
   let error = $state<string | null>(null);
   let request = 0;
 
@@ -47,9 +48,25 @@
     return { x, area };
   });
 
+  const playbackCaret = $derived.by(() => {
+    const cursor = editor.playbackCursor;
+    if (!cursor || !list) return null;
+    const area = list.areas.find((a) => a.staff === cursor.staff && a.measure === cursor.measure);
+    if (!area) return null;
+    const column = area.columns.find(([tick]) => tick >= cursor.tick);
+    const x = column ? column[1] - 0.6 : area.x_end - 1.0;
+    return { x, area };
+  });
+
   $effect(() => {
     // Keep the insertion point visible while entering notes.
     if (editor.inputMode && caret) caretElement?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+
+  $effect(() => {
+    if (editor.playbackPlaying && playbackCaret) {
+      playbackCaretElement?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
   });
 
   function onclick(event: MouseEvent) {
@@ -126,6 +143,17 @@
           <text x={item.x} y={item.y} font-size={item.size} text-anchor={item.anchor}>{item.text}</text>
         {/if}
       {/each}
+      {#if editor.playbackPlaying && playbackCaret}
+        <line
+          bind:this={playbackCaretElement}
+          class="playback-caret"
+          x1={playbackCaret.x}
+          y1={playbackCaret.area.y_top - 1}
+          x2={playbackCaret.x}
+          y2={playbackCaret.area.y_top + 5}
+          stroke-width="0.3"
+        />
+      {/if}
     </svg>
   {/if}
 </div>
@@ -179,6 +207,11 @@
 
   .caret {
     stroke: #1a73e8;
+  }
+
+  .playback-caret {
+    stroke: #cf3e36;
+    pointer-events: none;
   }
 
   .error {

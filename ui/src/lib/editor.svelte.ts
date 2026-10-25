@@ -4,6 +4,7 @@ import {
   type Duration,
   type Edited,
   type NoteValue,
+  type PlaybackStatus,
   type Status,
   type Step,
 } from "./api";
@@ -50,6 +51,10 @@ class Editor {
   timeSignatureOpen = $state(false);
   /** Where measures are on screen, as of the latest layout. */
   areas = $state<MeasureArea[]>([]);
+  playbackPlaying = $state(false);
+  playbackInstrument = $state<string | null>(null);
+  playbackCursor = $state<Cursor | null>(null);
+  private playbackPoll: ReturnType<typeof setInterval> | null = null;
   private insertHistory: InsertMarker[] = [];
 
   zoomIn() {
@@ -88,6 +93,47 @@ class Editor {
 
   async init() {
     this.apply((await this.run(() => api.currentState())) ?? null, true);
+    const instrument = await this.run(() => api.restoreSoundfont());
+    if (instrument) this.playbackInstrument = instrument;
+    await this.refreshPlaybackStatus();
+  }
+
+  private applyPlaybackStatus(status: PlaybackStatus) {
+    this.playbackPlaying = status.playing;
+    this.playbackInstrument = status.instrument;
+    this.playbackCursor = status.cursor;
+    if (!status.playing && this.playbackPoll !== null) {
+      clearInterval(this.playbackPoll);
+      this.playbackPoll = null;
+    }
+  }
+
+  private async refreshPlaybackStatus() {
+    const status = await this.run(() => api.playbackStatus());
+    if (status) this.applyPlaybackStatus(status);
+  }
+
+  async selectSoundfont() {
+    const name = await this.run(() => api.selectSoundfont());
+    if (name) {
+      this.playbackInstrument = name;
+      this.message = null;
+    }
+  }
+
+  async playScore() {
+    await this.run(() => api.playScore());
+    if (this.message) return;
+    await this.refreshPlaybackStatus();
+    if (this.playbackPoll === null) {
+      this.playbackPoll = setInterval(() => void this.refreshPlaybackStatus(), 50);
+    }
+  }
+
+  async stopPlayback() {
+    await this.run(() => api.stopPlayback());
+    if (this.message) return;
+    await this.refreshPlaybackStatus();
   }
 
   async selectEvent(id: number) {
