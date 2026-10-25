@@ -4,8 +4,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use notula_layout::{LayoutOptions, RenderList};
 use notula_model::edit::{self, Cursor};
 use notula_model::{
-    Articulation, Document, Duration, EventId, EventKind, KeySignature, Pitch, Step, TimeSignature,
-    TimeSignatureDisplay,
+    Articulation, Document, Duration, EventId, EventKind, KeySignature, Pitch, Step,
+    TempoDirection, TimeSignature, TimeSignatureDisplay,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
@@ -378,6 +378,42 @@ pub fn toggle_phrase_slur(
     edit::toggle_phrase_slur(&mut session.doc, start, end, placement).map_err(text)?;
     let cursor = cursor_of(&session, end);
     Ok(finish(&app, &session, cursor, Some(end)))
+}
+
+#[tauri::command]
+pub fn tempo_direction_at(
+    state: State<AppState>,
+    measure: usize,
+    tick: u32,
+) -> Option<TempoDirection> {
+    let session = state.lock();
+    session
+        .doc
+        .score()
+        .tempo_directions
+        .iter()
+        .find(|mark| mark.measure == measure && mark.tick == tick)
+        .map(|mark| mark.direction)
+}
+
+#[tauri::command]
+pub fn set_tempo_direction(
+    app: AppHandle,
+    state: State<AppState>,
+    measure: usize,
+    tick: u32,
+    direction: Option<TempoDirection>,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    session
+        .doc
+        .execute(notula_model::Command::SetTempoDirection {
+            measure,
+            tick,
+            direction,
+        })
+        .map_err(text)?;
+    Ok(finish(&app, &session, None, None))
 }
 
 #[tauri::command]

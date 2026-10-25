@@ -567,9 +567,51 @@ fn old_scores_without_part_short_names_still_load() {
         .as_object_mut()
         .unwrap()
         .remove("short_name");
+    json.as_object_mut().unwrap().remove("tempo");
+    json.as_object_mut().unwrap().remove("tempo_directions");
 
     let restored: Score = serde_json::from_value(json).unwrap();
     assert_eq!(restored.parts[0].short_name, "");
+    assert_eq!(restored.tempo, notula_model::Tempo::default());
+    assert!(restored.tempo_directions.is_empty());
+}
+
+#[test]
+fn tempo_directions_are_score_wide_and_restore_with_measure_edits() {
+    let (mut doc, _) = setup();
+    let direction = notula_model::TempoDirection::Ritardando;
+    let before = doc.score().clone();
+    assert!(
+        doc.execute(Command::SetTempoDirection {
+            measure: 0,
+            tick: doc.score().measure_capacity(0).unwrap() + 1,
+            direction: Some(direction),
+        })
+        .is_err()
+    );
+    assert_eq!(doc.score(), &before);
+
+    doc.execute(Command::SetTempoDirection {
+        measure: 0,
+        tick: 960,
+        direction: Some(direction),
+    })
+    .unwrap();
+    assert_eq!(doc.score().tempo_directions[0].measure, 0);
+    assert_eq!(doc.score().tempo_directions[0].tick, 960);
+    doc.undo().unwrap();
+    assert!(doc.score().tempo_directions.is_empty());
+    doc.redo().unwrap();
+
+    let data = doc.score().blank_measure(0);
+    doc.execute(Command::InsertMeasure { index: 0, data })
+        .unwrap();
+    assert_eq!(doc.score().tempo_directions[0].measure, 1);
+    doc.execute(Command::RemoveMeasure { index: 1 }).unwrap();
+    assert!(doc.score().tempo_directions.is_empty());
+    doc.undo().unwrap();
+    assert_eq!(doc.score().tempo_directions[0].measure, 1);
+    assert_eq!(doc.score().tempo_directions[0].direction, direction);
 }
 
 #[test]

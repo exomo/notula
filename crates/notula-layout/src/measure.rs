@@ -56,6 +56,21 @@ pub(crate) fn measure_metrics(score: &Score, staves: &[&Staff], measure: usize) 
         entry.0 = entry.0.max(event.left);
         entry.1 = entry.1.max(event.right);
     }
+    for mark in score
+        .tempo_directions
+        .iter()
+        .filter(|mark| mark.measure == measure)
+    {
+        let width = match mark.direction {
+            notula_model::TempoDirection::Accelerando => 4.6,
+            notula_model::TempoDirection::Ritardando => 2.8,
+            notula_model::TempoDirection::Rallentando => 3.6,
+            notula_model::TempoDirection::ATempo => 4.0,
+            notula_model::TempoDirection::Rubato => 3.2,
+        };
+        let extent = &mut extents.entry(mark.tick).or_insert((0.0, 0.0)).1;
+        *extent = extent.max(width);
+    }
 
     let columns: Vec<u32> = extents.keys().copied().collect();
     let mut offsets = Vec::with_capacity(columns.len());

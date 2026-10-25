@@ -611,6 +611,26 @@ impl Layouter<'_> {
                 foreground_fermatas.extend(emit::fermatas(&plan.voices, y0, &x_of));
             }
 
+            for mark in self
+                .score
+                .tempo_directions
+                .iter()
+                .filter(|mark| mark.measure == measure)
+            {
+                let text = match mark.direction {
+                    notula_model::TempoDirection::Accelerando => "accel.",
+                    notula_model::TempoDirection::Ritardando => "rit.",
+                    notula_model::TempoDirection::Rallentando => "rall.",
+                    notula_model::TempoDirection::ATempo => "a tempo",
+                    notula_model::TempoDirection::Rubato => "rubato",
+                };
+                let x = x_of(mark.tick);
+                for part in rows.parts.iter().filter(|part| !part.is_empty()) {
+                    let bottom = y_top + rows.y[part.end - 1] + STAFF_HEIGHT;
+                    canvas.text(x, bottom + 1.8, text, NAME_SIZE, render::Anchor::Start);
+                }
+            }
+
             let is_final = measure + 1 == self.score.measures.len();
             for range in rows.parts.iter().filter(|r| !r.is_empty()) {
                 let top = y_top + rows.y[range.start];

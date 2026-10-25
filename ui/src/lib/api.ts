@@ -18,6 +18,7 @@ export type Articulation =
   | "Marcato"
   | "Fermata";
 export type SlurPlacement = "auto" | "above" | "below";
+export type TempoDirection = "accelerando" | "ritardando" | "rallentando" | "a_tempo" | "rubato";
 
 export interface Pitch {
   step: Step;
@@ -115,12 +116,14 @@ export interface ScorePart {
 export interface ScoreProperties {
   title: string;
   composer: string;
+  tempo: { beat_unit: NoteValue; units_per_minute: number };
   parts: ScorePart[];
 }
 
 export interface ScorePropertiesUpdate {
   title: string;
   composer: string;
+  tempo: { beat_unit: NoteValue; units_per_minute: number };
   remove_part_ids: number[];
   instruments: { part_id: number; name: string; short_name: string; preset_id: string | null; staves: number }[];
   add_instruments: { preset_id: string; name: string; short_name: string; staves: number }[];
@@ -160,6 +163,10 @@ export const api = {
     invoke<Edited>("toggle_slur", { start, end, placement }),
   togglePhraseSlur: (start: number, end: number, placement: SlurPlacement) =>
     invoke<Edited>("toggle_phrase_slur", { start, end, placement }),
+  tempoDirectionAt: (measure: number, tick: number) =>
+    invoke<TempoDirection | null>("tempo_direction_at", { measure, tick }),
+  setTempoDirection: (measure: number, tick: number, direction: TempoDirection | null) =>
+    invoke<Edited>("set_tempo_direction", { measure, tick, direction }),
   eventArticulations: (event: number) =>
     invoke<EventArticulations | null>("event_articulations", { event }),
   deleteEvent: (event: number) => invoke<Edited>("delete_event", { event }),

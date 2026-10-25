@@ -17,7 +17,7 @@ use notula_playback::{
 use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
 
 enum AudioCommand {
-    Play(Vec<PlaybackEvent>),
+    Play(Vec<PlaybackEvent>, f64),
     Stop,
 }
 
@@ -79,7 +79,10 @@ impl PlaybackController {
 
     pub fn play(&self, score: &Score) -> Result<(), String> {
         self.sender
-            .send(AudioCommand::Play(events(score)))
+            .send(AudioCommand::Play(
+                events(score),
+                score.tempo.quarter_notes_per_minute(),
+            ))
             .map_err(|error| error.to_string())
     }
 
@@ -225,6 +228,7 @@ where
     let mut event_index = 0;
     let mut frame_position = 0_u64;
     let mut tail_until_frame = 0_u64;
+    let mut quarter_notes_per_minute = f64::from(DEFAULT_TEMPO_BPM);
     let mut left = [0.0_f32; 512];
     let mut right = [0.0_f32; 512];
     let mut sfz_buffer = AudioBuffer::<f32>::new(2, 512);
@@ -238,9 +242,10 @@ where
                 output.fill(T::from_sample(0.0));
                 for command in receiver.try_iter() {
                     match command {
-                        AudioCommand::Play(next_events) => {
+                        AudioCommand::Play(next_events, tempo) => {
                             reset_engine(&mut engine);
                             events = next_events;
+                            quarter_notes_per_minute = tempo;
                             event_index = 0;
                             frame_position = 0;
                             tail_until_frame = u64::MAX;
@@ -264,7 +269,11 @@ where
                 let frame_count = output.len() / channels;
                 let mut written = 0;
                 while written < frame_count {
-                    let current_tick = frame_position_to_tick(frame_position, sample_rate);
+                    let current_tick = frame_position_to_tick(
+                        frame_position,
+                        sample_rate,
+                        quarter_notes_per_minute,
+                    );
                     while let Some(event) = events.get(event_index).copied() {
                         if event.tick > current_tick {
                             break;
@@ -286,7 +295,7 @@ where
                     let next_event_frame = events
                         .get(event_index)
                         .map(|event| {
-                            (tick_duration_seconds(event.tick, DEFAULT_TEMPO_BPM)
+                            (tick_duration_seconds(event.tick, quarter_notes_per_minute)
                                 * sample_rate as f64)
                                 .ceil() as u64
                         })
@@ -318,7 +327,11 @@ where
 
                 if playing_for_callback.load(Ordering::Relaxed) {
                     position_for_callback.store(
-                        frame_position_to_tick(frame_position, sample_rate),
+                        frame_position_to_tick(
+                            frame_position,
+                            sample_rate,
+                            quarter_notes_per_minute,
+                        ),
                         Ordering::Relaxed,
                     );
                 }
@@ -366,9 +379,9 @@ fn reset_engine(engine: &mut AudioEngine) {
     }
 }
 
-fn frame_position_to_tick(frame: u64, sample_rate: u64) -> u64 {
+fn frame_position_to_tick(frame: u64, sample_rate: u64, quarter_notes_per_minute: f64) -> u64 {
     let seconds = frame as f64 / sample_rate as f64;
-    (seconds * DEFAULT_TEMPO_BPM as f64 * 960.0 / 60.0) as u64
+    (seconds * quarter_notes_per_minute * 960.0 / 60.0) as u64
 }
 
 #[cfg(test)]

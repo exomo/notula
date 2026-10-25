@@ -31,6 +31,8 @@ pub fn run() {
             commands::toggle_tie,
             commands::toggle_slur,
             commands::toggle_phrase_slur,
+            commands::tempo_direction_at,
+            commands::set_tempo_direction,
             commands::event_articulations,
             commands::delete_event,
             commands::transpose_semitones,

@@ -152,14 +152,15 @@ fn midi_channel(track: usize) -> u8 {
     }
 }
 
-pub fn tick_duration_seconds(ticks: u64, tempo_bpm: u16) -> f64 {
-    ticks as f64 * 60.0 / (u64::from(TICKS_PER_QUARTER) * u64::from(tempo_bpm.max(1))) as f64
+pub fn tick_duration_seconds(ticks: u64, quarter_notes_per_minute: f64) -> f64 {
+    ticks as f64 * 60.0 / (f64::from(TICKS_PER_QUARTER) * quarter_notes_per_minute)
 }
 
 #[cfg(test)]
 mod tests {
     use notula_model::{
         Articulation, Clef, Command, Document, Duration, EventKind, NoteValue, Pitch, Score, Step,
+        Tempo,
         edit::{self, Cursor, enter_note, enter_rest},
     };
 
@@ -447,7 +448,24 @@ mod tests {
 
     #[test]
     fn tempo_converts_quarter_note_ticks_to_seconds() {
-        assert_eq!(tick_duration_seconds(960, 120), 0.5);
+        assert_eq!(tick_duration_seconds(960, 120.0), 0.5);
+        let half_note_tempo = Tempo {
+            beat_unit: NoteValue::Half,
+            units_per_minute: 120,
+        };
+        assert_eq!(half_note_tempo.quarter_notes_per_minute(), 240.0);
+        assert_eq!(
+            tick_duration_seconds(960, half_note_tempo.quarter_notes_per_minute()),
+            0.25
+        );
+        let slow_sixty_fourth_tempo = Tempo {
+            beat_unit: NoteValue::SixtyFourth,
+            units_per_minute: 1,
+        };
+        assert_eq!(
+            tick_duration_seconds(60, slow_sixty_fourth_tempo.quarter_notes_per_minute()),
+            60.0
+        );
     }
 
     #[test]

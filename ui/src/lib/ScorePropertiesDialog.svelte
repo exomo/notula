@@ -14,6 +14,8 @@
   let pendingRemoval = $state<{ partId: number; name: string } | null>(null);
   let title = $state("");
   let composer = $state("");
+  let tempoBeatUnit = $state<import("./api").NoteValue>("Quarter");
+  let tempoUnitsPerMinute = $state(120);
   let toAdd = $state("");
   let loaded = $state(false);
 
@@ -44,6 +46,8 @@
       partShortNames = current.parts.map((part) => part.short_name);
       title = current.title;
       composer = current.composer;
+      tempoBeatUnit = current.tempo.beat_unit;
+      tempoUnitsPerMinute = current.tempo.units_per_minute;
       selectedPresets = current.parts.map((part) =>
         available.find((preset) => preset.name === part.name && preset.staves >= part.staves)?.id ?? "",
       );
@@ -127,6 +131,10 @@
     const saved = await editor.updateScoreProperties({
       title,
       composer,
+      tempo: {
+        beat_unit: tempoBeatUnit,
+        units_per_minute: tempoUnitsPerMinute,
+      },
       remove_part_ids: removedPartIds,
       instruments: parts.map((part, index) => ({
         part_id: part.id,
@@ -152,6 +160,35 @@
 
     <label>Title <input bind:value={title} disabled={!loaded} /></label>
     <label>Composer <input bind:value={composer} disabled={!loaded} /></label>
+
+    <fieldset>
+      <legend>Default tempo</legend>
+      <label class="tempo-label">
+        Tempo
+        <span class="tempo-controls">
+          <select bind:value={tempoBeatUnit} aria-label="Tempo beat unit" disabled={!loaded}>
+            <option value="Whole">1/1 note</option>
+            <option value="Half">1/2 note</option>
+            <option value="Quarter">1/4 note</option>
+            <option value="Eighth">1/8 note</option>
+            <option value="Sixteenth">1/16 note</option>
+            <option value="ThirtySecond">1/32 note</option>
+            <option value="SixtyFourth">1/64 note</option>
+          </select>
+          <input
+            type="number"
+            min="1"
+            max="1000"
+            step="1"
+            bind:value={tempoUnitsPerMinute}
+            aria-label="Tempo in beats per minute"
+            disabled={!loaded}
+            required
+          />
+          <span aria-hidden="true">BPM</span>
+        </span>
+      </label>
+    </fieldset>
 
     <fieldset>
       <legend>Instruments</legend>
@@ -318,6 +355,16 @@
   label {
     display: grid;
     gap: 0.2rem;
+  }
+
+  .tempo-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .tempo-controls input {
+    width: 6rem;
   }
 
   fieldset {

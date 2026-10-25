@@ -12,6 +12,7 @@ import {
   type Status,
   type Step,
   type TimeSignatureDisplay,
+  type TempoDirection,
 } from "./api";
 import type { MeasureArea } from "./render";
 
@@ -51,6 +52,7 @@ class Editor {
   phraseSlurMode = $state(false);
   phraseSlurStart = $state<number | null>(null);
   slurPlacement = $state<SlurPlacement>("auto");
+  tempoDirectionAt = $state<TempoDirection | null>(null);
   inputMode = $state(false);
   entryAlter = $state<number | null>(null);
   duration = $state<Duration>({ value: "Quarter", dots: 0 });
@@ -73,6 +75,7 @@ class Editor {
   private playbackPoll: ReturnType<typeof setInterval> | null = null;
   private insertHistory: InsertMarker[] = [];
   private articulationRequest = 0;
+  private tempoDirectionRequest = 0;
 
   zoomIn() {
     this.zoom = Math.min(MAX_ZOOM, this.zoom + 1);
@@ -454,6 +457,29 @@ class Editor {
     if (!edited) return;
     this.apply(edited);
     await this.refreshArticulations(event);
+  }
+
+  async refreshTempoDirection(cursor = this.cursor) {
+    const request = ++this.tempoDirectionRequest;
+    if (!cursor) {
+      this.tempoDirectionAt = null;
+      return;
+    }
+    const direction = await this.run(() => api.tempoDirectionAt(cursor.measure, cursor.tick));
+    if (request === this.tempoDirectionRequest && direction !== undefined) {
+      this.tempoDirectionAt = direction;
+    }
+  }
+
+  async setTempoDirection(direction: TempoDirection | null) {
+    const cursor = this.cursor;
+    if (!cursor) return;
+    const edited = await this.run(() =>
+      api.setTempoDirection(cursor.measure, cursor.tick, direction),
+    );
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshTempoDirection(cursor);
   }
 
   async transpose(semitones: number) {

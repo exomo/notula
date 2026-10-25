@@ -7,8 +7,8 @@ use crate::duration::{TimeSignature, TimeSignatureDisplay};
 use crate::error::ModelError;
 use crate::ids::{PartId, StaffId};
 use crate::score::{
-    Clef, Event, KeySignature, MeasureData, MeasureInfo, Part, Score, Staff, StaffMeasure, Voice,
-    VoiceLocation,
+    Clef, Event, KeySignature, MeasureData, MeasureInfo, Part, Score, Staff, StaffMeasure, Tempo,
+    TempoDirection, TempoDirectionMark, Voice, VoiceLocation,
 };
 
 /// A reversible edit. `apply` leaves the score untouched on error and returns the inverse command.
@@ -98,6 +98,14 @@ pub enum Command {
     SetMetadata {
         title: String,
         composer: String,
+    },
+    SetTempo {
+        tempo: Tempo,
+    },
+    SetTempoDirection {
+        measure: usize,
+        tick: u32,
+        direction: Option<TempoDirection>,
     },
     /// Applied all-or-nothing and undone as a single step.
     Batch {
@@ -271,6 +279,11 @@ impl Command {
                     check_fits(content, capacity)?;
                 }
                 score.measures.insert(index, data.info);
+                for mark in &mut score.tempo_directions {
+                    if mark.measure >= index {
+                        mark.measure += 1;
+                    }
+                }
                 for (id, content) in data.content {
                     score.staff_mut(id)?.measures.insert(index, content);
                 }
@@ -282,14 +295,34 @@ impl Command {
                     return Err(ModelError::Invalid("a score needs at least one measure"));
                 }
                 let info = score.measures.remove(index);
+                let removed_directions: Vec<_> = score
+                    .tempo_directions
+                    .iter()
+                    .filter(|mark| mark.measure == index)
+                    .copied()
+                    .collect();
+                score.tempo_directions.retain(|mark| mark.measure != index);
+                for mark in &mut score.tempo_directions {
+                    if mark.measure > index {
+                        mark.measure -= 1;
+                    }
+                }
                 let content = score
                     .staves_mut()
                     .map(|staff| (staff.id, staff.measures.remove(index)))
                     .collect();
-                Ok(Command::InsertMeasure {
+                let mut commands = vec![Command::InsertMeasure {
                     index,
                     data: MeasureData { info, content },
-                })
+                }];
+                commands.extend(removed_directions.into_iter().map(|mark| {
+                    Command::SetTempoDirection {
+                        measure: mark.measure,
+                        tick: mark.tick,
+                        direction: Some(mark.direction),
+                    }
+                }));
+                Ok(Command::Batch { commands })
             }
             Command::SetTimeSignature {
                 measure,
@@ -509,6 +542,43 @@ impl Command {
                 let title = mem::replace(&mut score.title, title);
                 let composer = mem::replace(&mut score.composer, composer);
                 Ok(Command::SetMetadata { title, composer })
+            }
+            Command::SetTempo { tempo } => {
+                tempo.validate()?;
+                let old = mem::replace(&mut score.tempo, tempo);
+                Ok(Command::SetTempo { tempo: old })
+            }
+            Command::SetTempoDirection {
+                measure,
+                tick,
+                direction,
+            } => {
+                let capacity = score.measure_capacity(measure)?;
+                if tick > capacity {
+                    return Err(ModelError::Invalid(
+                        "tempo direction position is outside its measure",
+                    ));
+                }
+                let existing = score
+                    .tempo_directions
+                    .iter()
+                    .position(|mark| mark.measure == measure && mark.tick == tick);
+                let old = existing.map(|index| score.tempo_directions.remove(index).direction);
+                if let Some(direction) = direction {
+                    score.tempo_directions.push(TempoDirectionMark {
+                        measure,
+                        tick,
+                        direction,
+                    });
+                    score
+                        .tempo_directions
+                        .sort_by_key(|mark| (mark.measure, mark.tick));
+                }
+                Ok(Command::SetTempoDirection {
+                    measure,
+                    tick,
+                    direction: old,
+                })
             }
             Command::Batch { commands } => {
                 let mut inverses = Vec::with_capacity(commands.len());

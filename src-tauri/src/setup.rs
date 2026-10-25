@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use notula_model::{
-    Clef, Command, Document, KeySignature, ModelError, PartId, Score, TimeSignature,
+    Clef, Command, Document, KeySignature, ModelError, PartId, Score, Tempo, TimeSignature,
 };
 use serde::{Deserialize, Serialize};
 
@@ -174,6 +174,7 @@ pub struct InstrumentSelection {
 pub struct ScoreProperties {
     pub title: String,
     pub composer: String,
+    pub tempo: Tempo,
     pub parts: Vec<PartProperties>,
 }
 
@@ -206,6 +207,7 @@ pub struct AddedInstrument {
 pub struct ScorePropertiesUpdate {
     pub title: String,
     pub composer: String,
+    pub tempo: Tempo,
     pub remove_part_ids: Vec<PartId>,
     pub instruments: Vec<PartInstrumentUpdate>,
     pub add_instruments: Vec<AddedInstrument>,
@@ -215,6 +217,7 @@ pub fn properties(score: &Score) -> ScoreProperties {
     ScoreProperties {
         title: score.title.clone(),
         composer: score.composer.clone(),
+        tempo: score.tempo,
         parts: score
             .parts
             .iter()
@@ -245,6 +248,8 @@ pub fn update_properties(
     let parts = doc.score().parts.clone();
     let title = doc.score().title.clone();
     let composer = doc.score().composer.clone();
+    update.tempo.validate()?;
+    let tempo = doc.score().tempo;
     if update.instruments.len() + update.add_instruments.len() > MAX_INSTRUMENTS {
         return Err(ModelError::Invalid(
             "score parts changed while editing properties",
@@ -336,6 +341,11 @@ pub fn update_properties(
         commands.push(Command::SetMetadata {
             title: update.title.trim().to_owned(),
             composer: update.composer.trim().to_owned(),
+        });
+    }
+    if tempo != update.tempo {
+        commands.push(Command::SetTempo {
+            tempo: update.tempo,
         });
     }
     for instrument in &update.instruments {
@@ -635,6 +645,7 @@ mod tests {
             ScorePropertiesUpdate {
                 title: "Revised".into(),
                 composer: "Composer".into(),
+                tempo: Tempo::default(),
                 remove_part_ids: Vec::new(),
                 instruments: vec![PartInstrumentUpdate {
                     part_id,
@@ -719,6 +730,7 @@ mod tests {
             ScorePropertiesUpdate {
                 title: String::new(),
                 composer: String::new(),
+                tempo: Tempo::default(),
                 remove_part_ids: Vec::new(),
                 instruments: vec![
                     PartInstrumentUpdate {
@@ -794,6 +806,7 @@ mod tests {
             ScorePropertiesUpdate {
                 title: String::new(),
                 composer: String::new(),
+                tempo: Tempo::default(),
                 remove_part_ids: vec![removed_part.id],
                 instruments: vec![PartInstrumentUpdate {
                     part_id: kept_part_id,
@@ -817,6 +830,7 @@ mod tests {
             ScorePropertiesUpdate {
                 title: String::new(),
                 composer: String::new(),
+                tempo: Tempo::default(),
                 remove_part_ids: vec![final_part_id],
                 instruments: Vec::new(),
                 add_instruments: Vec::new(),
@@ -847,6 +861,7 @@ mod tests {
             ScorePropertiesUpdate {
                 title: String::new(),
                 composer: String::new(),
+                tempo: Tempo::default(),
                 remove_part_ids: Vec::new(),
                 instruments: vec![PartInstrumentUpdate {
                     part_id,
@@ -913,6 +928,7 @@ mod tests {
             ScorePropertiesUpdate {
                 title: "Would be destructive".into(),
                 composer: String::new(),
+                tempo: Tempo::default(),
                 remove_part_ids: Vec::new(),
                 instruments: vec![PartInstrumentUpdate {
                     part_id,
@@ -981,6 +997,7 @@ mod tests {
             ScorePropertiesUpdate {
                 title: String::new(),
                 composer: String::new(),
+                tempo: Tempo::default(),
                 remove_part_ids: Vec::new(),
                 instruments: vec![PartInstrumentUpdate {
                     part_id,
@@ -1022,6 +1039,7 @@ mod tests {
             ScorePropertiesUpdate {
                 title: String::new(),
                 composer: String::new(),
+                tempo: Tempo::default(),
                 remove_part_ids: Vec::new(),
                 instruments: vec![PartInstrumentUpdate {
                     part_id,

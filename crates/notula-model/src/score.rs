@@ -1,10 +1,62 @@
 use serde::{Deserialize, Serialize};
 
-use crate::duration::{Duration, NoteValue, TimeSignature, TimeSignatureDisplay};
+use crate::duration::{
+    Duration, NoteValue, TICKS_PER_QUARTER, TimeSignature, TimeSignatureDisplay,
+};
 use crate::error::ModelError;
 use crate::ids::{EventId, PartId, StaffId};
 use crate::markings::Markings;
 use crate::pitch::{Pitch, Step};
+
+/// Score-wide metronome setting, expressed in the displayed beat unit per minute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tempo {
+    pub beat_unit: NoteValue,
+    pub units_per_minute: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TempoDirection {
+    Accelerando,
+    Ritardando,
+    Rallentando,
+    ATempo,
+    Rubato,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TempoDirectionMark {
+    pub measure: usize,
+    pub tick: u32,
+    pub direction: TempoDirection,
+}
+
+impl Default for Tempo {
+    fn default() -> Self {
+        Self {
+            beat_unit: NoteValue::Quarter,
+            units_per_minute: 120,
+        }
+    }
+}
+
+impl Tempo {
+    pub fn validate(self) -> Result<(), ModelError> {
+        if !(1..=1000).contains(&self.units_per_minute) {
+            return Err(ModelError::Invalid(
+                "tempo must be 1..=1000 units per minute",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Equivalent quarter notes per minute, used to convert score ticks to seconds.
+    pub fn quarter_notes_per_minute(self) -> f64 {
+        f64::from(self.units_per_minute) * f64::from(self.beat_unit.ticks())
+            / f64::from(TICKS_PER_QUARTER)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Clef {
@@ -220,6 +272,10 @@ pub struct VoiceLocation {
 pub struct Score {
     pub title: String,
     pub composer: String,
+    #[serde(default)]
+    pub tempo: Tempo,
+    #[serde(default)]
+    pub tempo_directions: Vec<TempoDirectionMark>,
     pub parts: Vec<Part>,
     /// Never empty.
     pub measures: Vec<MeasureInfo>,
@@ -248,6 +304,8 @@ impl Score {
         Self {
             title: String::new(),
             composer: String::new(),
+            tempo: Tempo::default(),
+            tempo_directions: Vec::new(),
             parts: Vec::new(),
             measures: vec![MeasureInfo::default()],
             next_id: IdCounter(1),
@@ -362,6 +420,21 @@ impl Score {
 
     /// Checks the invariants that commands maintain, for scores that did not come from them.
     pub fn validate(&self) -> Result<(), ModelError> {
+        self.tempo.validate()?;
+        let mut direction_positions = std::collections::HashSet::new();
+        for mark in &self.tempo_directions {
+            let capacity = self.measure_capacity(mark.measure)?;
+            if mark.tick > capacity {
+                return Err(ModelError::Invalid(
+                    "tempo direction position is outside its measure",
+                ));
+            }
+            if !direction_positions.insert((mark.measure, mark.tick)) {
+                return Err(ModelError::Invalid(
+                    "only one tempo direction is allowed at each position",
+                ));
+            }
+        }
         if self.measures.is_empty() {
             return Err(ModelError::Invalid("a score needs at least one measure"));
         }

@@ -900,3 +900,29 @@ fn layout_is_deterministic_and_serializes() {
         .expect("notehead item");
     assert!(item["glyph"].is_string());
 }
+
+#[test]
+fn tempo_directions_render_at_the_same_position_for_each_part() {
+    let mut builder = Builder::new(&[("Flute", &[Clef::Treble]), ("Cello", &[Clef::Bass])]);
+    builder
+        .doc
+        .execute(Command::SetTempoDirection {
+            measure: 0,
+            tick: 0,
+            direction: Some(notula_model::TempoDirection::Ritardando),
+        })
+        .unwrap();
+
+    let directions: Vec<_> = builder
+        .layout(100.0)
+        .items
+        .into_iter()
+        .filter_map(|item| match item.shape {
+            Shape::Text { x, y, text, .. } if text == "rit." => Some((x, y)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(directions.len(), 2);
+    assert_eq!(directions[0].0, directions[1].0);
+    assert_ne!(directions[0].1, directions[1].1);
+}

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Articulation, NoteValue } from "./api";
+  import type { Articulation, NoteValue, TempoDirection } from "./api";
   import { NOTE_VALUES, editor } from "./editor.svelte";
 
   // SMuFL "individual notes" glyphs, named by the note value they show.
@@ -33,10 +33,17 @@
   let fileMenuPosition = $state({ left: 0, top: 0 });
   let measureDeleteDialog = $state<HTMLDialogElement | null>(null);
   let pendingDeleteMeasure = $state<number | null>(null);
+  let tempoDirectionChoice = $state<TempoDirection>("ritardando");
 
   $effect(() => {
     editor.revision;
     void editor.refreshArticulations(editor.selected);
+  });
+
+  $effect(() => {
+    const cursor = editor.cursor;
+    editor.revision;
+    void editor.refreshTempoDirection(cursor);
   });
 
   function toggleFileMenu() {
@@ -238,6 +245,26 @@
       <option value="above">Slur: Above</option>
       <option value="below">Slur: Below</option>
     </select>
+    <label class="direction-control">
+      Speed direction
+      <select bind:value={tempoDirectionChoice} aria-label="Tempo direction" disabled={!editor.cursor}>
+        <option value="accelerando">accel.</option>
+        <option value="ritardando">rit.</option>
+        <option value="rallentando">rall.</option>
+        <option value="a_tempo">a tempo</option>
+        <option value="rubato">rubato</option>
+      </select>
+    </label>
+    <button
+      onclick={() => editor.setTempoDirection(tempoDirectionChoice)}
+      disabled={!editor.cursor}
+      title="Add or change the speed direction at the cursor for the whole score"
+    >Set direction</button>
+    <button
+      onclick={() => editor.setTempoDirection(null)}
+      disabled={!editor.cursor || editor.tempoDirectionAt === null}
+      title="Remove the speed direction at the cursor from the whole score"
+    >Remove direction</button>
   </div>
 
   <div class="group">

@@ -21,5 +21,5 @@ pub use markings::{Articulation, Dynamic, Hairpin, Markings, SlurPlacement};
 pub use pitch::{Pitch, Step};
 pub use score::{
     Clef, Event, EventKind, KeySignature, MeasureData, MeasureInfo, Part, Score, Staff,
-    StaffMeasure, Voice, VoiceLocation,
+    StaffMeasure, Tempo, TempoDirection, TempoDirectionMark, Voice, VoiceLocation,
 };
