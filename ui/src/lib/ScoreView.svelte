@@ -1,7 +1,10 @@
 <script lang="ts">
   import { api } from "./api";
   import { editor } from "./editor.svelte";
-  import type { RenderList } from "./render";
+  import { glyphInkBox, type RenderList } from "./render";
+
+  // Room around a glyph's ink that still counts as clicking it, in staff spaces.
+  const GLYPH_HIT_MARGIN = 0.2;
 
   let clientWidth = $state(0);
   let list = $state<RenderList | null>(null);
@@ -10,12 +13,18 @@
   let caretElement = $state<SVGLineElement | null>(null);
   let playbackCaretElement = $state<SVGLineElement | null>(null);
   let error = $state<string | null>(null);
+  // Glyph hit boxes are measured from the font, so they wait until it has loaded.
+  let fontReady = $state(false);
   let request = 0;
   let caretScrollFrame = 0;
   let expectedScroll: { left: number; top: number; expires: number } | null = null;
 
   $effect(() => {
     editor.setNoteEditor(svg);
+  });
+
+  $effect(() => {
+    void document.fonts.load("10px Bravura").then(() => (fontReady = true));
   });
 
   $effect(() => {
@@ -273,6 +282,17 @@
             text-anchor={item.centered ? "middle" : undefined}
             >{item.glyph}</text
           >
+          {#if item.event !== undefined && fontReady}
+            {@const box = glyphInkBox(item, GLYPH_HIT_MARGIN)}
+            <rect
+              class="hit-box"
+              data-event={item.event}
+              x={box.x}
+              y={box.y}
+              width={box.width}
+              height={box.height}
+            />
+          {/if}
         {:else}
           <text x={item.x} y={item.y} font-size={item.size} text-anchor={item.anchor}>{item.text}</text>
         {/if}
@@ -353,6 +373,16 @@
   .glyph {
     font-family: "Bravura";
     user-select: none;
+  }
+
+  /* SVG hit-tests text by character cell, and Bravura's cells reach about 8 staff spaces
+     above and below a glyph. Clicks on glyphs go to the hit boxes drawn over their ink. */
+  .paper text {
+    pointer-events: none;
+  }
+
+  .hit-box {
+    fill: transparent;
   }
 
   .glyph.selected-tone {

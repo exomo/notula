@@ -208,7 +208,7 @@
         aria-pressed={editor.duration.value === value}
         aria-label={value}
         title="{value} ({index + 1})"
-        onclick={() => editor.setNoteValue(value)}>{NOTE_GLYPHS[value]}</button
+        onclick={() => editor.setNoteValue(value)}><span class="glyph">{NOTE_GLYPHS[value]}</span></button
       >
     {/each}
     <button
@@ -229,7 +229,7 @@
         aria-label={accidental.label}
         title={accidental.label}
         disabled={!hasSelection && !editor.inputMode}
-        onclick={() => editor.setAlter(accidental.alter)}>{accidental.glyph}</button
+        onclick={() => editor.setAlter(accidental.alter)}><span class="glyph">{accidental.glyph}</span></button
       >
     {/each}
     {#each ARTICULATIONS as item}
@@ -240,7 +240,7 @@
         aria-label={item.label}
         title="Toggle {item.label}"
         disabled={!editor.canToggleArticulation(item.articulation)}
-        onclick={() => editor.toggleArticulation(item.articulation)}>{item.glyph}</button
+        onclick={() => editor.toggleArticulation(item.articulation)}><span class="glyph">{item.glyph}</span></button
       >
     {/each}
     <button
@@ -600,6 +600,12 @@
     line-height: 1;
     min-width: 2.1rem;
     padding: 0.2rem 0.35rem 0.1rem;
+  }
+
+  /* Bravura's ascent and descent are 2 em each, so a glyph's text box reaches far above and
+     below its button and would catch the pointer over neighbouring controls. */
+  .smufl .glyph {
+    pointer-events: none;
   }
 
   .zoom span {
