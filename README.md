@@ -8,14 +8,19 @@ Notula is an open-source desktop music notation editor built with Rust and Tauri
 - Enter notes, rests, chords, and multiple independent voices.
 - Edit note durations, dots, accidentals, pitches, and chord tones.
 - Add staccato, staccatissimo, tenuto, accent, marcato, and fermata markings.
+- Add ties, slurs, and phrase slurs.
+- Add dynamics and crescendo and diminuendo hairpins.
+- Add metronome marks and tempo directions (accel., rit., rall., a tempo, rubato).
 - Set key and time signatures and create pickup measures.
 - Undo and redo score edits.
-- Play scores using a selected soundfont.
-- Export scores as PDF, PNG, or SVG.
+- Play scores using a selected soundfont, following the score's metronome marks.
+- Import and export MusicXML, and export scores as PDF, PNG, or SVG.
 
-Other notation options, including dynamics and hairpins, are not yet available in the editor.
+Playback does not yet follow dynamics, hairpins, or tempo directions.
 
 ## Development
+
+For current project status, architecture notes, and guidance for future work sessions, see [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) and [AGENTS.md](AGENTS.md).
 
 You will need a current Rust toolchain and Node.js 22. Tauri also requires platform-specific system dependencies; on Linux, see the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your distribution.
 
