@@ -930,6 +930,11 @@ pub async fn open_score(
     let Some(picked) = app
         .dialog()
         .file()
+        // The first filter is preselected, so the type dropdown is rarely needed.
+        .add_filter(
+            "All scores",
+            &[notula_format::EXTENSION, "musicxml", "xml", "mxl"],
+        )
         .add_filter("Notula score", &[notula_format::EXTENSION])
         .add_filter("MusicXML score", &["musicxml", "xml", "mxl"])
         .blocking_pick_file()
