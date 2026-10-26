@@ -1,6 +1,6 @@
 //! Codepoints and metrics from the SMuFL Bravura font, in staff spaces at the standard size.
 
-use notula_model::{Articulation, Clef, NoteValue};
+use notula_model::{Articulation, Clef, Dynamic, NoteValue};
 
 pub const STAFF_LINE_THICKNESS: f32 = 0.13;
 pub const STEM_THICKNESS: f32 = 0.12;
@@ -100,6 +100,24 @@ pub fn metronome_note(value: NoteValue) -> char {
         NoteValue::Sixteenth => '\u{ECA9}',
         NoteValue::ThirtySecond => '\u{ECAB}',
         NoteValue::SixtyFourth => '\u{ECAD}',
+    }
+}
+
+/// Glyph and advance width of a dynamic mark.
+pub fn dynamic(dynamic: Dynamic) -> (char, f32) {
+    match dynamic {
+        Dynamic::Ppp => ('\u{E52A}', 4.288),
+        Dynamic::Pp => ('\u{E52B}', 2.908),
+        Dynamic::P => ('\u{E520}', 1.46),
+        Dynamic::Mp => ('\u{E52C}', 3.304),
+        Dynamic::Mf => ('\u{E52D}', 3.188),
+        Dynamic::F => ('\u{E522}', 1.456),
+        Dynamic::Ff => ('\u{E52F}', 2.436),
+        Dynamic::Fff => ('\u{E530}', 3.324),
+        Dynamic::Fp => ('\u{E534}', 2.476),
+        Dynamic::Sf => ('\u{E536}', 2.416),
+        Dynamic::Sfz => ('\u{E539}', 2.928),
+        Dynamic::Rfz => ('\u{E53D}', 2.976),
     }
 }
 

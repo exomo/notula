@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Articulation, NoteValue, TempoDirection } from "./api";
+  import type { Articulation, Dynamic, NoteValue, TempoDirection } from "./api";
   import { NOTE_VALUES, TEMPO_BEATS, editor, tempoBeatKey, tempoFromBeatKey } from "./editor.svelte";
 
   // SMuFL "individual notes" glyphs, named by the note value they show.
@@ -24,6 +24,21 @@
     { articulation: "Accent", glyph: "\uE4A0", label: "Accent" },
     { articulation: "Marcato", glyph: "\uE4AC", label: "Marcato" },
     { articulation: "Fermata", glyph: "\uE4C0", label: "Fermata" },
+  ];
+
+  const DYNAMICS: { dynamic: Dynamic; label: string }[] = [
+    { dynamic: "Ppp", label: "ppp" },
+    { dynamic: "Pp", label: "pp" },
+    { dynamic: "P", label: "p" },
+    { dynamic: "Mp", label: "mp" },
+    { dynamic: "Mf", label: "mf" },
+    { dynamic: "F", label: "f" },
+    { dynamic: "Ff", label: "ff" },
+    { dynamic: "Fff", label: "fff" },
+    { dynamic: "Fp", label: "fp" },
+    { dynamic: "Sf", label: "sf" },
+    { dynamic: "Sfz", label: "sfz" },
+    { dynamic: "Rfz", label: "rfz" },
   ];
 
   const hasSelection = $derived(editor.selected !== null);
@@ -259,6 +274,41 @@
       <option value="above">Slur: Above</option>
       <option value="below">Slur: Below</option>
     </select>
+  </div>
+
+  <div class="group">
+    <select
+      aria-label="Dynamic of the selected note"
+      title="Set the dynamic of the selected note or rest"
+      value={editor.eventArticulations?.dynamic ?? ""}
+      disabled={!hasSelection || !editor.eventArticulations}
+      onchange={(event) => editor.setDynamic((event.currentTarget.value || null) as Dynamic | null)}
+    >
+      <option value="">Dynamic: none</option>
+      {#each DYNAMICS as item (item.dynamic)}
+        <option value={item.dynamic}>{item.label}</option>
+      {/each}
+    </select>
+    <button
+      class:active={editor.hairpinMode === "Crescendo"}
+      aria-pressed={editor.hairpinMode === "Crescendo"}
+      title="Select a start note, then an end note to add or remove a crescendo; the same note twice puts it on one note"
+      onclick={() => editor.toggleHairpinMode("Crescendo")}
+    >{editor.hairpinMode === "Crescendo" ? "Cancel cresc." : "Cresc."}</button>
+    <button
+      class:active={editor.hairpinMode === "Diminuendo"}
+      aria-pressed={editor.hairpinMode === "Diminuendo"}
+      title="Select a start note, then an end note to add or remove a diminuendo; the same note twice puts it on one note"
+      onclick={() => editor.toggleHairpinMode("Diminuendo")}
+    >{editor.hairpinMode === "Diminuendo" ? "Cancel dim." : "Dim."}</button>
+    <button
+      onclick={() => editor.removeHairpin()}
+      disabled={!editor.eventArticulations?.in_hairpin}
+      title="Remove the hairpin the selected note belongs to"
+    >Remove hairpin</button>
+  </div>
+
+  <div class="group">
     <label class="direction-control">
       Speed direction
       <select bind:value={tempoDirectionChoice} aria-label="Tempo direction" disabled={!editor.cursor}>

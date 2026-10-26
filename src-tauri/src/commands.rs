@@ -4,8 +4,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use notula_layout::{LayoutOptions, RenderList};
 use notula_model::edit::{self, Cursor};
 use notula_model::{
-    Articulation, Document, Duration, EventId, EventKind, KeySignature, Pitch, Step, Tempo,
-    TempoChangeMark, TempoDirection, TimeSignature, TimeSignatureDisplay,
+    Articulation, Document, Duration, Dynamic, EventId, EventKind, Hairpin, KeySignature, Pitch,
+    Step, Tempo, TempoChangeMark, TempoDirection, TimeSignature, TimeSignatureDisplay,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
@@ -53,6 +53,9 @@ pub struct EventArticulations {
     is_rest: bool,
     tied: bool,
     tie_possible: bool,
+    dynamic: Option<Dynamic>,
+    /// Whether the event starts, ends, or lies inside a hairpin.
+    in_hairpin: bool,
 }
 
 type Reply<T> = Result<T, String>;
@@ -367,6 +370,41 @@ pub fn toggle_slur(
 }
 
 #[tauri::command]
+pub fn set_dynamic(
+    app: AppHandle,
+    state: State<AppState>,
+    event: EventId,
+    dynamic: Option<Dynamic>,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::set_dynamic(&mut session.doc, event, dynamic).map_err(text)?;
+    let cursor = cursor_of(&session, event);
+    Ok(finish(&app, &session, cursor, Some(event)))
+}
+
+#[tauri::command]
+pub fn toggle_hairpin(
+    app: AppHandle,
+    state: State<AppState>,
+    start: EventId,
+    end: EventId,
+    kind: Hairpin,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::toggle_hairpin(&mut session.doc, start, end, kind).map_err(text)?;
+    let cursor = cursor_of(&session, end);
+    Ok(finish(&app, &session, cursor, Some(end)))
+}
+
+#[tauri::command]
+pub fn remove_hairpin(app: AppHandle, state: State<AppState>, event: EventId) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::remove_hairpin(&mut session.doc, event).map_err(text)?;
+    let cursor = cursor_of(&session, event);
+    Ok(finish(&app, &session, cursor, Some(event)))
+}
+
+#[tauri::command]
 pub fn toggle_phrase_slur(
     app: AppHandle,
     state: State<AppState>,
@@ -485,6 +523,8 @@ pub fn event_articulations(state: State<AppState>, event: EventId) -> Option<Eve
         is_rest: matches!(event.kind, EventKind::Rest),
         tied,
         tie_possible,
+        dynamic: event.markings.dynamic,
+        in_hairpin: edit::hairpin_at(session.doc.score(), event.id).is_some(),
     })
 }
 

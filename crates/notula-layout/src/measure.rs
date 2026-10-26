@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use notula_model::{Score, Staff, TICKS_PER_QUARTER};
 
-use crate::emit;
 use crate::engrave::{StaffPlan, plan_staff};
+use crate::{emit, volume};
 
 const START_PAD: f32 = 1.0;
 const MIN_CLEARANCE: f32 = 1.0;
@@ -56,6 +56,20 @@ pub(crate) fn measure_metrics(score: &Score, staves: &[&Staff], measure: usize) 
         let entry = extents.entry(event.onset).or_insert((0.0, 0.0));
         entry.0 = entry.0.max(event.left);
         entry.1 = entry.1.max(event.right);
+    }
+    for staff in staves {
+        for voice in &staff.measures[measure].voices {
+            let mut onset = 0;
+            for event in &voice.events {
+                if let Some(dynamic) = event.markings.dynamic {
+                    let (left, right) = volume::dynamic_extent(dynamic);
+                    let entry = extents.entry(onset).or_insert((0.0, 0.0));
+                    entry.0 = entry.0.max(left);
+                    entry.1 = entry.1.max(right);
+                }
+                onset += event.duration.ticks();
+            }
+        }
     }
     for mark in score
         .tempo_directions

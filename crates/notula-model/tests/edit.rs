@@ -430,10 +430,11 @@ fn dynamics_and_hairpins_can_be_set_and_removed() {
         .event;
 
     edit::set_dynamic(&mut doc, id, Some(Dynamic::Mf)).unwrap();
-    edit::set_hairpin(&mut doc, id, Some(Hairpin::Crescendo)).unwrap();
+    edit::toggle_hairpin(&mut doc, id, id, Hairpin::Crescendo).unwrap();
     let markings = event_at(&doc, cursor, 0).markings;
     assert_eq!(markings.dynamic, Some(Dynamic::Mf));
-    assert_eq!(markings.hairpin, Some(Hairpin::Crescendo));
+    assert_eq!(markings.hairpin_start, Some(Hairpin::Crescendo));
+    assert!(markings.hairpin_stop);
 
     edit::set_dynamic(&mut doc, id, None).unwrap();
     assert_eq!(event_at(&doc, cursor, 0).markings.dynamic, None);
@@ -503,13 +504,14 @@ fn replacing_a_note_keeps_volume_marks_but_not_articulations() {
         .unwrap()
         .event;
     edit::set_dynamic(&mut doc, id, Some(Dynamic::Ff)).unwrap();
-    edit::set_hairpin(&mut doc, id, Some(Hairpin::Diminuendo)).unwrap();
+    edit::toggle_hairpin(&mut doc, id, id, Hairpin::Diminuendo).unwrap();
     edit::toggle_articulation(&mut doc, id, Articulation::Marcato).unwrap();
 
     enter_note(&mut doc, cursor, c4(), dur(NoteValue::Eighth)).unwrap();
     let replaced = event_at(&doc, cursor, 0).markings;
     assert_eq!(replaced.dynamic, Some(Dynamic::Ff));
-    assert_eq!(replaced.hairpin, Some(Hairpin::Diminuendo));
+    assert_eq!(replaced.hairpin_start, Some(Hairpin::Diminuendo));
+    assert!(replaced.hairpin_stop);
     assert!(replaced.articulations.is_empty());
 }
 
@@ -1256,4 +1258,115 @@ fn unknown_events_are_reported() {
         edit::delete_event(&mut doc, missing),
         Err(ModelError::EventNotFound(missing))
     );
+}
+
+fn quarters(doc: &mut Document, cursor: Cursor, count: usize) -> Vec<notula_model::EventId> {
+    let mut at = cursor;
+    (0..count)
+        .map(|_| {
+            let entry = enter_note(doc, at, c4(), dur(NoteValue::Quarter)).unwrap();
+            at = entry.next;
+            entry.event
+        })
+        .collect()
+}
+
+#[test]
+fn hairpins_span_ranges_single_notes_and_chains() {
+    let (mut doc, cursor) = setup(2);
+    let ids = quarters(&mut doc, cursor, 6);
+
+    // Crescendo over the first three notes, then a diminuendo from the shared third note.
+    edit::toggle_hairpin(&mut doc, ids[0], ids[2], Hairpin::Crescendo).unwrap();
+    edit::toggle_hairpin(&mut doc, ids[2], ids[3], Hairpin::Diminuendo).unwrap();
+    // A crescendo on a single note in the next measure.
+    edit::toggle_hairpin(&mut doc, ids[5], ids[5], Hairpin::Crescendo).unwrap();
+
+    let (spans, unpaired) = edit::hairpins(doc.score());
+    assert!(unpaired.is_empty());
+    let summary: Vec<_> = spans
+        .iter()
+        .map(|span| {
+            (
+                span.kind,
+                span.start,
+                span.end,
+                span.start_tick,
+                span.end_tick,
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            (Hairpin::Crescendo, ids[0], ids[2], 0, 2880),
+            (Hairpin::Diminuendo, ids[2], ids[3], 1920, 3840),
+            (Hairpin::Crescendo, ids[5], ids[5], 4800, 5760),
+        ]
+    );
+    assert_eq!(edit::hairpin_at(doc.score(), ids[1]).unwrap().start, ids[0]);
+    assert_eq!(edit::hairpin_at(doc.score(), ids[2]).unwrap().start, ids[2]);
+    assert!(edit::hairpin_at(doc.score(), ids[4]).is_none());
+
+    // Overlapping an existing hairpin is refused without changing anything.
+    let before = doc.score().clone();
+    assert!(edit::toggle_hairpin(&mut doc, ids[1], ids[4], Hairpin::Diminuendo).is_err());
+    assert_eq!(doc.score(), &before);
+    assert!(edit::toggle_hairpin(&mut doc, ids[3], ids[1], Hairpin::Diminuendo).is_err());
+
+    // Toggling the same range removes it in one undoable step.
+    edit::toggle_hairpin(&mut doc, ids[0], ids[2], Hairpin::Crescendo).unwrap();
+    assert_eq!(edit::hairpins(doc.score()).0.len(), 2);
+    let markings = event_at(&doc, cursor, 2).markings;
+    assert_eq!(markings.hairpin_start, Some(Hairpin::Diminuendo));
+    assert!(!markings.hairpin_stop);
+    doc.undo().unwrap();
+    assert_eq!(edit::hairpins(doc.score()).0.len(), 3);
+}
+
+#[test]
+fn hairpins_are_replaced_from_their_start_and_removed_from_any_event() {
+    let (mut doc, cursor) = setup(1);
+    let ids = quarters(&mut doc, cursor, 4);
+    edit::toggle_hairpin(&mut doc, ids[0], ids[3], Hairpin::Crescendo).unwrap();
+
+    // Starting a different hairpin at the same event replaces the old one.
+    edit::toggle_hairpin(&mut doc, ids[0], ids[1], Hairpin::Diminuendo).unwrap();
+    let (spans, unpaired) = edit::hairpins(doc.score());
+    assert!(unpaired.is_empty());
+    assert_eq!(spans.len(), 1);
+    assert_eq!((spans[0].kind, spans[0].end), (Hairpin::Diminuendo, ids[1]));
+    assert!(!event_at(&doc, cursor, 3).markings.hairpin_stop);
+
+    edit::remove_hairpin(&mut doc, ids[1]).unwrap();
+    assert!(edit::hairpins(doc.score()).0.is_empty());
+    assert!((0..4).all(|index| event_at(&doc, cursor, index).markings.is_empty()));
+    assert!(edit::remove_hairpin(&mut doc, ids[2]).is_err());
+}
+
+#[test]
+fn hairpin_flags_without_a_partner_are_reported() {
+    let (mut doc, cursor) = setup(1);
+    let ids = quarters(&mut doc, cursor, 2);
+    // Deleting a note keeps its volume marks on the rest, so a hairpin end survives.
+    edit::toggle_hairpin(&mut doc, ids[0], ids[1], Hairpin::Crescendo).unwrap();
+    edit::delete_event(&mut doc, ids[1]).unwrap();
+    assert_eq!(edit::hairpins(doc.score()).0.len(), 1);
+
+    // A start that never stops, as an imported file might contain.
+    let mut end = event_at(&doc, cursor, 1);
+    end.markings.hairpin_stop = false;
+    doc.execute(Command::ReplaceEvent {
+        at: VoiceLocation {
+            staff: cursor.staff,
+            measure: 0,
+            voice: 0,
+        },
+        index: 1,
+        event: end,
+    })
+    .unwrap();
+    let (spans, unpaired) = edit::hairpins(doc.score());
+    assert!(spans.is_empty());
+    assert_eq!(unpaired, vec![ids[0]]);
 }

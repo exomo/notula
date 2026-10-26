@@ -18,6 +18,20 @@ export type Articulation =
   | "Marcato"
   | "Fermata";
 export type SlurPlacement = "auto" | "above" | "below";
+export type Dynamic =
+  | "Ppp"
+  | "Pp"
+  | "P"
+  | "Mp"
+  | "Mf"
+  | "F"
+  | "Ff"
+  | "Fff"
+  | "Fp"
+  | "Sf"
+  | "Sfz"
+  | "Rfz";
+export type Hairpin = "Crescendo" | "Diminuendo";
 export type TempoDirection = "accelerando" | "ritardando" | "rallentando" | "a_tempo" | "rubato";
 
 /** Metronome setting; `beat_unit_dots` is omitted when the beat is undotted. */
@@ -51,6 +65,9 @@ export interface EventArticulations {
   is_rest: boolean;
   tied: boolean;
   tie_possible: boolean;
+  dynamic: Dynamic | null;
+  /** Whether the event starts, ends, or lies inside a hairpin. */
+  in_hairpin: boolean;
 }
 
 export interface Cursor {
@@ -184,6 +201,11 @@ export const api = {
     invoke<Edited>("toggle_slur", { start, end, placement }),
   togglePhraseSlur: (start: number, end: number, placement: SlurPlacement) =>
     invoke<Edited>("toggle_phrase_slur", { start, end, placement }),
+  setDynamic: (event: number, dynamic: Dynamic | null) =>
+    invoke<Edited>("set_dynamic", { event, dynamic }),
+  toggleHairpin: (start: number, end: number, kind: Hairpin) =>
+    invoke<Edited>("toggle_hairpin", { start, end, kind }),
+  removeHairpin: (event: number) => invoke<Edited>("remove_hairpin", { event }),
   tempoDirectionAt: (measure: number, tick: number) =>
     invoke<TempoDirection | null>("tempo_direction_at", { measure, tick }),
   setTempoDirection: (measure: number, tick: number, direction: TempoDirection | null) =>

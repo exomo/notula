@@ -29,7 +29,9 @@
   <ScoreView />
   <footer>
     <span class="mode">{editor.inputMode ? "Note input" : "Select"}</span>
-    {#if editor.slurMode || editor.phraseSlurMode}
+    {#if editor.hairpinMode}
+      <span>{editor.hairpinMode === "Crescendo" ? "Crescendo" : "Diminuendo"}: click a start note, then an end note (the same note for one note) · Esc cancels</span>
+    {:else if editor.slurMode || editor.phraseSlurMode}
       <span>{editor.phraseSlurMode ? "Phrase slur" : "Slur"}: click a start note, then an end note · Esc cancels</span>
     {:else if editor.message}
       <span class="error">{editor.message}</span>

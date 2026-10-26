@@ -227,7 +227,8 @@ fn enter_event(
             .filter(|_| removed > 0)
             .map(|replaced| Markings {
                 dynamic: replaced.markings.dynamic,
-                hairpin: replaced.markings.hairpin,
+                hairpin_start: replaced.markings.hairpin_start,
+                hairpin_stop: replaced.markings.hairpin_stop,
                 articulations: Vec::new(),
                 slur_start: false,
                 slur_stop: false,
@@ -644,13 +645,236 @@ pub fn set_dynamic(
     edit_markings(doc, id, |markings| markings.dynamic = dynamic)
 }
 
-/// Sets or, with `None`, removes the start or end of a hairpin at an event.
-pub fn set_hairpin(
+/// A hairpin from the start of `start` through the end of `end`, both in one voice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HairpinSpan {
+    pub kind: Hairpin,
+    pub staff: StaffId,
+    pub voice: usize,
+    pub start: EventId,
+    pub end: EventId,
+    /// Score ticks where the start event begins and the end event finishes.
+    pub start_tick: u64,
+    pub end_tick: u64,
+}
+
+/// All hairpins in the score, and events whose hairpin flags have no partner.
+///
+/// Each voice is read in order. At an event, a stop closes the open hairpin before a start
+/// opens the next one; with none open, a start comes first, so one event can hold a whole
+/// hairpin. A start while another is open ends the open one at the previous event.
+pub fn hairpins(score: &Score) -> (Vec<HairpinSpan>, Vec<EventId>) {
+    struct Open {
+        kind: Hairpin,
+        start: EventId,
+        start_tick: u64,
+    }
+    let mut spans = Vec::new();
+    let mut unpaired = Vec::new();
+    for staff in score.staves() {
+        let voice_count = staff
+            .measures
+            .iter()
+            .map(|measure| measure.voices.len())
+            .max()
+            .unwrap_or(0);
+        for voice in 0..voice_count {
+            let mut open: Option<Open> = None;
+            let mut previous: Option<(EventId, u64)> = None;
+            let mut measure_start = 0_u64;
+            for (content, info) in staff.measures.iter().zip(&score.measures) {
+                let mut tick = measure_start;
+                for event in content
+                    .voices
+                    .get(voice)
+                    .map_or(&[][..], |voice| &voice.events)
+                {
+                    let end_tick = tick + u64::from(event.duration.ticks());
+                    let span = |open: Open, end: EventId, end_tick: u64| HairpinSpan {
+                        kind: open.kind,
+                        staff: staff.id,
+                        voice,
+                        start: open.start,
+                        end,
+                        start_tick: open.start_tick,
+                        end_tick,
+                    };
+                    let starting = event.markings.hairpin_start.map(|kind| Open {
+                        kind,
+                        start: event.id,
+                        start_tick: tick,
+                    });
+                    match (open.take(), starting) {
+                        (Some(current), next) if event.markings.hairpin_stop => {
+                            spans.push(span(current, event.id, end_tick));
+                            open = next;
+                        }
+                        (Some(current), Some(next)) => {
+                            let (end, end_tick) = previous.expect("an open hairpin has an event");
+                            spans.push(span(current, end, end_tick));
+                            open = Some(next);
+                        }
+                        (Some(current), None) => open = Some(current),
+                        (None, Some(next)) if event.markings.hairpin_stop => {
+                            spans.push(span(next, event.id, end_tick));
+                        }
+                        (None, next) => {
+                            if event.markings.hairpin_stop {
+                                unpaired.push(event.id);
+                            }
+                            open = next;
+                        }
+                    }
+                    previous = Some((event.id, end_tick));
+                    tick = end_tick;
+                }
+                measure_start += u64::from(info.capacity());
+            }
+            if let Some(current) = open {
+                unpaired.push(current.start);
+            }
+        }
+    }
+    (spans, unpaired)
+}
+
+fn voice_hairpins(score: &Score, staff: StaffId, voice: usize) -> Vec<HairpinSpan> {
+    hairpins(score)
+        .0
+        .into_iter()
+        .filter(|span| span.staff == staff && span.voice == voice)
+        .collect()
+}
+
+/// Replaces events by id in one undoable step, each with its latest change.
+fn replace_events(doc: &mut Document, events: Vec<Event>) -> Result<(), ModelError> {
+    let mut commands = Vec::with_capacity(events.len());
+    for event in events {
+        let located = locate(doc.score(), event.id).ok_or(ModelError::EventNotFound(event.id))?;
+        commands.push(Command::ReplaceEvent {
+            at: located.cursor.at(),
+            index: located.index,
+            event,
+        });
+    }
+    doc.execute(Command::Batch { commands })
+}
+
+/// Collects edited copies of events so one event changed twice is replaced once.
+struct EventEdits<'a> {
+    score: &'a Score,
+    events: Vec<Event>,
+}
+
+impl EventEdits<'_> {
+    fn edit(&mut self, id: EventId, change: impl FnOnce(&mut Markings)) -> Result<(), ModelError> {
+        let index = match self.events.iter().position(|event| event.id == id) {
+            Some(index) => index,
+            None => {
+                self.events.push(find(self.score, id)?.1);
+                self.events.len() - 1
+            }
+        };
+        change(&mut self.events[index].markings);
+        Ok(())
+    }
+}
+
+/// Adds a hairpin from `start` through `end`, or removes it when exactly that one exists.
+/// `start` and `end` may be the same event. A hairpin already starting at `start` is replaced.
+pub fn toggle_hairpin(
     doc: &mut Document,
-    id: EventId,
-    hairpin: Option<Hairpin>,
+    start: EventId,
+    end: EventId,
+    kind: Hairpin,
 ) -> Result<(), ModelError> {
-    edit_markings(doc, id, |markings| markings.hairpin = hairpin)
+    let start_location = locate(doc.score(), start).ok_or(ModelError::EventNotFound(start))?;
+    let end_location = locate(doc.score(), end).ok_or(ModelError::EventNotFound(end))?;
+    if start_location.cursor.staff != end_location.cursor.staff
+        || start_location.cursor.voice != end_location.cursor.voice
+        || (start_location.cursor.measure, start_location.cursor.tick)
+            > (end_location.cursor.measure, end_location.cursor.tick)
+    {
+        return Err(ModelError::Invalid(
+            "hairpin endpoints must be ordered in the same voice",
+        ));
+    }
+    let spans = voice_hairpins(
+        doc.score(),
+        start_location.cursor.staff,
+        start_location.cursor.voice,
+    );
+    let existing = spans.iter().find(|span| span.start == start).copied();
+    let mut edits = EventEdits {
+        score: doc.score(),
+        events: Vec::new(),
+    };
+    if let Some(old) = existing {
+        edits.edit(old.start, |markings| markings.hairpin_start = None)?;
+        edits.edit(old.end, |markings| markings.hairpin_stop = false)?;
+    }
+    if existing.is_none_or(|old| old.end != end || old.kind != kind) {
+        let new_start = event_tick(doc.score(), start)?;
+        let (_, end_event) = find(doc.score(), end)?;
+        let new_end = event_tick(doc.score(), end)? + u64::from(end_event.duration.ticks());
+        // Hairpins in one voice may share an end and a start event but not overlap.
+        let overlaps = spans.iter().any(|span| {
+            span.start != start
+                && span.end != start
+                && span.start != end
+                && span.start_tick < new_end
+                && new_start < span.end_tick
+        });
+        if overlaps {
+            return Err(ModelError::Invalid("hairpins in one voice cannot overlap"));
+        }
+        edits.edit(start, |markings| markings.hairpin_start = Some(kind))?;
+        edits.edit(end, |markings| markings.hairpin_stop = true)?;
+    }
+    let events = edits.events;
+    replace_events(doc, events)
+}
+
+/// Score tick where an event begins.
+fn event_tick(score: &Score, id: EventId) -> Result<u64, ModelError> {
+    let located = locate(score, id).ok_or(ModelError::EventNotFound(id))?;
+    let measure_start: u64 = score.measures[..located.cursor.measure]
+        .iter()
+        .map(|info| u64::from(info.capacity()))
+        .sum();
+    Ok(measure_start + u64::from(located.cursor.tick))
+}
+
+/// Removes the hairpin that starts at, ends at, or runs through the event.
+pub fn remove_hairpin(doc: &mut Document, id: EventId) -> Result<(), ModelError> {
+    let span = hairpin_at(doc.score(), id)
+        .ok_or(ModelError::Invalid("the event is not part of a hairpin"))?;
+    let mut edits = EventEdits {
+        score: doc.score(),
+        events: Vec::new(),
+    };
+    edits.edit(span.start, |markings| markings.hairpin_start = None)?;
+    edits.edit(span.end, |markings| markings.hairpin_stop = false)?;
+    let events = edits.events;
+    replace_events(doc, events)
+}
+
+/// The hairpin that starts at, ends at, or runs through the event, if any. An event shared
+/// by two touching hairpins belongs to the one it starts.
+pub fn hairpin_at(score: &Score, id: EventId) -> Option<HairpinSpan> {
+    let located = locate(score, id)?;
+    let tick = event_tick(score, id).ok()?;
+    let spans = voice_hairpins(score, located.cursor.staff, located.cursor.voice);
+    spans
+        .iter()
+        .find(|span| span.start == id)
+        .or_else(|| spans.iter().find(|span| span.end == id))
+        .or_else(|| {
+            spans
+                .iter()
+                .find(|span| span.start_tick <= tick && tick < span.end_tick)
+        })
+        .copied()
 }
 
 /// Adds the articulation, or removes it if the event already has it.

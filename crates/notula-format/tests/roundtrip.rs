@@ -186,7 +186,7 @@ fn markings_roundtrip_through_a_file() {
     let mut doc = sample();
     let id = doc.score().parts[0].staves[0].measures[0].voices[0].events[0].id;
     edit::set_dynamic(&mut doc, id, Some(Dynamic::Ff)).unwrap();
-    edit::set_hairpin(&mut doc, id, Some(Hairpin::Crescendo)).unwrap();
+    edit::toggle_hairpin(&mut doc, id, id, Hairpin::Crescendo).unwrap();
     edit::toggle_articulation(&mut doc, id, Articulation::Staccato).unwrap();
     edit::toggle_articulation(&mut doc, id, Articulation::Accent).unwrap();
 

@@ -21,10 +21,16 @@ pub enum Dynamic {
     Rfz,
 }
 
-/// A gradual volume change. `Crescendo` and `Diminuendo` start one, and it lasts until the
-/// next `End` on the same staff.
+/// A gradual volume change, drawn below the staff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Hairpin {
+    Crescendo,
+    Diminuendo,
+}
+
+/// How older files stored hairpins: a start, or the event where one ended.
+#[derive(Deserialize)]
+enum StoredHairpin {
     Crescendo,
     Diminuendo,
     End,
@@ -52,12 +58,18 @@ pub enum SlurPlacement {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "StoredMarkings")]
 pub struct Markings {
     /// Takes effect at this event and stays until the next dynamic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dynamic: Option<Dynamic>,
+    /// A hairpin starts at this event and runs through the event with the matching
+    /// `hairpin_stop` in the same voice. One event can carry both, for a hairpin over a
+    /// single note or one that ends where the next starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hairpin: Option<Hairpin>,
+    pub hairpin_start: Option<Hairpin>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hairpin_stop: bool,
     /// Each articulation at most once.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub articulations: Vec<Articulation>,
@@ -75,6 +87,56 @@ pub struct Markings {
     pub phrase_slur_placement: SlurPlacement,
 }
 
+/// Markings as stored in files, including the older single `hairpin` field.
+#[derive(Deserialize)]
+struct StoredMarkings {
+    #[serde(default)]
+    dynamic: Option<Dynamic>,
+    #[serde(default)]
+    hairpin: Option<StoredHairpin>,
+    #[serde(default)]
+    hairpin_start: Option<Hairpin>,
+    #[serde(default)]
+    hairpin_stop: bool,
+    #[serde(default)]
+    articulations: Vec<Articulation>,
+    #[serde(default)]
+    slur_start: bool,
+    #[serde(default)]
+    slur_stop: bool,
+    #[serde(default)]
+    slur_placement: SlurPlacement,
+    #[serde(default)]
+    phrase_slur_start: bool,
+    #[serde(default)]
+    phrase_slur_stop: bool,
+    #[serde(default)]
+    phrase_slur_placement: SlurPlacement,
+}
+
+impl From<StoredMarkings> for Markings {
+    fn from(stored: StoredMarkings) -> Self {
+        let (legacy_start, legacy_stop) = match stored.hairpin {
+            Some(StoredHairpin::Crescendo) => (Some(Hairpin::Crescendo), false),
+            Some(StoredHairpin::Diminuendo) => (Some(Hairpin::Diminuendo), false),
+            Some(StoredHairpin::End) => (None, true),
+            None => (None, false),
+        };
+        Self {
+            dynamic: stored.dynamic,
+            hairpin_start: stored.hairpin_start.or(legacy_start),
+            hairpin_stop: stored.hairpin_stop || legacy_stop,
+            articulations: stored.articulations,
+            slur_start: stored.slur_start,
+            slur_stop: stored.slur_stop,
+            slur_placement: stored.slur_placement,
+            phrase_slur_start: stored.phrase_slur_start,
+            phrase_slur_stop: stored.phrase_slur_stop,
+            phrase_slur_placement: stored.phrase_slur_placement,
+        }
+    }
+}
+
 impl SlurPlacement {
     fn is_auto(&self) -> bool {
         *self == Self::Auto
@@ -84,7 +146,8 @@ impl SlurPlacement {
 impl Markings {
     pub fn is_empty(&self) -> bool {
         self.dynamic.is_none()
-            && self.hairpin.is_none()
+            && self.hairpin_start.is_none()
+            && !self.hairpin_stop
             && self.articulations.is_empty()
             && !self.slur_start
             && !self.slur_stop
@@ -137,7 +200,8 @@ mod tests {
     fn rests_keep_only_a_fermata() {
         let markings = Markings {
             dynamic: Some(Dynamic::F),
-            hairpin: None,
+            hairpin_start: None,
+            hairpin_stop: false,
             articulations: vec![Articulation::Staccato, Articulation::Fermata],
             slur_start: false,
             slur_stop: false,
@@ -150,6 +214,24 @@ mod tests {
         assert_eq!(rest.dynamic, Some(Dynamic::F));
         assert_eq!(rest.articulations, vec![Articulation::Fermata]);
         assert!(rest.validate(true).is_ok());
+    }
+
+    #[test]
+    fn older_hairpin_fields_load_as_start_and_stop() {
+        let start: Markings = serde_json::from_str(r#"{"hairpin":"Diminuendo"}"#).unwrap();
+        assert_eq!(start.hairpin_start, Some(Hairpin::Diminuendo));
+        assert!(!start.hairpin_stop);
+        let end: Markings = serde_json::from_str(r#"{"hairpin":"End"}"#).unwrap();
+        assert_eq!(end.hairpin_start, None);
+        assert!(end.hairpin_stop);
+
+        let both = Markings {
+            hairpin_start: Some(Hairpin::Crescendo),
+            hairpin_stop: true,
+            ..Markings::default()
+        };
+        let json = serde_json::to_string(&both).unwrap();
+        assert_eq!(serde_json::from_str::<Markings>(&json).unwrap(), both);
     }
 
     #[test]

@@ -40,6 +40,14 @@ pub enum MusicXmlError {
 
 pub fn export(score: &Score) -> MusicXmlExport {
     let mut unsupported = BTreeSet::new();
+    let (hairpins, unpaired_hairpins) = notula_model::edit::hairpins(score);
+    if !unpaired_hairpins.is_empty() {
+        remember(
+            &mut unsupported,
+            "hairpins without a matching end (omitted)",
+        );
+    }
+    let wedges = wedge_marks(&hairpins);
     let mut xml = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n<score-partwise version=\"4.0\">\n",
     );
@@ -147,7 +155,8 @@ pub fn export(score: &Score) -> MusicXmlExport {
                     first_voice = false;
                     let mut onset = 0;
                     for event in &voice.events {
-                        write_directions(&mut xml, event, staff_index + 1);
+                        let wedge = wedges.get(&event.id).copied().unwrap_or_default();
+                        write_directions(&mut xml, event, wedge, voice_index + 1, staff_index + 1);
                         write_event(
                             &mut xml,
                             event,
@@ -156,6 +165,15 @@ pub fn export(score: &Score) -> MusicXmlExport {
                             info.key_signature.fifths,
                             ties.get(&event.id).unwrap_or(&TieMarks::default()),
                         );
+                        // A hairpin ends where its last event does.
+                        if let Some(number) = wedge.stop {
+                            let _ = writeln!(
+                                xml,
+                                "      <direction placement=\"below\"><direction-type><wedge type=\"stop\" number=\"{number}\"/></direction-type><voice>{}</voice><staff>{}</staff></direction>",
+                                voice_index + 1,
+                                staff_index + 1
+                            );
+                        }
                         onset += event.duration.ticks();
                     }
                     if onset < info.capacity() {
@@ -624,7 +642,47 @@ fn write_tempo_marks(xml: &mut String, score: &Score, measure: usize) {
     }
 }
 
-fn write_directions(xml: &mut String, event: &Event, staff: usize) {
+/// Wedge starts and stops written around one event, with the MusicXML number that pairs them.
+#[derive(Debug, Clone, Copy, Default)]
+struct WedgeMarks {
+    start: Option<(Hairpin, u8)>,
+    stop: Option<u8>,
+}
+
+/// Numbers keep each voice's wedges apart; a hairpin that starts where the previous one in
+/// its voice ends overlaps it in MusicXML time, so it takes the other number of the pair.
+fn wedge_marks(
+    spans: &[notula_model::edit::HairpinSpan],
+) -> HashMap<notula_model::EventId, WedgeMarks> {
+    let mut marks = HashMap::<notula_model::EventId, WedgeMarks>::new();
+    let mut previous: Option<(notula_model::edit::HairpinSpan, u8)> = None;
+    for span in spans {
+        let base = (span.voice % 8) as u8 * 2 + 1;
+        let number = match previous {
+            Some((last, number))
+                if last.staff == span.staff
+                    && last.voice == span.voice
+                    && last.end == span.start
+                    && number == base =>
+            {
+                base + 1
+            }
+            _ => base,
+        };
+        marks.entry(span.start).or_default().start = Some((span.kind, number));
+        marks.entry(span.end).or_default().stop = Some(number);
+        previous = Some((*span, number));
+    }
+    marks
+}
+
+fn write_directions(
+    xml: &mut String,
+    event: &Event,
+    wedge: WedgeMarks,
+    voice: usize,
+    staff: usize,
+) {
     if let Some(dynamic) = event.markings.dynamic {
         let name = match dynamic {
             Dynamic::Ppp => "ppp",
@@ -645,15 +703,14 @@ fn write_directions(xml: &mut String, event: &Event, staff: usize) {
             "      <direction placement=\"below\"><direction-type><dynamics><{name}/></dynamics></direction-type><staff>{staff}</staff></direction>\n"
         );
     }
-    if let Some(hairpin) = event.markings.hairpin {
-        let wedge = match hairpin {
+    if let Some((hairpin, number)) = wedge.start {
+        let kind = match hairpin {
             Hairpin::Crescendo => "crescendo",
             Hairpin::Diminuendo => "diminuendo",
-            Hairpin::End => "stop",
         };
-        let _ = write!(
+        let _ = writeln!(
             xml,
-            "      <direction><direction-type><wedge type=\"{wedge}\"/></direction-type><staff>{staff}</staff></direction>\n"
+            "      <direction placement=\"below\"><direction-type><wedge type=\"{kind}\" number=\"{number}\"/></direction-type><voice>{voice}</voice><staff>{staff}</staff></direction>"
         );
     }
 }
@@ -696,6 +753,8 @@ struct ParsedMeasure {
     end_tick: u32,
     tempos: Vec<ParsedTempo>,
     tempo_directions: Vec<(u32, TempoDirection)>,
+    /// In document order; attached to events once the whole part is read.
+    wedges: Vec<ParsedWedge>,
 }
 
 struct ParsedPart {
@@ -710,7 +769,16 @@ struct ParsedDirection {
     staff: usize,
     onset: u32,
     dynamic: Option<Dynamic>,
-    hairpin: Option<Hairpin>,
+}
+
+/// A wedge start (`kind`) or stop (`None`), paired with others by staff and number.
+#[derive(Clone, Copy)]
+struct ParsedWedge {
+    staff: usize,
+    voice: Option<usize>,
+    onset: u32,
+    number: u32,
+    kind: Option<Hairpin>,
 }
 
 fn element<'a, 'input>(
@@ -1107,6 +1175,17 @@ fn parse_markings(node: roxmltree::Node<'_, '_>, unsupported: &mut BTreeSet<Stri
     markings
 }
 
+/// Numbered voices map to their number less one; named voices get the next free index.
+fn voice_index(name: &str, voice_names: &mut BTreeMap<String, usize>) -> usize {
+    let name = name.trim();
+    if let Ok(number) = name.parse::<usize>() {
+        number.saturating_sub(1)
+    } else {
+        let next = voice_names.len();
+        *voice_names.entry(name.to_owned()).or_insert(next)
+    }
+}
+
 fn parse_measure(
     measure: roxmltree::Node<'_, '_>,
     divisions: &mut u32,
@@ -1191,13 +1270,7 @@ fn parse_measure(
             "note" => {
                 let staff = parse_number(child, "staff").unwrap_or(1).saturating_sub(1) as usize;
                 result.staves = result.staves.max(staff + 1);
-                let voice_name = child_text(child, "voice").unwrap_or("1").trim().to_owned();
-                let voice = if let Ok(number) = voice_name.parse::<usize>() {
-                    number.saturating_sub(1)
-                } else {
-                    let next = voice_names.len();
-                    *voice_names.entry(voice_name).or_insert(next)
-                };
+                let voice = voice_index(child_text(child, "voice").unwrap_or("1"), voice_names);
                 let Some((duration, raw_ticks)) = parse_duration(child, *divisions, unsupported)
                 else {
                     continue;
@@ -1275,8 +1348,9 @@ fn parse_measure(
                     staff,
                     onset,
                     dynamic: None,
-                    hairpin: None,
                 };
+                let wedge_voice =
+                    child_text(child, "voice").map(|name| voice_index(name, voice_names));
                 let mut metronome_tempo = None;
                 for direction_type in elements(child, "direction-type") {
                     if let Some(dynamics) = element(direction_type, "dynamics") {
@@ -1289,15 +1363,29 @@ fn parse_measure(
                         }
                     }
                     if let Some(wedge) = element(direction_type, "wedge") {
-                        direction.hairpin = match wedge.attribute("type") {
-                            Some("crescendo") => Some(Hairpin::Crescendo),
-                            Some("diminuendo") => Some(Hairpin::Diminuendo),
-                            Some("stop") => Some(Hairpin::End),
+                        let kind = match wedge.attribute("type") {
+                            Some("crescendo") => Some(Some(Hairpin::Crescendo)),
+                            Some("diminuendo") => Some(Some(Hairpin::Diminuendo)),
+                            Some("stop") => Some(None),
+                            // A continuation across a system break needs nothing here.
+                            Some("continue") => None,
                             _ => {
                                 remember(unsupported, "wedge type");
                                 None
                             }
                         };
+                        if let Some(kind) = kind {
+                            result.wedges.push(ParsedWedge {
+                                staff,
+                                voice: wedge_voice,
+                                onset,
+                                number: wedge
+                                    .attribute("number")
+                                    .and_then(|number| number.parse().ok())
+                                    .unwrap_or(1),
+                                kind,
+                            });
+                        }
                     }
                     for item in direction_type.children().filter(|n| n.is_element()) {
                         match item.tag_name().name() {
@@ -1329,7 +1417,7 @@ fn parse_measure(
                         hidden,
                     });
                 }
-                if direction.dynamic.is_some() || direction.hairpin.is_some() {
+                if direction.dynamic.is_some() {
                     directions.push(direction);
                 }
             }
@@ -1363,12 +1451,7 @@ fn parse_measure(
             .filter(|event| event.staff == direction.staff && event.onset >= direction.onset)
             .min_by_key(|event| event.onset)
         {
-            if direction.dynamic.is_some() {
-                event.markings.dynamic = direction.dynamic;
-            }
-            if direction.hairpin.is_some() {
-                event.markings.hairpin = direction.hairpin;
-            }
+            event.markings.dynamic = direction.dynamic;
         } else {
             remember(unsupported, "direction with no following note");
         }
@@ -1384,9 +1467,10 @@ fn parse_partwise_part(
 ) -> ParsedPart {
     let mut divisions = TICKS_PER_QUARTER;
     let mut voice_names = BTreeMap::new();
-    let measures: Vec<_> = elements(part, "measure")
+    let mut measures: Vec<_> = elements(part, "measure")
         .map(|measure| parse_measure(measure, &mut divisions, &mut voice_names, unsupported))
         .collect();
+    attach_wedges(&mut measures, unsupported);
     let staff_count = measures
         .iter()
         .map(|measure| measure.staves)
@@ -1407,6 +1491,72 @@ fn parse_partwise_part(
         short_name,
         clefs,
         measures,
+    }
+}
+
+/// A wedge start marks the first event at or after it; its stop marks the last event of the
+/// same voice that begins before the stop, so the hairpin runs through that event.
+fn attach_wedges(measures: &mut [ParsedMeasure], unsupported: &mut BTreeSet<String>) {
+    // Where each open wedge started, by staff and number: (measure, event index).
+    let mut open = HashMap::<(usize, u32), (usize, usize)>::new();
+    let wedges: Vec<_> = measures
+        .iter()
+        .enumerate()
+        .flat_map(|(index, measure)| measure.wedges.iter().map(move |wedge| (index, *wedge)))
+        .collect();
+    for (measure, wedge) in wedges {
+        let Some(kind) = wedge.kind else {
+            let Some((start_measure, start_index)) = open.remove(&(wedge.staff, wedge.number))
+            else {
+                remember(unsupported, "hairpin end without a start");
+                continue;
+            };
+            let start = &measures[start_measure].events[start_index];
+            let (voice, start_onset) = (start.voice, start.onset);
+            let end = (start_measure..=measure)
+                .rev()
+                .find_map(|index| {
+                    measures[index]
+                        .events
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, event)| {
+                            event.staff == wedge.staff
+                                && event.voice == voice
+                                && (index != measure || event.onset < wedge.onset)
+                                && (index != start_measure || event.onset >= start_onset)
+                        })
+                        .max_by_key(|(_, event)| event.onset)
+                        .map(|(event, _)| (index, event))
+                })
+                .unwrap_or((start_measure, start_index));
+            measures[end.0].events[end.1].markings.hairpin_stop = true;
+            continue;
+        };
+        let start = (measure..measures.len()).find_map(|index| {
+            let earliest = if index == measure { wedge.onset } else { 0 };
+            measures[index]
+                .events
+                .iter()
+                .enumerate()
+                .filter(|(_, event)| {
+                    event.staff == wedge.staff
+                        && wedge.voice.is_none_or(|voice| event.voice == voice)
+                        && event.onset >= earliest
+                })
+                .min_by_key(|(_, event)| (event.onset, event.voice))
+                .map(|(event, _)| (index, event))
+        });
+        match start {
+            Some((index, event)) => {
+                measures[index].events[event].markings.hairpin_start = Some(kind);
+                open.insert((wedge.staff, wedge.number), (index, event));
+            }
+            None => remember(unsupported, "hairpin with no following note"),
+        }
+    }
+    if !open.is_empty() {
+        remember(unsupported, "hairpin without an end");
     }
 }
 
@@ -1869,7 +2019,8 @@ mod tests {
             markings: Markings {
                 articulations: vec![Articulation::Marcato],
                 dynamic: Some(Dynamic::Mf),
-                hairpin: Some(Hairpin::Crescendo),
+                hairpin_start: Some(Hairpin::Crescendo),
+                hairpin_stop: false,
                 slur_start: false,
                 slur_stop: false,
                 slur_placement: SlurPlacement::Auto,
@@ -1889,7 +2040,7 @@ mod tests {
             event,
         })
         .unwrap();
-        let continuation = Event::new(
+        let mut continuation = Event::new(
             doc.new_event_id(),
             Duration::new(NoteValue::Quarter, 0),
             EventKind::Chord {
@@ -1897,6 +2048,7 @@ mod tests {
                 tied: false,
             },
         );
+        continuation.markings.hairpin_stop = true;
         doc.execute(Command::InsertEvent {
             at,
             index: 1,
@@ -1921,7 +2073,16 @@ mod tests {
             }
         );
         assert_eq!(imported_event.markings.dynamic, Some(Dynamic::Mf));
-        assert_eq!(imported_event.markings.hairpin, Some(Hairpin::Crescendo));
+        assert_eq!(
+            imported_event.markings.hairpin_start,
+            Some(Hairpin::Crescendo)
+        );
+        assert!(!imported_event.markings.hairpin_stop);
+        assert!(
+            score.parts[0].staves[0].measures[0].voices[0].events[1]
+                .markings
+                .hairpin_stop
+        );
         assert_eq!(
             imported_event.markings.articulations,
             vec![Articulation::Marcato]
@@ -2076,6 +2237,155 @@ mod tests {
             (0, 960, TempoDirection::Ritardando)
         );
         assert_eq!(imported.unsupported, vec!["direction: words".to_owned()]);
+    }
+
+    /// A hairpin as (kind, staff index, start tick, end tick).
+    type HairpinRange = (Hairpin, usize, u64, u64);
+
+    /// Hairpins, with each event's dynamic.
+    fn volume_marks(score: &Score) -> (Vec<HairpinRange>, Vec<Option<Dynamic>>) {
+        let staves: Vec<_> = score.staves().map(|staff| staff.id).collect();
+        let (spans, unpaired) = notula_model::edit::hairpins(score);
+        assert!(unpaired.is_empty());
+        let hairpins = spans
+            .iter()
+            .map(|span| {
+                let staff = staves.iter().position(|id| *id == span.staff).unwrap();
+                (span.kind, staff, span.start_tick, span.end_tick)
+            })
+            .collect();
+        let dynamics = score
+            .staves()
+            .flat_map(|staff| &staff.measures)
+            .flat_map(|measure| &measure.voices)
+            .flat_map(|voice| &voice.events)
+            .map(|event| event.markings.dynamic)
+            .collect();
+        (hairpins, dynamics)
+    }
+
+    #[test]
+    fn dynamics_and_hairpins_roundtrip_through_musicxml() {
+        use notula_model::edit::{Cursor, enter_note, set_dynamic, toggle_hairpin};
+        let mut doc = Document::new();
+        let part = doc.new_part("Piano", &[Clef::Treble, Clef::Bass]);
+        doc.execute(Command::AddPart { index: 0, part }).unwrap();
+        notula_model::edit::append_measure(&mut doc).unwrap();
+        let mut ids = Vec::new();
+        for staff in doc.score().parts[0]
+            .staves
+            .iter()
+            .map(|staff| staff.id)
+            .collect::<Vec<_>>()
+        {
+            let mut cursor = Cursor {
+                staff,
+                measure: 0,
+                voice: 0,
+                tick: 0,
+            };
+            let mut staff_ids = Vec::new();
+            for _ in 0..8 {
+                let entry = enter_note(
+                    &mut doc,
+                    cursor,
+                    Pitch::new(Step::C, 0, 4),
+                    Duration::new(NoteValue::Quarter, 0),
+                )
+                .unwrap();
+                staff_ids.push(entry.event);
+                cursor = entry.next;
+            }
+            ids.push(staff_ids);
+        }
+        // Upper staff: < > sharing the third note, then a crescendo on one note.
+        toggle_hairpin(&mut doc, ids[0][0], ids[0][2], Hairpin::Crescendo).unwrap();
+        toggle_hairpin(&mut doc, ids[0][2], ids[0][3], Hairpin::Diminuendo).unwrap();
+        toggle_hairpin(&mut doc, ids[0][6], ids[0][6], Hairpin::Crescendo).unwrap();
+        set_dynamic(&mut doc, ids[0][0], Some(Dynamic::P)).unwrap();
+        set_dynamic(&mut doc, ids[0][4], Some(Dynamic::Sfz)).unwrap();
+        // Lower staff: a diminuendo across the barline, ending on its own dynamic.
+        toggle_hairpin(&mut doc, ids[1][2], ids[1][5], Hairpin::Diminuendo).unwrap();
+        set_dynamic(&mut doc, ids[1][2], Some(Dynamic::Ff)).unwrap();
+        set_dynamic(&mut doc, ids[1][5], Some(Dynamic::Mp)).unwrap();
+
+        let exported = export(doc.score());
+        assert!(
+            exported.unsupported.is_empty(),
+            "{:?}",
+            exported.unsupported
+        );
+        // The chained hairpins overlap in MusicXML time, so they use different numbers.
+        assert!(
+            exported
+                .xml
+                .contains(r#"<wedge type="crescendo" number="1"/>"#)
+        );
+        assert!(
+            exported
+                .xml
+                .contains(r#"<wedge type="diminuendo" number="2"/>"#)
+        );
+
+        let imported = import(&exported.xml).unwrap();
+        assert!(
+            imported.unsupported.is_empty(),
+            "{:?}",
+            imported.unsupported
+        );
+        let expected = volume_marks(doc.score());
+        assert_eq!(expected.0.len(), 4);
+        assert_eq!(volume_marks(&imported.score), expected);
+    }
+
+    #[test]
+    fn import_attaches_wedges_written_by_other_programs() {
+        // Stops placed before the next note, a stop at the start of the next measure, wedges
+        // without numbers or voices, and a stop without a start.
+        let note = |step: &str| {
+            format!(
+                "<note><pitch><step>{step}</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>"
+            )
+        };
+        let wedge = |kind: &str| {
+            format!(
+                r#"<direction placement="below"><direction-type><wedge type="{kind}"/></direction-type></direction>"#
+            )
+        };
+        let xml = format!(
+            r#"<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Flute</part-name></score-part></part-list><part id="P1">
+<measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>{cresc}{c}{d}{stop}{e}{dim}{f}</measure>
+<measure number="2">{stop}{g}{a}{b}{stop}{c}</measure>
+</part></score-partwise>"#,
+            cresc = wedge("crescendo"),
+            dim = wedge("diminuendo"),
+            stop = wedge("stop"),
+            c = note("C"),
+            d = note("D"),
+            e = note("E"),
+            f = note("F"),
+            g = note("G"),
+            a = note("A"),
+            b = note("B"),
+        );
+        let imported = import(&xml).unwrap();
+        let (spans, unpaired) = notula_model::edit::hairpins(&imported.score);
+        assert!(unpaired.is_empty());
+        let ranges: Vec<_> = spans
+            .iter()
+            .map(|span| (span.kind, span.start_tick, span.end_tick))
+            .collect();
+        assert_eq!(
+            ranges,
+            vec![
+                (Hairpin::Crescendo, 0, 1920),
+                (Hairpin::Diminuendo, 2880, 3840),
+            ]
+        );
+        assert_eq!(
+            imported.unsupported,
+            vec!["hairpin end without a start".to_owned()]
+        );
     }
 
     #[test]

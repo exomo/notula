@@ -1030,3 +1030,131 @@ fn hidden_tempo_changes_are_not_printed() {
         Shape::Text { text, .. } if text.starts_with('=')
     )));
 }
+
+fn hairpin_lines(list: &RenderList, start: EventId) -> Vec<(f32, f32, f32, f32)> {
+    list.items
+        .iter()
+        .filter(|item| item.event == Some(start))
+        .filter_map(|item| match item.shape {
+            // Stems carry the event too, but are thinner.
+            Shape::Line {
+                x1,
+                y1,
+                x2,
+                y2,
+                thickness,
+            } if thickness > 0.15 => Some((x1, y1, x2, y2)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn dynamics_and_hairpins_share_a_line_below_the_staff() {
+    let mut builder = Builder::new(&[("Flute", &[Clef::Treble])]);
+    let ids: Vec<_> = (0..4)
+        .map(|_| builder.note(0, 0, Pitch::new(Step::G, 0, 4), NoteValue::Quarter))
+        .collect();
+    edit::set_dynamic(&mut builder.doc, ids[0], Some(notula_model::Dynamic::P)).unwrap();
+    edit::toggle_hairpin(
+        &mut builder.doc,
+        ids[0],
+        ids[1],
+        notula_model::Hairpin::Crescendo,
+    )
+    .unwrap();
+    edit::toggle_hairpin(
+        &mut builder.doc,
+        ids[1],
+        ids[2],
+        notula_model::Hairpin::Diminuendo,
+    )
+    .unwrap();
+    edit::set_dynamic(&mut builder.doc, ids[3], Some(notula_model::Dynamic::F)).unwrap();
+    builder
+        .doc
+        .execute(Command::SetTempoDirection {
+            measure: 0,
+            tick: 0,
+            direction: Some(notula_model::TempoDirection::Ritardando),
+        })
+        .unwrap();
+    let list = builder.layout(100.0);
+
+    let dynamics: Vec<_> = list
+        .items
+        .iter()
+        .filter_map(|item| match item.shape {
+            Shape::Glyph { x, y, glyph, .. } if ('\u{E520}'..='\u{E53D}').contains(&glyph) => {
+                Some((item.event, x, y))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(dynamics.len(), 2);
+    assert_eq!(dynamics[0].0, Some(ids[0]));
+    assert_eq!(dynamics[0].2, dynamics[1].2);
+    assert!(dynamics[0].2 > 4.0, "dynamics sit below the staff");
+
+    let crescendo = hairpin_lines(&list, ids[0]);
+    let diminuendo = hairpin_lines(&list, ids[1]);
+    assert_eq!((crescendo.len(), diminuendo.len()), (2, 2));
+    // A crescendo starts closed and opens; the diminuendo continues from its open end.
+    let (x1, y1, x2, y2) = crescendo[0];
+    let (_, other_y1, _, other_y2) = crescendo[1];
+    assert_eq!(y1, other_y1);
+    assert!((y2 - other_y2).abs() > 0.5);
+    assert!(x1 > dynamics[0].1, "the crescendo starts after the p");
+    assert_eq!(diminuendo[0].0, x2);
+    assert!(
+        diminuendo[0].2 < dynamics[1].1,
+        "the diminuendo stops before the f"
+    );
+    assert!((y1 - dynamics[0].2).abs() < 1.0);
+
+    let rit = list
+        .items
+        .iter()
+        .find_map(|item| match &item.shape {
+            Shape::Text { y, text, .. } if text == "rit." => Some(*y),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        rit > dynamics[0].2 + 1.0,
+        "tempo text moves below the dynamics"
+    );
+}
+
+#[test]
+fn hairpins_continue_across_system_breaks() {
+    let mut builder = Builder::new(&[("Flute", &[Clef::Treble])]);
+    builder.measures(8);
+    let first = builder.note(0, 0, Pitch::new(Step::G, 0, 4), NoteValue::Whole);
+    for measure in 1..7 {
+        builder.note(0, measure, Pitch::new(Step::G, 0, 4), NoteValue::Whole);
+    }
+    let last = builder.note(0, 7, Pitch::new(Step::G, 0, 4), NoteValue::Whole);
+    edit::toggle_hairpin(
+        &mut builder.doc,
+        first,
+        last,
+        notula_model::Hairpin::Crescendo,
+    )
+    .unwrap();
+    let list = builder.layout(40.0);
+
+    let segments = hairpin_lines(&list, first);
+    assert!(segments.len() >= 4, "one pair of lines per system");
+    let openings: Vec<f32> = segments
+        .chunks(2)
+        .map(|pair| (pair[0].1 - pair[1].1).abs())
+        .collect();
+    assert_eq!(openings[0], 0.0);
+    // Each later system starts as open as the previous one ended.
+    for (pair, next) in segments.chunks(2).zip(segments.chunks(2).skip(1)) {
+        let end = (pair[0].3 - pair[1].3).abs();
+        let start = (next[0].1 - next[1].1).abs();
+        assert!((end - start).abs() < 0.05);
+    }
+}

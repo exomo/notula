@@ -7,6 +7,7 @@ mod prefix;
 mod render;
 mod smufl;
 mod staff;
+mod volume;
 
 use std::ops::Range;
 
@@ -155,6 +156,7 @@ struct Layouter<'a> {
     staves: Vec<&'a Staff>,
     metrics: Vec<MeasureMetrics>,
     rows: Rows,
+    hairpins: Vec<notula_model::edit::HairpinSpan>,
 }
 
 struct PlacedNote {
@@ -289,6 +291,7 @@ pub fn layout(score: &Score, options: &LayoutOptions) -> RenderList {
         staves,
         metrics,
         rows: Rows::new(score),
+        hairpins: notula_model::edit::hairpins(score).0,
     };
     layouter.run(options.width)
 }
@@ -515,6 +518,8 @@ impl Layouter<'_> {
         }
 
         let mut cursor = x_start;
+        let mut timeline = volume::Timeline::default();
+        let mut tempo_texts = Vec::new();
         let mut foreground_fermatas = Vec::new();
         let mut placed_events = Vec::new();
         let mut measure_tick: u64 = self.score.measures[..system.measures.start]
@@ -532,6 +537,10 @@ impl Layouter<'_> {
             let body_start = cursor + prefix.width(info);
             let body_end = body_start + metrics.body_width * stretch;
             let x_of = |onset: u32| body_start + metrics.offset_of(onset) * stretch;
+            timeline.push(measure_tick, body_start);
+            for &column in &metrics.columns {
+                timeline.push(measure_tick + u64::from(column), x_of(column));
+            }
 
             for (staff, &row) in self.staves.iter().zip(&rows.y) {
                 canvas.areas.push(MeasureArea {
@@ -624,11 +633,7 @@ impl Layouter<'_> {
                     notula_model::TempoDirection::ATempo => "a tempo",
                     notula_model::TempoDirection::Rubato => "rubato",
                 };
-                let x = x_of(mark.tick);
-                for part in rows.parts.iter().filter(|part| !part.is_empty()) {
-                    let bottom = y_top + rows.y[part.end - 1] + STAFF_HEIGHT;
-                    canvas.text(x, bottom + 1.8, text, NAME_SIZE, render::Anchor::Start);
-                }
+                tempo_texts.push((x_of(mark.tick), text));
             }
 
             for mark in self
@@ -670,6 +675,25 @@ impl Layouter<'_> {
             }
             cursor = body_end;
             measure_tick += u64::from(info.capacity());
+            timeline.push(measure_tick, body_end);
+        }
+
+        let volume_bottoms = volume::VolumeMarks {
+            staves: &self.staves,
+            staff_tops: rows.y.iter().map(|row| y_top + row).collect(),
+            measures: system.measures.clone(),
+            placed: &placed_events,
+            hairpins: &self.hairpins,
+            timeline: &timeline,
+        }
+        .emit(canvas);
+        // Tempo directions go below each part, under its lowest dynamics line.
+        for part in rows.parts.iter().filter(|part| !part.is_empty()) {
+            let bottom = y_top + rows.y[part.end - 1] + STAFF_HEIGHT;
+            let below = volume_bottoms[part.end - 1].map_or(bottom, |line| line.max(bottom));
+            for &(x, text) in &tempo_texts {
+                canvas.text(x, below + 1.8, text, NAME_SIZE, render::Anchor::Start);
+            }
         }
 
         for (event, x, y) in foreground_fermatas {

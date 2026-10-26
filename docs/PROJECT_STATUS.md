@@ -1,6 +1,6 @@
 # Project Status
 
-Last verified against commit `4a20fe1` (`Add score tempo and direction annotations`) plus uncommitted tempo-change and MusicXML tempo work. Update this handoff when a feature is completed or priorities change.
+Last verified against commit `ce0886b` (`Add tempo changes and MusicXML tempo round trip`, branch `tempo-changes`) plus uncommitted dynamics and hairpin work on branch `dynamics`. Update this handoff when a feature is completed or priorities change.
 
 ## Product Snapshot
 
@@ -10,6 +10,11 @@ Implemented capabilities include score setup and properties, instruments and mul
 
 ## Recent Completed Work
 
+- Dynamics and hairpins can be edited, are engraved, and round-trip through MusicXML. They stay on the events of one staff (so instruments, and staves of one instrument, can differ), matching MusicXML. Playback ignores them for now.
+  - Model: `Markings::dynamic`, plus `hairpin_start: Option<Hairpin>` and `hairpin_stop: bool` like slurs; `Hairpin` is `Crescendo`/`Diminuendo`. `notula_model::edit::hairpins()` pairs them per staff and voice: at an event, a stop closes the open hairpin before a start opens the next; with none open, a start comes first. So one event can hold a whole hairpin (one note) or end one and start the next ("< >"). Files with the older single `hairpin` field (`Crescendo`/`Diminuendo`/`End`) still load; an old `End` becomes a stop on that event, so such a hairpin now runs through that event instead of ending at it.
+  - Editing: `set_dynamic`, `toggle_hairpin(start, end, kind)` (same voice, may be one event, overlaps rejected except touching at a shared event, a new hairpin from the same start replaces the old), `remove_hairpin(event)`, `hairpin_at(event)`. Toolbar: a dynamic select for the selected note or rest, Cresc./Dim. modes that work like the slur tool (start note, then end note, Esc cancels), and Remove hairpin.
+  - Engraving (`crates/notula-layout/src/volume.rs`): one dynamics line per staff and system below the staff, lowered for low notes and stems but kept above the next staff; dynamics centred under the notehead and given horizontal room; hairpins start after a dynamic at their start, stop before a dynamic at their end, meet in the middle of a shared event, and continue across system breaks with matching openings. Tempo directions move below the bottom staff's dynamics line.
+  - MusicXML: dynamics as before; wedges are written with `number` and `<voice>`, the start before the first event and the stop after the last; chained hairpins alternate numbers because they overlap in MusicXML time. Import pairs wedges by staff and number across measures: a start marks the first event at or after it (in its voice if given), a stop marks the last event of the start's voice beginning before it. Unpaired wedges are reported.
 - The starting tempo is an ordinary tempo change at measure 1, tick 0 (`Score::initial_tempo()`); without one, playback uses quarter note = 120. There is no separate `Score::tempo` any more: files that stored the old default-tempo field load with it as a printed start mark. The New Score dialog sets the starting tempo and whether it is printed (defaults: printed quarter note = 120; `ScoreSetup` fields default the same way). Score Properties edits the start mark's tempo and whether it is printed, and only creates or changes the mark when one of those differs. Both dialogs share `ui/src/lib/TempoFields.svelte`.
 - Tempo directions (`accel.`, `rit.`, `rall.`, `a tempo`, `rubato`) are stored once per score at a measure/tick position. The toolbar can add, replace, and remove a direction at the current cursor. It renders below each instrument part at the shared horizontal position, so changing it from any staff changes the score-wide annotation. Directions are intentionally ignored by playback for now.
 - Direction positions follow measure insertions and removals; undo/redo restores edits. Validation rejects positions outside a measure and duplicate directions at one position.
@@ -21,10 +26,11 @@ Implemented capabilities include score setup and properties, instruments and mul
 
 ## Suggested Next Work
 
-1. **Next: volume annotations (dynamics and hairpins).** The model already defines `Dynamic` and `Hairpin` on event markings, and MusicXML import/export already understands them; however, the editor has no controls for them, the layout does not render them, and playback ignores them. Decide whether these marks remain event/staff-local or should be score-wide before exposing editing. The current request described score-wide behavior for speed directions specifically; do not assume volume marks share that scope.
+1. Polish volume marks: between the staves of a grand staff (5 spaces apart) the dynamics line can come close to ledger-line notes above it, and up-stems of the lower staff reach into it; consider local collision avoidance or more room between staves. Also consider text dynamics and hairpin variants ("cresc.", "dim.", niente circles), dynamics shared by both staves of one instrument, and keyboard shortcuts.
 2. Make rit./accel./rall. affect playback; see [Planned: tempo transitions](#planned-tempo-transitions).
-3. Consider tempo text such as "Allegro" (with an optional metronome) as a score-wide mark; MusicXML import currently drops it.
-4. PNG/PDF export loads only Bravura into usvg, so plain text items (part names, tempo text) likely fall back to an unavailable font there. Verify and load or embed a text font if needed.
+3. Playback, to be designed as one larger topic later: dynamics and hairpins (velocity and gradual volume), tempo transitions, and an option to start playback at the current cursor position instead of the beginning of the score. None of this is implemented yet; the first dynamics change is notation, editing, and MusicXML only.
+4. Consider tempo text such as "Allegro" (with an optional metronome) as a score-wide mark; MusicXML import currently drops it.
+5. PNG/PDF export loads only Bravura into usvg, so plain text items (part names, tempo text) likely fall back to an unavailable font there. Verify and load or embed a text font if needed.
 
 These are recommendations based on current code, not committed feature promises. Follow the user's latest request if priorities differ.
 
@@ -55,7 +61,8 @@ A dedicated playback annotation mode (timeline view, curve shapes, per-note timi
 
 - Score model, initial tempo, and score-wide tempo directions and changes: `crates/notula-model/src/score.rs`
 - Reversible score mutations and measure position maintenance: `crates/notula-model/src/command.rs`
-- Event-local dynamics, hairpins, and other markings: `crates/notula-model/src/markings.rs`; edit helpers: `crates/notula-model/src/edit.rs`
+- Event-local dynamics, hairpins, and other markings: `crates/notula-model/src/markings.rs`; edit helpers and hairpin pairing: `crates/notula-model/src/edit.rs`
+- Dynamics and hairpin engraving: `crates/notula-layout/src/volume.rs`
 - Shared staff layout, measure columns, and tempo-direction engraving: `crates/notula-layout/src/measure.rs`, `crates/notula-layout/src/lib.rs`
 - Drawing primitives and SVG frontend rendering: `crates/notula-layout/src/render.rs`, `ui/src/lib/ScoreView.svelte`
 - Tauri API and command registration: `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`

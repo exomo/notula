@@ -3,6 +3,8 @@ import {
   type Cursor,
   type Duration,
   type Articulation,
+  type Dynamic,
+  type Hairpin,
   type Edited,
   type EventArticulations,
   type NoteValue,
@@ -80,6 +82,8 @@ class Editor {
   slurStart = $state<number | null>(null);
   phraseSlurMode = $state(false);
   phraseSlurStart = $state<number | null>(null);
+  hairpinMode = $state<Hairpin | null>(null);
+  hairpinStart = $state<number | null>(null);
   slurPlacement = $state<SlurPlacement>("auto");
   tempoDirectionAt = $state<TempoDirection | null>(null);
   tempoChangeAt = $state<TempoChangeMark | null>(null);
@@ -264,6 +268,14 @@ class Editor {
       this.selected = null;
       return;
     }
+    if (this.hairpinMode) {
+      if (hit.note === null) {
+        this.message = "Choose a note or rest as the endpoint.";
+        return;
+      }
+      await this.chooseHairpinEvent(hit.note, hit.cursor);
+      return;
+    }
     if (this.slurMode || this.phraseSlurMode) {
       if (hit.note === null) {
         this.message = "Choose a note as the endpoint.";
@@ -309,6 +321,10 @@ class Editor {
   async clickEvent(id: number, x: number, y: number, shift = false) {
     const eventCursor = await this.run(() => api.selectEvent(id));
     if (!eventCursor) return;
+    if (this.hairpinMode) {
+      await this.chooseHairpinEvent(id, eventCursor);
+      return;
+    }
     if (this.slurMode || this.phraseSlurMode) {
       await this.chooseSlurEvent(id, eventCursor, this.phraseSlurMode);
       return;
@@ -394,11 +410,68 @@ class Editor {
     return state !== null && !state.is_rest && (state.tied || state.tie_possible);
   }
 
+  /** Picks a start and an end event; the same event twice gives a hairpin on one note. */
+  toggleHairpinMode(kind: Hairpin) {
+    if (this.hairpinMode === kind) {
+      this.cancelHairpinMode();
+      return;
+    }
+    this.cancelSlurMode();
+    this.hairpinMode = kind;
+    this.hairpinStart = this.selected;
+    this.message = this.hairpinStart === null ? null : "Hairpin start selected. Click the ending note.";
+  }
+
+  cancelHairpinMode() {
+    this.hairpinMode = null;
+    this.hairpinStart = null;
+    this.message = null;
+  }
+
+  private async chooseHairpinEvent(event: number, cursor: Cursor) {
+    const kind = this.hairpinMode;
+    if (!kind) return;
+    this.cursor = cursor;
+    this.selected = event;
+    this.selectedTone = null;
+    const start = this.hairpinStart;
+    if (start === null) {
+      this.hairpinStart = event;
+      this.message = "Hairpin start selected. Click the ending note.";
+      return;
+    }
+    this.cancelHairpinMode();
+    const edited = await this.run(() => api.toggleHairpin(start, event, kind));
+    if (edited) {
+      this.apply(edited);
+      await this.refreshArticulations(event);
+    }
+  }
+
+  async setDynamic(dynamic: Dynamic | null) {
+    const event = this.selected;
+    if (event === null) return;
+    const edited = await this.run(() => api.setDynamic(event, dynamic));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshArticulations(event);
+  }
+
+  async removeHairpin() {
+    const event = this.selected;
+    if (event === null || !this.eventArticulations?.in_hairpin) return;
+    const edited = await this.run(() => api.removeHairpin(event));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshArticulations(event);
+  }
+
   toggleSlurMode() {
     if (this.slurMode) {
       this.cancelSlurMode();
       return;
     }
+    this.cancelHairpinMode();
     this.phraseSlurMode = false;
     this.phraseSlurStart = null;
     this.slurMode = true;
@@ -411,6 +484,7 @@ class Editor {
       this.cancelSlurMode();
       return;
     }
+    this.cancelHairpinMode();
     this.slurMode = false;
     this.slurStart = null;
     this.phraseSlurMode = true;
@@ -858,7 +932,8 @@ class Editor {
         void this.toggleDot();
         return true;
       case "Escape":
-        if (this.slurMode || this.phraseSlurMode) this.cancelSlurMode();
+        if (this.hairpinMode) this.cancelHairpinMode();
+        else if (this.slurMode || this.phraseSlurMode) this.cancelSlurMode();
         else if (this.inputMode) this.disableInputMode();
         else this.selected = null;
         return true;
