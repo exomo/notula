@@ -58,6 +58,17 @@ export function tempoFromBeatKey(key: string, unitsPerMinute: number): Tempo {
   };
 }
 
+const SIDEBAR_KEY = "notula.sidebarOpen";
+
+/** Remembered per browser profile; storage can be unavailable, so it is only a preference. */
+function loadSidebarOpen(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
 const MIN_ZOOM = 4;
 const MAX_ZOOM = 24;
 
@@ -100,6 +111,7 @@ class Editor {
   scorePropertiesOpen = $state(false);
   timeSignatureOpen = $state(false);
   keySignatureOpen = $state(false);
+  sidebarOpen = $state(loadSidebarOpen());
   /** Where measures are on screen, as of the latest layout. */
   areas = $state<MeasureArea[]>([]);
   playbackPlaying = $state(false);
@@ -126,6 +138,15 @@ class Editor {
 
   get canZoomOut() {
     return this.zoom > MIN_ZOOM;
+  }
+
+  toggleSidebar() {
+    this.sidebarOpen = !this.sidebarOpen;
+    try {
+      localStorage.setItem(SIDEBAR_KEY, String(this.sidebarOpen));
+    } catch {
+      // The panel still toggles; it just will not be remembered.
+    }
   }
 
   setNoteEditor(element: SVGSVGElement | null) {
@@ -459,8 +480,18 @@ class Editor {
 
   async removeHairpin() {
     const event = this.selected;
-    if (event === null || !this.eventArticulations?.in_hairpin) return;
+    if (event === null || !this.eventArticulations?.hairpin) return;
     const edited = await this.run(() => api.removeHairpin(event));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshArticulations(event);
+  }
+
+  async removeSlur(phrase: boolean) {
+    const event = this.selected;
+    const position = phrase ? this.eventArticulations?.phrase_slur : this.eventArticulations?.slur;
+    if (event === null || !position) return;
+    const edited = await this.run(() => api.removeSlur(event, phrase));
     if (!edited) return;
     this.apply(edited);
     await this.refreshArticulations(event);

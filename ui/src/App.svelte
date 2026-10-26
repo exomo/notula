@@ -5,6 +5,7 @@
   import KeySignatureDialog from "./lib/KeySignatureDialog.svelte";
   import ScorePropertiesDialog from "./lib/ScorePropertiesDialog.svelte";
   import ScoreView from "./lib/ScoreView.svelte";
+  import Sidebar from "./lib/Sidebar.svelte";
   import TimeSignatureDialog from "./lib/TimeSignatureDialog.svelte";
   import Toolbar from "./lib/Toolbar.svelte";
 
@@ -24,9 +25,12 @@
 
 <svelte:window {onkeydown} />
 
-<main>
+<main class:with-sidebar={editor.sidebarOpen}>
   <Toolbar />
   <ScoreView />
+  {#if editor.sidebarOpen}
+    <Sidebar />
+  {/if}
   <footer>
     <span class="mode">{editor.inputMode ? "Note input" : "Select"}</span>
     {#if editor.hairpinMode}
@@ -54,9 +58,19 @@
     inset: 0;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     width: 100%;
     min-height: 0;
     overflow: hidden;
+  }
+
+  main.with-sidebar {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  main > :global(header),
+  footer {
+    grid-column: 1 / -1;
   }
 
   footer {

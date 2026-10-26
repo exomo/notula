@@ -32,6 +32,8 @@ export type Dynamic =
   | "Sfz"
   | "Rfz";
 export type Hairpin = "Crescendo" | "Diminuendo";
+/** Where a note lies in a hairpin or slur; a mark on a single note counts as its start. */
+export type SpanPosition = "start" | "inside" | "end";
 export type TempoDirection = "accelerando" | "ritardando" | "rallentando" | "a_tempo" | "rubato";
 
 /** Metronome setting; `beat_unit_dots` is omitted when the beat is undotted. */
@@ -66,8 +68,9 @@ export interface EventArticulations {
   tied: boolean;
   tie_possible: boolean;
   dynamic: Dynamic | null;
-  /** Whether the event starts, ends, or lies inside a hairpin. */
-  in_hairpin: boolean;
+  hairpin: SpanPosition | null;
+  slur: SpanPosition | null;
+  phrase_slur: SpanPosition | null;
 }
 
 export interface Cursor {
@@ -206,6 +209,7 @@ export const api = {
   toggleHairpin: (start: number, end: number, kind: Hairpin) =>
     invoke<Edited>("toggle_hairpin", { start, end, kind }),
   removeHairpin: (event: number) => invoke<Edited>("remove_hairpin", { event }),
+  removeSlur: (event: number, phrase: boolean) => invoke<Edited>("remove_slur", { event, phrase }),
   tempoDirectionAt: (measure: number, tick: number) =>
     invoke<TempoDirection | null>("tempo_direction_at", { measure, tick }),
   setTempoDirection: (measure: number, tick: number, direction: TempoDirection | null) =>

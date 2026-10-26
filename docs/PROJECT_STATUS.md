@@ -68,7 +68,7 @@ A dedicated playback annotation mode (timeline view, curve shapes, per-note timi
 - Tauri API and command registration: `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`
 - Frontend bridge and editor state: `ui/src/lib/api.ts`, `ui/src/lib/editor.svelte.ts`
 - New score and score properties dialogs, shared starting-tempo fields: `ui/src/lib/NewScoreDialog.svelte`, `ui/src/lib/ScorePropertiesDialog.svelte`, `ui/src/lib/TempoFields.svelte`; backend: `src-tauri/src/setup.rs`
-- Toolbar controls: `ui/src/lib/Toolbar.svelte`
+- Toolbar (top bar with File/playback menus, undo/redo, note input, zoom, panel toggle; input bar with note values, accidentals, articulations, tie right above the score): `ui/src/lib/Toolbar.svelte`; side panel with sections for dynamics and hairpins, lines (slurs and phrase slurs), tempo (metronome mark and tempo direction), voice, and measure: `ui/src/lib/Sidebar.svelte`. A new hairpin, slur, or phrase slur can start where the selected note has none or where one starts (it then replaces that one); inside or at the end of one, only Remove is offered. The selection info from `event_articulations` reports these positions (`edit::SpanPosition`); shared pieces: `Icon.svelte`, `MenuButton.svelte`, `focus.ts` (hands keyboard focus back to the score after button clicks and dropdown choices)
 - MusicXML import/export: `crates/notula-format/src/musicxml.rs`
 - Playback event generation, tempo map, and audio scheduling: `crates/notula-playback/src/lib.rs`, `src-tauri/src/playback.rs`
 

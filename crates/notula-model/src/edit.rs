@@ -645,6 +645,26 @@ pub fn set_dynamic(
     edit_markings(doc, id, |markings| markings.dynamic = dynamic)
 }
 
+/// Where an event lies within a hairpin, slur, or phrase slur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpanPosition {
+    /// The event starts it; a mark on a single event counts as its start.
+    Start,
+    Inside,
+    End,
+}
+
+fn span_position(start: EventId, end: EventId, id: EventId) -> SpanPosition {
+    if id == start {
+        SpanPosition::Start
+    } else if id == end {
+        SpanPosition::End
+    } else {
+        SpanPosition::Inside
+    }
+}
+
 /// A hairpin from the start of `start` through the end of `end`, both in one voice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HairpinSpan {
@@ -859,6 +879,12 @@ pub fn remove_hairpin(doc: &mut Document, id: EventId) -> Result<(), ModelError>
     replace_events(doc, events)
 }
 
+impl HairpinSpan {
+    pub fn position_of(&self, id: EventId) -> SpanPosition {
+        span_position(self.start, self.end, id)
+    }
+}
+
 /// The hairpin that starts at, ends at, or runs through the event, if any. An event shared
 /// by two touching hairpins belongs to the one it starts.
 pub fn hairpin_at(score: &Score, id: EventId) -> Option<HairpinSpan> {
@@ -911,6 +937,171 @@ pub fn toggle_tie(doc: &mut Document, id: EventId) -> Result<(), ModelError> {
     })
 }
 
+/// A slur or phrase slur from `start` to `end`, both notes in one voice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlurSpan {
+    pub staff: StaffId,
+    pub voice: usize,
+    pub start: EventId,
+    pub end: EventId,
+    /// Score ticks where the start event begins and the end event finishes.
+    pub start_tick: u64,
+    pub end_tick: u64,
+}
+
+impl SlurSpan {
+    pub fn position_of(&self, id: EventId) -> SpanPosition {
+        span_position(self.start, self.end, id)
+    }
+}
+
+fn slur_flags(markings: &Markings, phrase: bool) -> (bool, bool) {
+    if phrase {
+        (markings.phrase_slur_start, markings.phrase_slur_stop)
+    } else {
+        (markings.slur_start, markings.slur_stop)
+    }
+}
+
+/// All slurs, or with `phrase` all phrase slurs, paired per staff and voice. A stop closes the
+/// open slur before a start at the same note opens the next, as when two slurs meet.
+pub fn slurs(score: &Score, phrase: bool) -> Vec<SlurSpan> {
+    let mut spans = Vec::new();
+    for staff in score.staves() {
+        let voice_count = staff
+            .measures
+            .iter()
+            .map(|measure| measure.voices.len())
+            .max()
+            .unwrap_or(0);
+        for voice in 0..voice_count {
+            let mut open: Option<(EventId, u64)> = None;
+            let mut measure_start = 0_u64;
+            for (content, info) in staff.measures.iter().zip(&score.measures) {
+                let mut tick = measure_start;
+                for event in content
+                    .voices
+                    .get(voice)
+                    .map_or(&[][..], |voice| &voice.events)
+                {
+                    let end_tick = tick + u64::from(event.duration.ticks());
+                    let (starts, stops) = slur_flags(&event.markings, phrase);
+                    if stops && let Some((start, start_tick)) = open.take() {
+                        spans.push(SlurSpan {
+                            staff: staff.id,
+                            voice,
+                            start,
+                            end: event.id,
+                            start_tick,
+                            end_tick,
+                        });
+                    }
+                    if starts && open.is_none() {
+                        open = Some((event.id, tick));
+                    }
+                    tick = end_tick;
+                }
+                measure_start += u64::from(info.capacity());
+            }
+        }
+    }
+    spans
+}
+
+/// The slur or phrase slur that starts at, ends at, or runs through the event, if any. A note
+/// where two slurs meet belongs to the one it starts.
+pub fn slur_at(score: &Score, id: EventId, phrase: bool) -> Option<SlurSpan> {
+    let located = locate(score, id)?;
+    let tick = event_tick(score, id).ok()?;
+    let spans: Vec<_> = slurs(score, phrase)
+        .into_iter()
+        .filter(|span| span.staff == located.cursor.staff && span.voice == located.cursor.voice)
+        .collect();
+    spans
+        .iter()
+        .find(|span| span.start == id)
+        .or_else(|| spans.iter().find(|span| span.end == id))
+        .or_else(|| {
+            spans
+                .iter()
+                .find(|span| span.start_tick <= tick && tick < span.end_tick)
+        })
+        .copied()
+}
+
+/// Adds a slur or phrase slur between two notes, or removes it when exactly that one exists.
+/// One already starting at `start` is replaced.
+fn toggle_slur_span(
+    doc: &mut Document,
+    start: EventId,
+    end: EventId,
+    placement: SlurPlacement,
+    phrase: bool,
+) -> Result<(), ModelError> {
+    let (start_location, start_event) = find(doc.score(), start)?;
+    let (end_location, end_event) = find(doc.score(), end)?;
+    if start_location.cursor.staff != end_location.cursor.staff
+        || start_location.cursor.voice != end_location.cursor.voice
+        || (start_location.cursor.measure, start_location.cursor.tick)
+            >= (end_location.cursor.measure, end_location.cursor.tick)
+    {
+        return Err(ModelError::Invalid(if phrase {
+            "phrase slur endpoints must be ordered in the same voice"
+        } else {
+            "slur endpoints must be ordered in the same voice"
+        }));
+    }
+    if !matches!(start_event.kind, EventKind::Chord { .. })
+        || !matches!(end_event.kind, EventKind::Chord { .. })
+    {
+        return Err(ModelError::Invalid(if phrase {
+            "phrase slur endpoints must be notes"
+        } else {
+            "slur endpoints must be notes"
+        }));
+    }
+    let existing = slurs(doc.score(), phrase)
+        .into_iter()
+        .find(|span| span.start == start);
+    let set_start = |markings: &mut Markings, on: bool, placement: SlurPlacement| {
+        if phrase {
+            markings.phrase_slur_start = on;
+            markings.phrase_slur_placement = placement;
+        } else {
+            markings.slur_start = on;
+            markings.slur_placement = placement;
+        }
+    };
+    let set_stop = |markings: &mut Markings, on: bool| {
+        if phrase {
+            markings.phrase_slur_stop = on;
+        } else {
+            markings.slur_stop = on;
+        }
+    };
+    let mut edits = EventEdits {
+        score: doc.score(),
+        events: Vec::new(),
+    };
+    match existing {
+        Some(old) if old.end == end => {
+            edits.edit(start, |markings| {
+                set_start(markings, false, SlurPlacement::Auto)
+            })?;
+            edits.edit(end, |markings| set_stop(markings, false))?;
+        }
+        _ => {
+            if let Some(old) = existing {
+                edits.edit(old.end, |markings| set_stop(markings, false))?;
+            }
+            edits.edit(start, |markings| set_start(markings, true, placement))?;
+            edits.edit(end, |markings| set_stop(markings, true))?;
+        }
+    }
+    let events = edits.events;
+    replace_events(doc, events)
+}
+
 /// Toggles a slur between two chord events in the same voice.
 pub fn toggle_slur(
     doc: &mut Document,
@@ -918,44 +1109,7 @@ pub fn toggle_slur(
     end: EventId,
     placement: SlurPlacement,
 ) -> Result<(), ModelError> {
-    let (start_location, mut start_event) = find(doc.score(), start)?;
-    let (end_location, mut end_event) = find(doc.score(), end)?;
-    if start_location.cursor.staff != end_location.cursor.staff
-        || start_location.cursor.voice != end_location.cursor.voice
-        || (start_location.cursor.measure, start_location.cursor.tick)
-            >= (end_location.cursor.measure, end_location.cursor.tick)
-    {
-        return Err(ModelError::Invalid(
-            "slur endpoints must be ordered in the same voice",
-        ));
-    }
-    if !matches!(start_event.kind, EventKind::Chord { .. })
-        || !matches!(end_event.kind, EventKind::Chord { .. })
-    {
-        return Err(ModelError::Invalid("slur endpoints must be notes"));
-    }
-    let remove = start_event.markings.slur_start && end_event.markings.slur_stop;
-    start_event.markings.slur_start = !remove;
-    end_event.markings.slur_stop = !remove;
-    start_event.markings.slur_placement = if remove {
-        SlurPlacement::Auto
-    } else {
-        placement
-    };
-    doc.execute(Command::Batch {
-        commands: vec![
-            Command::ReplaceEvent {
-                at: start_location.cursor.at(),
-                index: start_location.index,
-                event: start_event,
-            },
-            Command::ReplaceEvent {
-                at: end_location.cursor.at(),
-                index: end_location.index,
-                event: end_event,
-            },
-        ],
-    })
+    toggle_slur_span(doc, start, end, placement, false)
 }
 
 /// Toggles a phrase slur independently of ordinary slurs between two notes.
@@ -965,44 +1119,38 @@ pub fn toggle_phrase_slur(
     end: EventId,
     placement: SlurPlacement,
 ) -> Result<(), ModelError> {
-    let (start_location, mut start_event) = find(doc.score(), start)?;
-    let (end_location, mut end_event) = find(doc.score(), end)?;
-    if start_location.cursor.staff != end_location.cursor.staff
-        || start_location.cursor.voice != end_location.cursor.voice
-        || (start_location.cursor.measure, start_location.cursor.tick)
-            >= (end_location.cursor.measure, end_location.cursor.tick)
-    {
-        return Err(ModelError::Invalid(
-            "phrase slur endpoints must be ordered in the same voice",
-        ));
-    }
-    if !matches!(start_event.kind, EventKind::Chord { .. })
-        || !matches!(end_event.kind, EventKind::Chord { .. })
-    {
-        return Err(ModelError::Invalid("phrase slur endpoints must be notes"));
-    }
-    let remove = start_event.markings.phrase_slur_start && end_event.markings.phrase_slur_stop;
-    start_event.markings.phrase_slur_start = !remove;
-    end_event.markings.phrase_slur_stop = !remove;
-    start_event.markings.phrase_slur_placement = if remove {
-        SlurPlacement::Auto
+    toggle_slur_span(doc, start, end, placement, true)
+}
+
+/// Removes the slur, or with `phrase` the phrase slur, that the note belongs to.
+pub fn remove_slur(doc: &mut Document, id: EventId, phrase: bool) -> Result<(), ModelError> {
+    let span = slur_at(doc.score(), id, phrase).ok_or(ModelError::Invalid(if phrase {
+        "the note is not part of a phrase slur"
     } else {
-        placement
+        "the note is not part of a slur"
+    }))?;
+    let mut edits = EventEdits {
+        score: doc.score(),
+        events: Vec::new(),
     };
-    doc.execute(Command::Batch {
-        commands: vec![
-            Command::ReplaceEvent {
-                at: start_location.cursor.at(),
-                index: start_location.index,
-                event: start_event,
-            },
-            Command::ReplaceEvent {
-                at: end_location.cursor.at(),
-                index: end_location.index,
-                event: end_event,
-            },
-        ],
-    })
+    edits.edit(span.start, |markings| {
+        if phrase {
+            markings.phrase_slur_start = false;
+            markings.phrase_slur_placement = SlurPlacement::Auto;
+        } else {
+            markings.slur_start = false;
+            markings.slur_placement = SlurPlacement::Auto;
+        }
+    })?;
+    edits.edit(span.end, |markings| {
+        if phrase {
+            markings.phrase_slur_stop = false;
+        } else {
+            markings.slur_stop = false;
+        }
+    })?;
+    let events = edits.events;
+    replace_events(doc, events)
 }
 
 /// The previous or next event in the same voice, crossing measure boundaries.

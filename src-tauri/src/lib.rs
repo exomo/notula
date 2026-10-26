@@ -34,6 +34,7 @@ pub fn run() {
             commands::set_dynamic,
             commands::toggle_hairpin,
             commands::remove_hairpin,
+            commands::remove_slur,
             commands::tempo_direction_at,
             commands::set_tempo_direction,
             commands::tempo_change_at,

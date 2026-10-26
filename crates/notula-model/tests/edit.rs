@@ -1370,3 +1370,63 @@ fn hairpin_flags_without_a_partner_are_reported() {
     assert!(spans.is_empty());
     assert_eq!(unpaired, vec![ids[0]]);
 }
+
+#[test]
+fn slurs_report_positions_replace_from_their_start_and_remove_from_any_note() {
+    use notula_model::SlurPlacement;
+    use notula_model::edit::SpanPosition;
+    let (mut doc, cursor) = setup(1);
+    let ids = quarters(&mut doc, cursor, 4);
+
+    edit::toggle_slur(&mut doc, ids[0], ids[2], SlurPlacement::Above).unwrap();
+    // Slurs that meet at a note: the second starts where the first ends.
+    edit::toggle_slur(&mut doc, ids[2], ids[3], SlurPlacement::Auto).unwrap();
+    let spans = edit::slurs(doc.score(), false);
+    assert_eq!(
+        spans
+            .iter()
+            .map(|span| (span.start, span.end))
+            .collect::<Vec<_>>(),
+        vec![(ids[0], ids[2]), (ids[2], ids[3])]
+    );
+    let position = |doc: &Document, id| {
+        edit::slur_at(doc.score(), id, false).map(|span| (span.start, span.position_of(id)))
+    };
+    assert_eq!(position(&doc, ids[0]), Some((ids[0], SpanPosition::Start)));
+    assert_eq!(position(&doc, ids[1]), Some((ids[0], SpanPosition::Inside)));
+    assert_eq!(position(&doc, ids[2]), Some((ids[2], SpanPosition::Start)));
+    assert_eq!(position(&doc, ids[3]), Some((ids[2], SpanPosition::End)));
+    assert!(edit::slur_at(doc.score(), ids[1], true).is_none());
+
+    // A new slur from the same start replaces the old one, leaving no stray end.
+    edit::toggle_slur(&mut doc, ids[0], ids[1], SlurPlacement::Below).unwrap();
+    assert!(!event_at(&doc, cursor, 2).markings.slur_stop);
+    assert_eq!(
+        event_at(&doc, cursor, 0).markings.slur_placement,
+        SlurPlacement::Below
+    );
+    assert_eq!(edit::slurs(doc.score(), false).len(), 2);
+
+    edit::remove_slur(&mut doc, ids[3], false).unwrap();
+    assert_eq!(edit::slurs(doc.score(), false).len(), 1);
+    assert!(!event_at(&doc, cursor, 2).markings.slur_start);
+    assert!(edit::remove_slur(&mut doc, ids[2], false).is_err());
+    doc.undo().unwrap();
+    assert_eq!(edit::slurs(doc.score(), false).len(), 2);
+}
+
+#[test]
+fn phrase_slurs_are_found_and_removed_separately() {
+    use notula_model::SlurPlacement;
+    let (mut doc, cursor) = setup(1);
+    let ids = quarters(&mut doc, cursor, 3);
+    edit::toggle_slur(&mut doc, ids[0], ids[1], SlurPlacement::Auto).unwrap();
+    edit::toggle_phrase_slur(&mut doc, ids[0], ids[2], SlurPlacement::Above).unwrap();
+
+    edit::remove_slur(&mut doc, ids[1], true).unwrap();
+    assert!(edit::slurs(doc.score(), true).is_empty());
+    assert_eq!(edit::slurs(doc.score(), false).len(), 1);
+    let start = event_at(&doc, cursor, 0).markings;
+    assert!(!start.phrase_slur_start);
+    assert_eq!(start.phrase_slur_placement, SlurPlacement::Auto);
+}

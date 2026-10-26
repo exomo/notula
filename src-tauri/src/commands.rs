@@ -54,8 +54,10 @@ pub struct EventArticulations {
     tied: bool,
     tie_possible: bool,
     dynamic: Option<Dynamic>,
-    /// Whether the event starts, ends, or lies inside a hairpin.
-    in_hairpin: bool,
+    /// Where the event lies in a hairpin, slur, and phrase slur, if it belongs to one.
+    hairpin: Option<edit::SpanPosition>,
+    slur: Option<edit::SpanPosition>,
+    phrase_slur: Option<edit::SpanPosition>,
 }
 
 type Reply<T> = Result<T, String>;
@@ -370,6 +372,19 @@ pub fn toggle_slur(
 }
 
 #[tauri::command]
+pub fn remove_slur(
+    app: AppHandle,
+    state: State<AppState>,
+    event: EventId,
+    phrase: bool,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::remove_slur(&mut session.doc, event, phrase).map_err(text)?;
+    let cursor = cursor_of(&session, event);
+    Ok(finish(&app, &session, cursor, Some(event)))
+}
+
+#[tauri::command]
 pub fn set_dynamic(
     app: AppHandle,
     state: State<AppState>,
@@ -524,7 +539,12 @@ pub fn event_articulations(state: State<AppState>, event: EventId) -> Option<Eve
         tied,
         tie_possible,
         dynamic: event.markings.dynamic,
-        in_hairpin: edit::hairpin_at(session.doc.score(), event.id).is_some(),
+        hairpin: edit::hairpin_at(session.doc.score(), event.id)
+            .map(|span| span.position_of(event.id)),
+        slur: edit::slur_at(session.doc.score(), event.id, false)
+            .map(|span| span.position_of(event.id)),
+        phrase_slur: edit::slur_at(session.doc.score(), event.id, true)
+            .map(|span| span.position_of(event.id)),
     })
 }
 
