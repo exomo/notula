@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use notula_model::{Score, Staff, TICKS_PER_QUARTER};
 
+use crate::emit;
 use crate::engrave::{StaffPlan, plan_staff};
 
 const START_PAD: f32 = 1.0;
@@ -70,6 +71,14 @@ pub(crate) fn measure_metrics(score: &Score, staves: &[&Staff], measure: usize) 
         };
         let extent = &mut extents.entry(mark.tick).or_insert((0.0, 0.0)).1;
         *extent = extent.max(width);
+    }
+    for mark in score
+        .tempo_changes
+        .iter()
+        .filter(|mark| mark.measure == measure && !mark.hidden)
+    {
+        let extent = &mut extents.entry(mark.tick).or_insert((0.0, 0.0)).1;
+        *extent = extent.max(emit::metronome_width(mark.tempo));
     }
 
     let columns: Vec<u32> = extents.keys().copied().collect();

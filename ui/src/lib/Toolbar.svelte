@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Articulation, NoteValue, TempoDirection } from "./api";
-  import { NOTE_VALUES, editor } from "./editor.svelte";
+  import { NOTE_VALUES, TEMPO_BEATS, editor, tempoBeatKey, tempoFromBeatKey } from "./editor.svelte";
 
   // SMuFL "individual notes" glyphs, named by the note value they show.
   const NOTE_GLYPHS: Record<NoteValue, string> = {
@@ -34,6 +34,11 @@
   let measureDeleteDialog = $state<HTMLDialogElement | null>(null);
   let pendingDeleteMeasure = $state<number | null>(null);
   let tempoDirectionChoice = $state<TempoDirection>("ritardando");
+  let tempoBeatChoice = $state("Quarter:0");
+  let tempoUnitsChoice = $state(120);
+  const tempoChoiceValid = $derived(
+    Number.isInteger(tempoUnitsChoice) && tempoUnitsChoice >= 1 && tempoUnitsChoice <= 1000,
+  );
 
   $effect(() => {
     editor.revision;
@@ -44,6 +49,15 @@
     const cursor = editor.cursor;
     editor.revision;
     void editor.refreshTempoDirection(cursor);
+    void editor.refreshTempoChange(cursor);
+  });
+
+  // Show an existing mark's values so it can be adjusted in place.
+  $effect(() => {
+    const mark = editor.tempoChangeAt;
+    if (!mark) return;
+    tempoBeatChoice = tempoBeatKey(mark.tempo);
+    tempoUnitsChoice = mark.tempo.units_per_minute;
   });
 
   function toggleFileMenu() {
@@ -268,6 +282,37 @@
   </div>
 
   <div class="group">
+    <label class="tempo-control">
+      Tempo
+      <select bind:value={tempoBeatChoice} aria-label="Tempo change beat unit" disabled={!editor.cursor}>
+        {#each TEMPO_BEATS as beat (beat.key)}
+          <option value={beat.key}>{beat.label}</option>
+        {/each}
+      </select>
+      =
+      <input
+        type="number"
+        min="1"
+        max="1000"
+        step="1"
+        bind:value={tempoUnitsChoice}
+        aria-label="Tempo change in beats per minute"
+        disabled={!editor.cursor}
+      />
+    </label>
+    <button
+      onclick={() => editor.setTempoChange(tempoFromBeatKey(tempoBeatChoice, tempoUnitsChoice))}
+      disabled={!editor.cursor || !tempoChoiceValid}
+      title="Add or change the metronome mark at the cursor; playback follows it from there"
+    >Set tempo</button>
+    <button
+      onclick={() => editor.setTempoChange(null)}
+      disabled={!editor.cursor || editor.tempoChangeAt === null}
+      title="Remove the metronome mark at the cursor"
+    >Remove tempo</button>
+  </div>
+
+  <div class="group">
     <button onclick={() => editor.insertMeasure(true)} disabled={!editor.cursor} title="Insert a measure before the current measure">
       Insert before
     </button>
@@ -462,6 +507,18 @@
     font: inherit;
     font-size: 0.82rem;
     cursor: pointer;
+  }
+
+  .tempo-control input {
+    width: 4.5rem;
+    min-height: 2rem;
+    border: 1px solid var(--line-strong);
+    border-radius: 4px;
+    padding: 0.3rem 0.4rem;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.82rem;
   }
 
   button:hover:not(:disabled),

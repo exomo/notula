@@ -12,6 +12,8 @@ import {
   type Status,
   type Step,
   type TimeSignatureDisplay,
+  type Tempo,
+  type TempoChangeMark,
   type TempoDirection,
 } from "./api";
 import type { MeasureArea } from "./render";
@@ -26,6 +28,33 @@ export const NOTE_VALUES: NoteValue[] = [
   "Half",
   "Whole",
 ];
+
+/** Beat units offered for metronome marks, keyed as "value:dots" for select controls. */
+export const TEMPO_BEATS: { key: string; label: string }[] = [
+  { key: "Whole:0", label: "1/1 note" },
+  { key: "Half:1", label: "Dotted 1/2 note" },
+  { key: "Half:0", label: "1/2 note" },
+  { key: "Quarter:1", label: "Dotted 1/4 note" },
+  { key: "Quarter:0", label: "1/4 note" },
+  { key: "Eighth:1", label: "Dotted 1/8 note" },
+  { key: "Eighth:0", label: "1/8 note" },
+  { key: "Sixteenth:0", label: "1/16 note" },
+  { key: "ThirtySecond:0", label: "1/32 note" },
+  { key: "SixtyFourth:0", label: "1/64 note" },
+];
+
+export function tempoBeatKey(tempo: Tempo): string {
+  return `${tempo.beat_unit}:${tempo.beat_unit_dots ?? 0}`;
+}
+
+export function tempoFromBeatKey(key: string, unitsPerMinute: number): Tempo {
+  const [beatUnit, dots] = key.split(":");
+  return {
+    beat_unit: beatUnit as NoteValue,
+    beat_unit_dots: Number(dots),
+    units_per_minute: unitsPerMinute,
+  };
+}
 
 const MIN_ZOOM = 4;
 const MAX_ZOOM = 24;
@@ -53,6 +82,7 @@ class Editor {
   phraseSlurStart = $state<number | null>(null);
   slurPlacement = $state<SlurPlacement>("auto");
   tempoDirectionAt = $state<TempoDirection | null>(null);
+  tempoChangeAt = $state<TempoChangeMark | null>(null);
   inputMode = $state(false);
   entryAlter = $state<number | null>(null);
   duration = $state<Duration>({ value: "Quarter", dots: 0 });
@@ -76,6 +106,7 @@ class Editor {
   private insertHistory: InsertMarker[] = [];
   private articulationRequest = 0;
   private tempoDirectionRequest = 0;
+  private tempoChangeRequest = 0;
 
   zoomIn() {
     this.zoom = Math.min(MAX_ZOOM, this.zoom + 1);
@@ -480,6 +511,31 @@ class Editor {
     if (!edited) return;
     this.apply(edited);
     await this.refreshTempoDirection(cursor);
+  }
+
+  async refreshTempoChange(cursor = this.cursor) {
+    const request = ++this.tempoChangeRequest;
+    if (!cursor) {
+      this.tempoChangeAt = null;
+      return;
+    }
+    const mark = await this.run(() => api.tempoChangeAt(cursor.measure, cursor.tick));
+    if (request === this.tempoChangeRequest && mark !== undefined) {
+      this.tempoChangeAt = mark;
+    }
+  }
+
+  /** Editing keeps whether an existing mark is printed; new marks are printed. */
+  async setTempoChange(tempo: Tempo | null) {
+    const cursor = this.cursor;
+    if (!cursor) return;
+    const hidden = this.tempoChangeAt?.hidden ?? false;
+    const edited = await this.run(() =>
+      api.setTempoChange(cursor.measure, cursor.tick, tempo, hidden),
+    );
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshTempoChange(cursor);
   }
 
   async transpose(semitones: number) {

@@ -162,6 +162,15 @@ pub struct ScoreSetup {
     /// Length in ticks of a shortened first measure (anacrusis).
     #[serde(default)]
     pub pickup: Option<u32>,
+    /// Tempo at the start of the score, and whether its mark is printed.
+    #[serde(default)]
+    pub tempo: Tempo,
+    #[serde(default = "printed")]
+    pub tempo_visible: bool,
+}
+
+fn printed() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,7 +183,9 @@ pub struct InstrumentSelection {
 pub struct ScoreProperties {
     pub title: String,
     pub composer: String,
+    /// The tempo at the start of the score, and whether its mark is printed.
     pub tempo: Tempo,
+    pub tempo_visible: bool,
     pub parts: Vec<PartProperties>,
 }
 
@@ -208,6 +219,7 @@ pub struct ScorePropertiesUpdate {
     pub title: String,
     pub composer: String,
     pub tempo: Tempo,
+    pub tempo_visible: bool,
     pub remove_part_ids: Vec<PartId>,
     pub instruments: Vec<PartInstrumentUpdate>,
     pub add_instruments: Vec<AddedInstrument>,
@@ -217,7 +229,8 @@ pub fn properties(score: &Score) -> ScoreProperties {
     ScoreProperties {
         title: score.title.clone(),
         composer: score.composer.clone(),
-        tempo: score.tempo,
+        tempo: score.initial_tempo(),
+        tempo_visible: score.tempo_change_at(0, 0).is_some_and(|mark| !mark.hidden),
         parts: score
             .parts
             .iter()
@@ -249,7 +262,11 @@ pub fn update_properties(
     let title = doc.score().title.clone();
     let composer = doc.score().composer.clone();
     update.tempo.validate()?;
-    let tempo = doc.score().tempo;
+    // Without a mark at the start, the default tempo plays and nothing is printed.
+    let start_tempo = doc
+        .score()
+        .tempo_change_at(0, 0)
+        .map_or((Tempo::default(), false), |mark| (mark.tempo, !mark.hidden));
     if update.instruments.len() + update.add_instruments.len() > MAX_INSTRUMENTS {
         return Err(ModelError::Invalid(
             "score parts changed while editing properties",
@@ -343,9 +360,12 @@ pub fn update_properties(
             composer: update.composer.trim().to_owned(),
         });
     }
-    if tempo != update.tempo {
-        commands.push(Command::SetTempo {
-            tempo: update.tempo,
+    if start_tempo != (update.tempo, update.tempo_visible) {
+        commands.push(Command::SetTempoChange {
+            measure: 0,
+            tick: 0,
+            tempo: Some(update.tempo),
+            hidden: !update.tempo_visible,
         });
     }
     for instrument in &update.instruments {
@@ -452,6 +472,7 @@ pub fn build(setup: &ScoreSetup) -> Result<Document, ModelError> {
     };
     time_signature.validate()?;
     key_signature.validate()?;
+    setup.tempo.validate()?;
 
     let mut doc = Document::new();
     for (index, selection) in setup.instruments.iter().enumerate() {
@@ -494,6 +515,12 @@ pub fn build(setup: &ScoreSetup) -> Result<Document, ModelError> {
         let data = doc.score().blank_measure(index);
         doc.execute(Command::InsertMeasure { index, data })?;
     }
+    doc.execute(Command::SetTempoChange {
+        measure: 0,
+        tick: 0,
+        tempo: Some(setup.tempo),
+        hidden: !setup.tempo_visible,
+    })?;
     // A fresh score has no history to undo.
     Ok(Document::from_score(doc.into_score()))
 }
@@ -511,6 +538,8 @@ pub fn default_score() -> Score {
         key_fifths: 0,
         measures: 8,
         pickup: None,
+        tempo: Tempo::default(),
+        tempo_visible: true,
     };
     build(&setup)
         .expect("the default setup is valid")
@@ -541,6 +570,8 @@ mod tests {
             key_fifths: -2,
             measures: 5,
             pickup: None,
+            tempo: Tempo::default(),
+            tempo_visible: true,
         }
     }
 
@@ -561,6 +592,102 @@ mod tests {
                 .all(|m| m.time_signature.numerator == 3)
         );
         assert!(!doc.can_undo());
+    }
+
+    fn unchanged_update(score: &Score) -> ScorePropertiesUpdate {
+        let current = properties(score);
+        ScorePropertiesUpdate {
+            title: current.title,
+            composer: current.composer,
+            tempo: current.tempo,
+            tempo_visible: current.tempo_visible,
+            remove_part_ids: Vec::new(),
+            instruments: current
+                .parts
+                .into_iter()
+                .map(|part| PartInstrumentUpdate {
+                    part_id: part.id,
+                    name: part.name,
+                    short_name: part.short_name,
+                    preset_id: None,
+                    staves: part.staves,
+                })
+                .collect(),
+            add_instruments: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn new_scores_print_their_starting_tempo() {
+        let doc = build(&setup()).unwrap();
+        let start = doc.score().tempo_change_at(0, 0).unwrap();
+        assert_eq!(start.tempo, Tempo::default());
+        assert!(!start.hidden);
+        assert!(properties(doc.score()).tempo_visible);
+    }
+
+    #[test]
+    fn new_scores_take_their_starting_tempo_from_the_setup() {
+        let tempo = Tempo {
+            beat_unit: notula_model::NoteValue::Quarter,
+            beat_unit_dots: 1,
+            units_per_minute: 66,
+        };
+        let doc = build(&ScoreSetup {
+            tempo,
+            tempo_visible: false,
+            ..setup()
+        })
+        .unwrap();
+        let start = doc.score().tempo_change_at(0, 0).unwrap();
+        assert_eq!(start.tempo, tempo);
+        assert!(start.hidden);
+
+        assert!(
+            build(&ScoreSetup {
+                tempo: Tempo {
+                    units_per_minute: 0,
+                    ..tempo
+                },
+                ..setup()
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn property_edits_set_the_starting_tempo_mark_only_when_it_changes() {
+        let mut score = build(&setup()).unwrap().into_score();
+        score.tempo_changes.clear();
+        let mut doc = Document::from_score(score);
+
+        let update = unchanged_update(doc.score());
+        update_properties(&mut doc, update).unwrap();
+        assert!(doc.score().tempo_changes.is_empty());
+        assert!(!doc.can_undo());
+
+        let tempo = Tempo {
+            units_per_minute: 90,
+            ..Tempo::default()
+        };
+        let update = ScorePropertiesUpdate {
+            tempo,
+            tempo_visible: false,
+            ..unchanged_update(doc.score())
+        };
+        update_properties(&mut doc, update).unwrap();
+        let start = doc.score().tempo_change_at(0, 0).unwrap();
+        assert_eq!(start.tempo, tempo);
+        assert!(start.hidden);
+
+        let update = ScorePropertiesUpdate {
+            tempo_visible: true,
+            ..unchanged_update(doc.score())
+        };
+        update_properties(&mut doc, update).unwrap();
+        assert!(!doc.score().tempo_change_at(0, 0).unwrap().hidden);
+        doc.undo().unwrap();
+        assert!(doc.score().tempo_change_at(0, 0).unwrap().hidden);
     }
 
     #[test]
@@ -646,6 +773,7 @@ mod tests {
                 title: "Revised".into(),
                 composer: "Composer".into(),
                 tempo: Tempo::default(),
+                tempo_visible: true,
                 remove_part_ids: Vec::new(),
                 instruments: vec![PartInstrumentUpdate {
                     part_id,
@@ -731,6 +859,7 @@ mod tests {
                 title: String::new(),
                 composer: String::new(),
                 tempo: Tempo::default(),
+                tempo_visible: true,
                 remove_part_ids: Vec::new(),
                 instruments: vec![
                     PartInstrumentUpdate {
@@ -807,6 +936,7 @@ mod tests {
                 title: String::new(),
                 composer: String::new(),
                 tempo: Tempo::default(),
+                tempo_visible: true,
                 remove_part_ids: vec![removed_part.id],
                 instruments: vec![PartInstrumentUpdate {
                     part_id: kept_part_id,
@@ -831,6 +961,7 @@ mod tests {
                 title: String::new(),
                 composer: String::new(),
                 tempo: Tempo::default(),
+                tempo_visible: true,
                 remove_part_ids: vec![final_part_id],
                 instruments: Vec::new(),
                 add_instruments: Vec::new(),
@@ -862,6 +993,7 @@ mod tests {
                 title: String::new(),
                 composer: String::new(),
                 tempo: Tempo::default(),
+                tempo_visible: true,
                 remove_part_ids: Vec::new(),
                 instruments: vec![PartInstrumentUpdate {
                     part_id,
@@ -929,6 +1061,7 @@ mod tests {
                 title: "Would be destructive".into(),
                 composer: String::new(),
                 tempo: Tempo::default(),
+                tempo_visible: true,
                 remove_part_ids: Vec::new(),
                 instruments: vec![PartInstrumentUpdate {
                     part_id,
@@ -998,6 +1131,7 @@ mod tests {
                 title: String::new(),
                 composer: String::new(),
                 tempo: Tempo::default(),
+                tempo_visible: true,
                 remove_part_ids: Vec::new(),
                 instruments: vec![PartInstrumentUpdate {
                     part_id,
@@ -1040,6 +1174,7 @@ mod tests {
                 title: String::new(),
                 composer: String::new(),
                 tempo: Tempo::default(),
+                tempo_visible: true,
                 remove_part_ids: Vec::new(),
                 instruments: vec![PartInstrumentUpdate {
                     part_id,

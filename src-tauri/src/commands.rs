@@ -4,8 +4,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use notula_layout::{LayoutOptions, RenderList};
 use notula_model::edit::{self, Cursor};
 use notula_model::{
-    Articulation, Document, Duration, EventId, EventKind, KeySignature, Pitch, Step,
-    TempoDirection, TimeSignature, TimeSignatureDisplay,
+    Articulation, Document, Duration, EventId, EventKind, KeySignature, Pitch, Step, Tempo,
+    TempoChangeMark, TempoDirection, TimeSignature, TimeSignatureDisplay,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
@@ -411,6 +411,38 @@ pub fn set_tempo_direction(
             measure,
             tick,
             direction,
+        })
+        .map_err(text)?;
+    Ok(finish(&app, &session, None, None))
+}
+
+#[tauri::command]
+pub fn tempo_change_at(
+    state: State<AppState>,
+    measure: usize,
+    tick: u32,
+) -> Option<TempoChangeMark> {
+    let session = state.lock();
+    session.doc.score().tempo_change_at(measure, tick).copied()
+}
+
+#[tauri::command]
+pub fn set_tempo_change(
+    app: AppHandle,
+    state: State<AppState>,
+    measure: usize,
+    tick: u32,
+    tempo: Option<Tempo>,
+    hidden: bool,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    session
+        .doc
+        .execute(notula_model::Command::SetTempoChange {
+            measure,
+            tick,
+            tempo,
+            hidden,
         })
         .map_err(text)?;
     Ok(finish(&app, &session, None, None))

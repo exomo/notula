@@ -8,11 +8,18 @@ use crate::ids::{EventId, PartId, StaffId};
 use crate::markings::Markings;
 use crate::pitch::{Pitch, Step};
 
-/// Score-wide metronome setting, expressed in the displayed beat unit per minute.
+/// Metronome setting, expressed in the displayed beat unit per minute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tempo {
     pub beat_unit: NoteValue,
+    /// Dots on the beat unit, as in a dotted quarter beat for 6/8.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub beat_unit_dots: u8,
     pub units_per_minute: u16,
+}
+
+fn is_zero(value: &u8) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,10 +39,22 @@ pub struct TempoDirectionMark {
     pub direction: TempoDirection,
 }
 
+/// A metronome mark that sets the tempo from its position onward.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TempoChangeMark {
+    pub measure: usize,
+    pub tick: u32,
+    pub tempo: Tempo,
+    /// Affects playback without being printed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+}
+
 impl Default for Tempo {
     fn default() -> Self {
         Self {
             beat_unit: NoteValue::Quarter,
+            beat_unit_dots: 0,
             units_per_minute: 120,
         }
     }
@@ -43,6 +62,7 @@ impl Default for Tempo {
 
 impl Tempo {
     pub fn validate(self) -> Result<(), ModelError> {
+        self.beat().validate()?;
         if !(1..=1000).contains(&self.units_per_minute) {
             return Err(ModelError::Invalid(
                 "tempo must be 1..=1000 units per minute",
@@ -51,9 +71,13 @@ impl Tempo {
         Ok(())
     }
 
+    pub fn beat(self) -> Duration {
+        Duration::new(self.beat_unit, self.beat_unit_dots)
+    }
+
     /// Equivalent quarter notes per minute, used to convert score ticks to seconds.
     pub fn quarter_notes_per_minute(self) -> f64 {
-        f64::from(self.units_per_minute) * f64::from(self.beat_unit.ticks())
+        f64::from(self.units_per_minute) * f64::from(self.beat().ticks())
             / f64::from(TICKS_PER_QUARTER)
     }
 }
@@ -269,17 +293,64 @@ pub struct VoiceLocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "StoredScore")]
 pub struct Score {
     pub title: String,
     pub composer: String,
-    #[serde(default)]
-    pub tempo: Tempo,
-    #[serde(default)]
     pub tempo_directions: Vec<TempoDirectionMark>,
+    /// Sorted by position; a mark at the very start sets the initial tempo.
+    pub tempo_changes: Vec<TempoChangeMark>,
     pub parts: Vec<Part>,
     /// Never empty.
     pub measures: Vec<MeasureInfo>,
     next_id: IdCounter,
+}
+
+/// A score as stored in files, including fields that older versions wrote.
+#[derive(Deserialize)]
+struct StoredScore {
+    title: String,
+    composer: String,
+    /// The default tempo before it became a mark at the start of the score.
+    #[serde(default)]
+    tempo: Option<Tempo>,
+    #[serde(default)]
+    tempo_directions: Vec<TempoDirectionMark>,
+    #[serde(default)]
+    tempo_changes: Vec<TempoChangeMark>,
+    parts: Vec<Part>,
+    measures: Vec<MeasureInfo>,
+    next_id: IdCounter,
+}
+
+impl From<StoredScore> for Score {
+    fn from(stored: StoredScore) -> Self {
+        let mut tempo_changes = stored.tempo_changes;
+        if let Some(tempo) = stored.tempo
+            && !tempo_changes
+                .iter()
+                .any(|mark| (mark.measure, mark.tick) == (0, 0))
+        {
+            tempo_changes.insert(
+                0,
+                TempoChangeMark {
+                    measure: 0,
+                    tick: 0,
+                    tempo,
+                    hidden: false,
+                },
+            );
+        }
+        Self {
+            title: stored.title,
+            composer: stored.composer,
+            tempo_directions: stored.tempo_directions,
+            tempo_changes,
+            parts: stored.parts,
+            measures: stored.measures,
+            next_id: stored.next_id,
+        }
+    }
 }
 
 /// Id allocation is not undoable, so the counter must not affect score equality.
@@ -304,12 +375,24 @@ impl Score {
         Self {
             title: String::new(),
             composer: String::new(),
-            tempo: Tempo::default(),
             tempo_directions: Vec::new(),
+            tempo_changes: Vec::new(),
             parts: Vec::new(),
             measures: vec![MeasureInfo::default()],
             next_id: IdCounter(1),
         }
+    }
+
+    /// The tempo at the start: the mark there, or the default when the score has none.
+    pub fn initial_tempo(&self) -> Tempo {
+        self.tempo_change_at(0, 0)
+            .map_or_else(Tempo::default, |mark| mark.tempo)
+    }
+
+    pub fn tempo_change_at(&self, measure: usize, tick: u32) -> Option<&TempoChangeMark> {
+        self.tempo_changes
+            .iter()
+            .find(|mark| mark.measure == measure && mark.tick == tick)
     }
 
     fn alloc_id(&mut self) -> u64 {
@@ -420,7 +503,6 @@ impl Score {
 
     /// Checks the invariants that commands maintain, for scores that did not come from them.
     pub fn validate(&self) -> Result<(), ModelError> {
-        self.tempo.validate()?;
         let mut direction_positions = std::collections::HashSet::new();
         for mark in &self.tempo_directions {
             let capacity = self.measure_capacity(mark.measure)?;
@@ -432,6 +514,21 @@ impl Score {
             if !direction_positions.insert((mark.measure, mark.tick)) {
                 return Err(ModelError::Invalid(
                     "only one tempo direction is allowed at each position",
+                ));
+            }
+        }
+        let mut change_positions = std::collections::HashSet::new();
+        for mark in &self.tempo_changes {
+            mark.tempo.validate()?;
+            let capacity = self.measure_capacity(mark.measure)?;
+            if mark.tick > capacity {
+                return Err(ModelError::Invalid(
+                    "tempo change position is outside its measure",
+                ));
+            }
+            if !change_positions.insert((mark.measure, mark.tick)) {
+                return Err(ModelError::Invalid(
+                    "only one tempo change is allowed at each position",
                 ));
             }
         }

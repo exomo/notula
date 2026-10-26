@@ -1,9 +1,9 @@
 //! Turns planned events into drawing primitives once their horizontal positions are known.
 
-use notula_model::{Articulation, EventId, NoteValue};
+use notula_model::{Articulation, EventId, NoteValue, Tempo};
 
 use crate::engrave::{Body, EventPlan, NotePlan, VoicePlan, dot_advance};
-use crate::render::Canvas;
+use crate::render::{Anchor, Canvas};
 use crate::smufl;
 
 const STEM_LENGTH: f32 = 3.5;
@@ -13,6 +13,15 @@ const BEAM_STUB: f32 = 1.0;
 const MAX_BEAM_DROP: f32 = 1.0;
 const MIDDLE_LINE: f32 = 2.0;
 const ARTICULATION_GAP: f32 = 1.0;
+const METRONOME_SIZE: f32 = 2.6;
+const METRONOME_TEXT_SIZE: f32 = 2.0;
+const METRONOME_DOT_GAP: f32 = 0.15;
+const METRONOME_DOT_ADVANCE: f32 = 0.4;
+const METRONOME_TEXT_GAP: f32 = 0.6;
+/// Distance from the staff top, or the highest notehead or stem under the mark, to its baseline.
+const METRONOME_CLEARANCE: f32 = 1.5;
+/// Rough advance of a digit or `=` in the text font, relative to its size.
+const METRONOME_CHAR_WIDTH: f32 = 0.55;
 
 struct Stem {
     x: f32,
@@ -567,5 +576,71 @@ fn beam_polygon(
             (xb, beam_y(xb) + far),
             (xa, beam_y(xa) + far),
         ],
+    );
+}
+
+fn metronome_text(tempo: Tempo) -> String {
+    format!("= {}", tempo.units_per_minute)
+}
+
+/// Where the text of a metronome mark starts, relative to the mark's x.
+fn metronome_text_offset(tempo: Tempo) -> f32 {
+    let scale = METRONOME_SIZE / 4.0;
+    smufl::METRONOME_NOTE_WIDTH * scale
+        + f32::from(tempo.beat_unit_dots) * (METRONOME_DOT_GAP + METRONOME_DOT_ADVANCE * scale)
+        + METRONOME_TEXT_GAP
+}
+
+/// Horizontal room a metronome mark such as "♩ = 120" needs.
+pub(crate) fn metronome_width(tempo: Tempo) -> f32 {
+    metronome_text_offset(tempo)
+        + metronome_text(tempo).chars().count() as f32 * METRONOME_CHAR_WIDTH * METRONOME_TEXT_SIZE
+}
+
+/// Baseline for a metronome mark at `x` that clears the staff and the events beneath it.
+pub(crate) fn metronome_baseline(
+    voices: &[VoicePlan],
+    y0: f32,
+    x: f32,
+    tempo: Tempo,
+    x_of: &dyn Fn(u32) -> f32,
+) -> f32 {
+    let right = x + metronome_width(tempo);
+    let top = voices
+        .iter()
+        .flat_map(|voice| (0..voice.events.len()).map(move |index| (voice, index)))
+        .filter(|&(voice, index)| {
+            let event = &voice.events[index];
+            let column = x_of(event.onset);
+            column + event.right >= x && column - event.left <= right
+        })
+        .map(|(voice, index)| upper_extent(voice, index))
+        .fold(0.0, f32::min);
+    y0 + top - METRONOME_CLEARANCE
+}
+
+/// Draws a metronome mark starting at `x`, with `baseline` under the notehead and text.
+pub(crate) fn metronome_mark(canvas: &mut Canvas, x: f32, baseline: f32, tempo: Tempo) {
+    let scale = METRONOME_SIZE / 4.0;
+    let note_y = baseline - smufl::METRONOME_NOTE_DEPTH * scale;
+    canvas.glyph(
+        None,
+        x,
+        note_y,
+        smufl::metronome_note(tempo.beat_unit),
+        METRONOME_SIZE,
+    );
+    let mut dot_x = x + smufl::METRONOME_NOTE_WIDTH * scale;
+    for _ in 0..tempo.beat_unit_dots {
+        dot_x += METRONOME_DOT_GAP;
+        canvas.glyph(None, dot_x, note_y, smufl::METRONOME_DOT, METRONOME_SIZE);
+        dot_x += METRONOME_DOT_ADVANCE * scale;
+    }
+    canvas.text(
+        x + metronome_text_offset(tempo),
+        baseline,
+        &metronome_text(tempo),
+        METRONOME_TEXT_SIZE,
+        Anchor::Start,
     );
 }

@@ -20,6 +20,21 @@ export type Articulation =
 export type SlurPlacement = "auto" | "above" | "below";
 export type TempoDirection = "accelerando" | "ritardando" | "rallentando" | "a_tempo" | "rubato";
 
+/** Metronome setting; `beat_unit_dots` is omitted when the beat is undotted. */
+export interface Tempo {
+  beat_unit: NoteValue;
+  beat_unit_dots?: number;
+  units_per_minute: number;
+}
+
+export interface TempoChangeMark {
+  measure: number;
+  tick: number;
+  tempo: Tempo;
+  /** Plays without being printed; omitted when false. */
+  hidden?: boolean;
+}
+
 export interface Pitch {
   step: Step;
   alter: number;
@@ -104,6 +119,9 @@ export interface ScoreSetup {
   measures: number;
   /** Length in ticks of a shortened first measure (anacrusis), or null for none. */
   pickup: number | null;
+  /** Tempo at the start of the score, and whether its mark is printed. */
+  tempo: Tempo;
+  tempo_visible: boolean;
 }
 
 export interface ScorePart {
@@ -116,14 +134,17 @@ export interface ScorePart {
 export interface ScoreProperties {
   title: string;
   composer: string;
-  tempo: { beat_unit: NoteValue; units_per_minute: number };
+  /** Tempo at the start of the score, and whether its mark is printed. */
+  tempo: Tempo;
+  tempo_visible: boolean;
   parts: ScorePart[];
 }
 
 export interface ScorePropertiesUpdate {
   title: string;
   composer: string;
-  tempo: { beat_unit: NoteValue; units_per_minute: number };
+  tempo: Tempo;
+  tempo_visible: boolean;
   remove_part_ids: number[];
   instruments: { part_id: number; name: string; short_name: string; preset_id: string | null; staves: number }[];
   add_instruments: { preset_id: string; name: string; short_name: string; staves: number }[];
@@ -167,6 +188,10 @@ export const api = {
     invoke<TempoDirection | null>("tempo_direction_at", { measure, tick }),
   setTempoDirection: (measure: number, tick: number, direction: TempoDirection | null) =>
     invoke<Edited>("set_tempo_direction", { measure, tick, direction }),
+  tempoChangeAt: (measure: number, tick: number) =>
+    invoke<TempoChangeMark | null>("tempo_change_at", { measure, tick }),
+  setTempoChange: (measure: number, tick: number, tempo: Tempo | null, hidden: boolean) =>
+    invoke<Edited>("set_tempo_change", { measure, tick, tempo, hidden }),
   eventArticulations: (event: number) =>
     invoke<EventArticulations | null>("event_articulations", { event }),
   deleteEvent: (event: number) => invoke<Edited>("delete_event", { event }),

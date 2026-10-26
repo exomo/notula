@@ -926,3 +926,107 @@ fn tempo_directions_render_at_the_same_position_for_each_part() {
     assert_eq!(directions[0].0, directions[1].0);
     assert_ne!(directions[0].1, directions[1].1);
 }
+
+#[test]
+fn tempo_changes_render_a_metronome_mark_above_each_part() {
+    let mut builder = Builder::new(&[("Flute", &[Clef::Treble]), ("Cello", &[Clef::Bass])]);
+    let tempo = notula_model::Tempo {
+        beat_unit: NoteValue::Quarter,
+        beat_unit_dots: 1,
+        units_per_minute: 72,
+    };
+    builder
+        .doc
+        .execute(Command::SetTempoChange {
+            measure: 0,
+            tick: 960,
+            tempo: Some(tempo),
+            hidden: false,
+        })
+        .unwrap();
+    let items = builder.layout(100.0).items;
+
+    let notes: Vec<_> = items
+        .iter()
+        .filter_map(|item| match item.shape {
+            Shape::Glyph {
+                x,
+                y,
+                glyph: '\u{ECA5}',
+                ..
+            } => Some((x, y)),
+            _ => None,
+        })
+        .collect();
+    let dots = items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.shape,
+                Shape::Glyph {
+                    glyph: '\u{ECB7}',
+                    ..
+                }
+            )
+        })
+        .count();
+    let texts: Vec<_> = items
+        .iter()
+        .filter_map(|item| match &item.shape {
+            Shape::Text { x, text, .. } if text == "= 72" => Some(*x),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notes.len(), 2);
+    assert_eq!(dots, 2);
+    assert_eq!(texts.len(), 2);
+    assert_eq!(notes[0].0, notes[1].0);
+    assert!(notes[0].1 < notes[1].1);
+    assert!(texts[0] > notes[0].0);
+}
+
+#[test]
+fn metronome_marks_clear_high_notes_beneath_them() {
+    let mark_y = |pitch: Pitch| {
+        let mut builder = Builder::new(&[("Flute", &[Clef::Treble])]);
+        builder.note(0, 0, pitch, NoteValue::Quarter);
+        builder
+            .doc
+            .execute(Command::SetTempoChange {
+                measure: 0,
+                tick: 0,
+                tempo: Some(notula_model::Tempo::default()),
+                hidden: false,
+            })
+            .unwrap();
+        builder
+            .layout(100.0)
+            .items
+            .into_iter()
+            .find_map(|item| match item.shape {
+                Shape::Text { y, text, .. } if text == "= 120" => Some(y),
+                _ => None,
+            })
+            .unwrap()
+    };
+    // A ledger-line A6 reaches about four spaces higher than a G4 inside the staff.
+    assert!(mark_y(Pitch::new(Step::A, 0, 6)) < mark_y(Pitch::new(Step::G, 0, 4)) - 3.0);
+}
+
+#[test]
+fn hidden_tempo_changes_are_not_printed() {
+    let mut builder = Builder::new(&[("Flute", &[Clef::Treble])]);
+    builder
+        .doc
+        .execute(Command::SetTempoChange {
+            measure: 0,
+            tick: 0,
+            tempo: Some(notula_model::Tempo::default()),
+            hidden: true,
+        })
+        .unwrap();
+    assert!(builder.layout(100.0).items.iter().all(|item| !matches!(
+        &item.shape,
+        Shape::Text { text, .. } if text.starts_with('=')
+    )));
+}

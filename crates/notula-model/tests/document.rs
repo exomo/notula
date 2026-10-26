@@ -567,13 +567,140 @@ fn old_scores_without_part_short_names_still_load() {
         .as_object_mut()
         .unwrap()
         .remove("short_name");
-    json.as_object_mut().unwrap().remove("tempo");
     json.as_object_mut().unwrap().remove("tempo_directions");
+    json.as_object_mut().unwrap().remove("tempo_changes");
 
-    let restored: Score = serde_json::from_value(json).unwrap();
+    let restored: Score = serde_json::from_value(json.clone()).unwrap();
     assert_eq!(restored.parts[0].short_name, "");
-    assert_eq!(restored.tempo, notula_model::Tempo::default());
+    assert_eq!(restored.initial_tempo(), notula_model::Tempo::default());
     assert!(restored.tempo_directions.is_empty());
+    assert!(restored.tempo_changes.is_empty());
+
+    // Files that stored a default tempo show it as a mark at the start instead.
+    json["tempo"] = serde_json::json!({"beat_unit": "Half", "units_per_minute": 60});
+    let restored: Score = serde_json::from_value(json).unwrap();
+    let start = restored.tempo_change_at(0, 0).unwrap();
+    assert_eq!(start.tempo.beat_unit, NoteValue::Half);
+    assert_eq!(start.tempo.units_per_minute, 60);
+    assert!(!start.hidden);
+    let saved = serde_json::to_value(&restored).unwrap();
+    assert!(saved.get("tempo").is_none());
+    assert_eq!(serde_json::from_value::<Score>(saved).unwrap(), restored);
+
+    let undotted: notula_model::Tempo =
+        serde_json::from_str(r#"{"beat_unit":"Half","units_per_minute":60}"#).unwrap();
+    assert_eq!(undotted.beat_unit_dots, 0);
+}
+
+#[test]
+fn dotted_tempo_beats_convert_to_quarter_notes() {
+    let tempo = notula_model::Tempo {
+        beat_unit: NoteValue::Quarter,
+        beat_unit_dots: 1,
+        units_per_minute: 60,
+    };
+    assert_eq!(tempo.quarter_notes_per_minute(), 90.0);
+    assert!(
+        notula_model::Tempo {
+            beat_unit_dots: 3,
+            ..tempo
+        }
+        .validate()
+        .is_err()
+    );
+}
+
+#[test]
+fn tempo_changes_are_score_wide_and_restore_with_measure_edits() {
+    let (mut doc, _) = setup();
+    let tempo = notula_model::Tempo {
+        beat_unit: NoteValue::Half,
+        beat_unit_dots: 0,
+        units_per_minute: 72,
+    };
+    let before = doc.score().clone();
+    assert!(
+        doc.execute(Command::SetTempoChange {
+            measure: 0,
+            tick: doc.score().measure_capacity(0).unwrap() + 1,
+            tempo: Some(tempo),
+            hidden: false,
+        })
+        .is_err()
+    );
+    assert!(
+        doc.execute(Command::SetTempoChange {
+            measure: 0,
+            tick: 0,
+            tempo: Some(notula_model::Tempo {
+                units_per_minute: 0,
+                ..tempo
+            }),
+            hidden: false,
+        })
+        .is_err()
+    );
+    assert_eq!(doc.score(), &before);
+
+    doc.execute(Command::SetTempoChange {
+        measure: 0,
+        tick: 2880,
+        tempo: Some(tempo),
+        hidden: false,
+    })
+    .unwrap();
+    assert_eq!(doc.score().tempo_changes[0].tempo, tempo);
+    doc.undo().unwrap();
+    assert!(doc.score().tempo_changes.is_empty());
+    doc.redo().unwrap();
+
+    // Shortening the measure would strand the mark after its end.
+    assert!(
+        doc.execute(Command::SetTimeSignature {
+            measure: 0,
+            time_signature: TimeSignature {
+                numerator: 2,
+                denominator: 4,
+            },
+        })
+        .is_err()
+    );
+    assert!(
+        doc.execute(Command::SetMeasureLength {
+            measure: 0,
+            length: Some(960),
+        })
+        .is_err()
+    );
+
+    let data = doc.score().blank_measure(0);
+    doc.execute(Command::InsertMeasure { index: 0, data })
+        .unwrap();
+    assert_eq!(doc.score().tempo_changes[0].measure, 1);
+    doc.execute(Command::RemoveMeasure { index: 1 }).unwrap();
+    assert!(doc.score().tempo_changes.is_empty());
+    doc.undo().unwrap();
+    assert_eq!(doc.score().tempo_changes[0].measure, 1);
+    assert_eq!(doc.score().tempo_changes[0].tempo, tempo);
+    doc.score().validate().unwrap();
+
+    doc.execute(Command::SetTempoChange {
+        measure: 1,
+        tick: 2880,
+        tempo: Some(tempo),
+        hidden: true,
+    })
+    .unwrap();
+    assert!(doc.score().tempo_change_at(1, 2880).unwrap().hidden);
+    doc.execute(Command::SetTempoChange {
+        measure: 1,
+        tick: 2880,
+        tempo: None,
+        hidden: false,
+    })
+    .unwrap();
+    doc.undo().unwrap();
+    assert!(doc.score().tempo_change_at(1, 2880).unwrap().hidden);
 }
 
 #[test]

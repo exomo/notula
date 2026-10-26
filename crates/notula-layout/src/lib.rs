@@ -631,6 +631,25 @@ impl Layouter<'_> {
                 }
             }
 
+            for mark in self
+                .score
+                .tempo_changes
+                .iter()
+                .filter(|mark| mark.measure == measure && !mark.hidden)
+            {
+                let x = x_of(mark.tick);
+                for part in rows.parts.iter().filter(|part| !part.is_empty()) {
+                    let baseline = emit::metronome_baseline(
+                        &metrics.plans[part.start].voices,
+                        y_top + rows.y[part.start],
+                        x,
+                        mark.tempo,
+                        &x_of,
+                    );
+                    emit::metronome_mark(canvas, x, baseline, mark.tempo);
+                }
+            }
+
             let is_final = measure + 1 == self.score.measures.len();
             for range in rows.parts.iter().filter(|r| !r.is_empty()) {
                 let top = y_top + rows.y[range.start];

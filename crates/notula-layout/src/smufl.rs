@@ -30,6 +30,11 @@ pub const MARCATO_ABOVE: char = '\u{E4AC}';
 pub const MARCATO_BELOW: char = '\u{E4AD}';
 pub const FERMATA_ABOVE: char = '\u{E4C0}';
 pub const FERMATA_BELOW: char = '\u{E4C1}';
+pub const METRONOME_DOT: char = '\u{ECB7}';
+/// Advance of a metronome note at the standard size; all stem-up notes share it.
+pub const METRONOME_NOTE_WIDTH: f32 = 1.18;
+/// How far a metronome notehead reaches below its origin.
+pub const METRONOME_NOTE_DEPTH: f32 = 0.56;
 pub const TIME_COMMON: char = '\u{E08A}';
 pub const TIME_CUT_COMMON: char = '\u{E08B}';
 
@@ -82,6 +87,19 @@ pub fn notehead(value: NoteValue) -> (char, f32) {
         NoteValue::Whole => ('\u{E0A2}', 1.688),
         NoteValue::Half => ('\u{E0A3}', 1.18),
         _ => ('\u{E0A4}', 1.18),
+    }
+}
+
+/// Stem-up note for a metronome mark, drawn with a flag instead of beams.
+pub fn metronome_note(value: NoteValue) -> char {
+    match value {
+        NoteValue::Whole => '\u{ECA2}',
+        NoteValue::Half => '\u{ECA3}',
+        NoteValue::Quarter => '\u{ECA5}',
+        NoteValue::Eighth => '\u{ECA7}',
+        NoteValue::Sixteenth => '\u{ECA9}',
+        NoteValue::ThirtySecond => '\u{ECAB}',
+        NoteValue::SixtyFourth => '\u{ECAD}',
     }
 }
 

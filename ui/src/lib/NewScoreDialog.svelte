@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, type Instrument, type ScoreSetup } from "./api";
-  import { editor } from "./editor.svelte";
+  import { editor, tempoFromBeatKey } from "./editor.svelte";
+  import TempoFields from "./TempoFields.svelte";
 
   // Major keys by number of accidentals, -7 (seven flats) to 7 (seven sharps).
   const KEY_NAMES = ["C♭", "G♭", "D♭", "A♭", "E♭", "B♭", "F", "C", "G", "D", "A", "E", "B", "F♯", "C♯"];
@@ -17,6 +18,9 @@
   let measures = $state(16);
   let toAdd = $state("");
   let pickupChoice = $state("");
+  let tempoBeat = $state("Quarter:0");
+  let tempoUnitsPerMinute = $state(120);
+  let tempoVisible = $state(true);
 
   const TICKS_PER_WHOLE = 3840;
   const PICKUP_LENGTHS = [
@@ -65,7 +69,14 @@
   }
 
   const valid = $derived(
-    chosen.length > 0 && numerator >= 1 && numerator <= 32 && measures >= 1 && measures <= 999,
+    chosen.length > 0 &&
+      numerator >= 1 &&
+      numerator <= 32 &&
+      measures >= 1 &&
+      measures <= 999 &&
+      Number.isInteger(tempoUnitsPerMinute) &&
+      tempoUnitsPerMinute >= 1 &&
+      tempoUnitsPerMinute <= 1000,
   );
 
   async function create(event: SubmitEvent) {
@@ -81,6 +92,8 @@
       pickup: pickupOptions.some((p) => String(p.ticks) === pickupChoice)
         ? Number(pickupChoice)
         : null,
+      tempo: tempoFromBeatKey(tempoBeat, tempoUnitsPerMinute),
+      tempo_visible: tempoVisible,
     };
     if (await editor.newScore(setup)) editor.newScoreOpen = false;
   }
@@ -158,6 +171,12 @@
         </select>
       </label>
     </div>
+
+    <TempoFields
+      bind:beat={tempoBeat}
+      bind:unitsPerMinute={tempoUnitsPerMinute}
+      bind:visible={tempoVisible}
+    />
 
     {#if editor.message}
       <p class="error">{editor.message}</p>

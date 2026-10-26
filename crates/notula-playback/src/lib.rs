@@ -1,8 +1,7 @@
 //! Converts score events into a time-ordered stream of MIDI note events.
 
-use notula_model::{Articulation, EventKind, Score, TICKS_PER_QUARTER};
+use notula_model::{Articulation, EventKind, Score, TICKS_PER_QUARTER, Tempo};
 
-pub const DEFAULT_TEMPO_BPM: u16 = 120;
 pub const DEFAULT_VELOCITY: u8 = 96;
 pub const ACCENTED_VELOCITY: u8 = 120;
 const STACCATO_DURATION: (u64, u64) = (1, 2);
@@ -36,15 +35,21 @@ struct NoteSpan {
     tied: bool,
 }
 
+/// Score tick at which each measure begins.
+fn measure_starts(score: &Score) -> Vec<u64> {
+    let mut starts = Vec::with_capacity(score.measures.len());
+    let mut score_end = 0_u64;
+    for measure in &score.measures {
+        starts.push(score_end);
+        score_end += u64::from(measure.capacity());
+    }
+    starts
+}
+
 /// Builds note-on/off events for all parts, staves, voices, and measures.
 pub fn events(score: &Score) -> Vec<PlaybackEvent> {
     let mut spans = Vec::new();
-    let mut measure_starts = Vec::with_capacity(score.measures.len());
-    let mut score_end = 0_u64;
-    for measure in &score.measures {
-        measure_starts.push(score_end);
-        score_end += u64::from(measure.capacity());
-    }
+    let measure_starts = measure_starts(score);
 
     let mut track = 0;
     for part in &score.parts {
@@ -154,6 +159,86 @@ fn midi_channel(track: usize) -> u8 {
 
 pub fn tick_duration_seconds(ticks: u64, quarter_notes_per_minute: f64) -> f64 {
     ticks as f64 * 60.0 / (f64::from(TICKS_PER_QUARTER) * quarter_notes_per_minute)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TempoSegment {
+    tick: u64,
+    seconds: f64,
+    quarter_notes_per_minute: f64,
+}
+
+/// Converts between score ticks and seconds, following the score's tempo changes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TempoMap {
+    /// Ascending by tick; the first segment starts at tick 0.
+    segments: Vec<TempoSegment>,
+}
+
+impl Default for TempoMap {
+    fn default() -> Self {
+        Self::constant(Tempo::default().quarter_notes_per_minute())
+    }
+}
+
+impl TempoMap {
+    pub fn constant(quarter_notes_per_minute: f64) -> Self {
+        Self {
+            segments: vec![TempoSegment {
+                tick: 0,
+                seconds: 0.0,
+                quarter_notes_per_minute,
+            }],
+        }
+    }
+
+    pub fn new(score: &Score) -> Self {
+        let mut map = Self::default();
+        let measure_starts = measure_starts(score);
+        // Changes are kept sorted by position, so absolute ticks ascend too.
+        // Hidden marks are not printed but still play.
+        for mark in &score.tempo_changes {
+            let Some(start) = measure_starts.get(mark.measure) else {
+                continue;
+            };
+            let tick = start + u64::from(mark.tick);
+            let quarter_notes_per_minute = mark.tempo.quarter_notes_per_minute();
+            let last = map.segments.last_mut().expect("a tempo map is never empty");
+            // A mark at the end of one measure and the next measure's start share a tick.
+            if last.tick == tick {
+                last.quarter_notes_per_minute = quarter_notes_per_minute;
+                continue;
+            }
+            let seconds = last.seconds
+                + tick_duration_seconds(tick - last.tick, last.quarter_notes_per_minute);
+            map.segments.push(TempoSegment {
+                tick,
+                seconds,
+                quarter_notes_per_minute,
+            });
+        }
+        map
+    }
+
+    pub fn seconds_at(&self, tick: u64) -> f64 {
+        let index = self
+            .segments
+            .partition_point(|segment| segment.tick <= tick);
+        let segment = self.segments[index.saturating_sub(1)];
+        segment.seconds
+            + tick_duration_seconds(tick - segment.tick, segment.quarter_notes_per_minute)
+    }
+
+    pub fn tick_at(&self, seconds: f64) -> u64 {
+        let index = self
+            .segments
+            .partition_point(|segment| segment.seconds <= seconds);
+        let segment = self.segments[index.saturating_sub(1)];
+        let elapsed = (seconds - segment.seconds).max(0.0);
+        segment.tick
+            + (elapsed * segment.quarter_notes_per_minute * f64::from(TICKS_PER_QUARTER) / 60.0)
+                as u64
+    }
 }
 
 #[cfg(test)]
@@ -451,6 +536,7 @@ mod tests {
         assert_eq!(tick_duration_seconds(960, 120.0), 0.5);
         let half_note_tempo = Tempo {
             beat_unit: NoteValue::Half,
+            beat_unit_dots: 0,
             units_per_minute: 120,
         };
         assert_eq!(half_note_tempo.quarter_notes_per_minute(), 240.0);
@@ -460,12 +546,70 @@ mod tests {
         );
         let slow_sixty_fourth_tempo = Tempo {
             beat_unit: NoteValue::SixtyFourth,
+            beat_unit_dots: 0,
             units_per_minute: 1,
         };
         assert_eq!(
             tick_duration_seconds(60, slow_sixty_fourth_tempo.quarter_notes_per_minute()),
             60.0
         );
+    }
+
+    #[test]
+    fn tempo_changes_shift_later_ticks_in_time() {
+        let (mut doc, _) = setup(3);
+        doc.execute(Command::SetTempoChange {
+            measure: 1,
+            tick: 0,
+            tempo: Some(Tempo {
+                beat_unit: NoteValue::Quarter,
+                beat_unit_dots: 0,
+                units_per_minute: 60,
+            }),
+            hidden: false,
+        })
+        .unwrap();
+        // A mark at the end of a measure applies from the next measure's first beat.
+        doc.execute(Command::SetTempoChange {
+            measure: 1,
+            tick: 3840,
+            tempo: Some(Tempo {
+                beat_unit: NoteValue::Quarter,
+                beat_unit_dots: 1,
+                units_per_minute: 160,
+            }),
+            hidden: false,
+        })
+        .unwrap();
+        let map = TempoMap::new(doc.score());
+
+        assert_eq!(map.seconds_at(960), 0.5);
+        assert_eq!(map.seconds_at(3840), 2.0);
+        assert_eq!(map.seconds_at(3840 + 960), 3.0);
+        assert_eq!(map.seconds_at(7680), 6.0);
+        assert_eq!(map.seconds_at(7680 + 960), 6.25);
+        for tick in [0, 960, 3840, 4800, 7680, 8640] {
+            assert_eq!(map.tick_at(map.seconds_at(tick)), tick);
+        }
+        assert_eq!(TempoMap::default().seconds_at(960), 0.5);
+    }
+
+    #[test]
+    fn a_mark_at_the_start_sets_the_initial_tempo() {
+        let (mut doc, _) = setup(1);
+        assert_eq!(TempoMap::new(doc.score()).seconds_at(960), 0.5);
+        doc.execute(Command::SetTempoChange {
+            measure: 0,
+            tick: 0,
+            tempo: Some(Tempo {
+                beat_unit: NoteValue::Quarter,
+                beat_unit_dots: 0,
+                units_per_minute: 60,
+            }),
+            hidden: true,
+        })
+        .unwrap();
+        assert_eq!(TempoMap::new(doc.score()).seconds_at(960), 1.0);
     }
 
     #[test]

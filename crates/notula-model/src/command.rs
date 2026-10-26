@@ -8,7 +8,7 @@ use crate::error::ModelError;
 use crate::ids::{PartId, StaffId};
 use crate::score::{
     Clef, Event, KeySignature, MeasureData, MeasureInfo, Part, Score, Staff, StaffMeasure, Tempo,
-    TempoDirection, TempoDirectionMark, Voice, VoiceLocation,
+    TempoChangeMark, TempoDirection, TempoDirectionMark, Voice, VoiceLocation,
 };
 
 /// A reversible edit. `apply` leaves the score untouched on error and returns the inverse command.
@@ -99,13 +99,18 @@ pub enum Command {
         title: String,
         composer: String,
     },
-    SetTempo {
-        tempo: Tempo,
-    },
     SetTempoDirection {
         measure: usize,
         tick: u32,
         direction: Option<TempoDirection>,
+    },
+    /// Adds, replaces, or with `None` removes the metronome mark at a position.
+    SetTempoChange {
+        measure: usize,
+        tick: u32,
+        tempo: Option<Tempo>,
+        #[serde(default)]
+        hidden: bool,
     },
     /// Applied all-or-nothing and undone as a single step.
     Batch {
@@ -124,6 +129,28 @@ fn check_fits(content: &StaffMeasure, capacity: u32) -> Result<(), ModelError> {
                 .is_some_and(|end| end > capacity || end < voice.used_ticks())
     }) {
         return Err(ModelError::MeasureOverfull);
+    }
+    Ok(())
+}
+
+/// Score-wide marks must stay inside a measure whose length changes.
+fn check_marks_fit(score: &Score, measure: usize, capacity: u32) -> Result<(), ModelError> {
+    let positions = score
+        .tempo_directions
+        .iter()
+        .map(|mark| (mark.measure, mark.tick))
+        .chain(
+            score
+                .tempo_changes
+                .iter()
+                .map(|mark| (mark.measure, mark.tick)),
+        );
+    for (mark_measure, tick) in positions {
+        if mark_measure == measure && tick > capacity {
+            return Err(ModelError::Invalid(
+                "a tempo mark would fall outside the measure",
+            ));
+        }
     }
     Ok(())
 }
@@ -284,6 +311,11 @@ impl Command {
                         mark.measure += 1;
                     }
                 }
+                for mark in &mut score.tempo_changes {
+                    if mark.measure >= index {
+                        mark.measure += 1;
+                    }
+                }
                 for (id, content) in data.content {
                     score.staff_mut(id)?.measures.insert(index, content);
                 }
@@ -307,6 +339,18 @@ impl Command {
                         mark.measure -= 1;
                     }
                 }
+                let removed_changes: Vec<_> = score
+                    .tempo_changes
+                    .iter()
+                    .filter(|mark| mark.measure == index)
+                    .copied()
+                    .collect();
+                score.tempo_changes.retain(|mark| mark.measure != index);
+                for mark in &mut score.tempo_changes {
+                    if mark.measure > index {
+                        mark.measure -= 1;
+                    }
+                }
                 let content = score
                     .staves_mut()
                     .map(|staff| (staff.id, staff.measures.remove(index)))
@@ -322,6 +366,16 @@ impl Command {
                         direction: Some(mark.direction),
                     }
                 }));
+                commands.extend(
+                    removed_changes
+                        .into_iter()
+                        .map(|mark| Command::SetTempoChange {
+                            measure: mark.measure,
+                            tick: mark.tick,
+                            tempo: Some(mark.tempo),
+                            hidden: mark.hidden,
+                        }),
+                );
                 Ok(Command::Batch { commands })
             }
             Command::SetTimeSignature {
@@ -355,6 +409,7 @@ impl Command {
                 for staff in score.staves() {
                     check_fits(&staff.measures[measure], capacity)?;
                 }
+                check_marks_fit(score, measure, capacity)?;
                 let old = mem::replace(&mut score.measures[measure].time_signature, time_signature);
                 let old_display =
                     mem::replace(&mut score.measures[measure].time_signature_display, display);
@@ -396,6 +451,7 @@ impl Command {
                 for staff in score.staves() {
                     check_fits(&staff.measures[measure], capacity)?;
                 }
+                check_marks_fit(score, measure, capacity)?;
                 let old = mem::replace(&mut score.measures[measure].length, length);
                 Ok(Command::SetMeasureLength {
                     measure,
@@ -543,11 +599,6 @@ impl Command {
                 let composer = mem::replace(&mut score.composer, composer);
                 Ok(Command::SetMetadata { title, composer })
             }
-            Command::SetTempo { tempo } => {
-                tempo.validate()?;
-                let old = mem::replace(&mut score.tempo, tempo);
-                Ok(Command::SetTempo { tempo: old })
-            }
             Command::SetTempoDirection {
                 measure,
                 tick,
@@ -578,6 +629,44 @@ impl Command {
                     measure,
                     tick,
                     direction: old,
+                })
+            }
+            Command::SetTempoChange {
+                measure,
+                tick,
+                tempo,
+                hidden,
+            } => {
+                let capacity = score.measure_capacity(measure)?;
+                if tick > capacity {
+                    return Err(ModelError::Invalid(
+                        "tempo change position is outside its measure",
+                    ));
+                }
+                if let Some(tempo) = tempo {
+                    tempo.validate()?;
+                }
+                let existing = score
+                    .tempo_changes
+                    .iter()
+                    .position(|mark| mark.measure == measure && mark.tick == tick);
+                let old = existing.map(|index| score.tempo_changes.remove(index));
+                if let Some(tempo) = tempo {
+                    score.tempo_changes.push(TempoChangeMark {
+                        measure,
+                        tick,
+                        tempo,
+                        hidden,
+                    });
+                    score
+                        .tempo_changes
+                        .sort_by_key(|mark| (mark.measure, mark.tick));
+                }
+                Ok(Command::SetTempoChange {
+                    measure,
+                    tick,
+                    tempo: old.map(|mark| mark.tempo),
+                    hidden: old.is_some_and(|mark| mark.hidden),
                 })
             }
             Command::Batch { commands } => {
