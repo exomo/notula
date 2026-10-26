@@ -109,12 +109,21 @@
     }
   }
 
-  function returnFocusToEditor(event: MouseEvent) {
-    if (!(event.target as Element).closest("button")) return;
+  // Keys go to the score only while it has focus, so hand focus back after using a control.
+  function returnFocusToEditor() {
     requestAnimationFrame(() => {
       if (fileMenuOpen || document.querySelector("dialog[open]")) return;
       editor.focusNoteEditor();
     });
+  }
+
+  function returnFocusAfterClick(event: MouseEvent) {
+    if ((event.target as Element).closest("button")) returnFocusToEditor();
+  }
+
+  // A text or number field keeps focus while it is being edited.
+  function returnFocusAfterChoice(event: Event) {
+    if (event.target instanceof HTMLSelectElement) returnFocusToEditor();
   }
 
   function runFileAction(action: () => void) {
@@ -154,7 +163,8 @@
   aria-label="Score editor toolbar"
   tabindex="0"
   onkeydown={onFileKeydown}
-  onclick={returnFocusToEditor}
+  onclick={returnFocusAfterClick}
+  onchange={returnFocusAfterChoice}
 >
   <div class="group file-menu">
     <button
@@ -595,16 +605,19 @@
   }
 
   .smufl {
-    font-family: "Bravura";
-    font-size: 1.4rem;
     line-height: 1;
     min-width: 2.1rem;
     padding: 0.2rem 0.35rem 0.1rem;
   }
 
-  /* Bravura's ascent and descent are 2 em each, so a glyph's text box reaches far above and
-     below its button and would catch the pointer over neighbouring controls. */
+  /* Bravura's ascent and descent are 2 em each. Hit testing uses those boxes, not the ink,
+     so they would catch the pointer over neighbouring controls. The button keeps the UI font
+     for its own line, and the glyph sits in a one-line box that ignores the pointer. */
   .smufl .glyph {
+    display: inline-block;
+    font-family: "Bravura";
+    font-size: 1.4rem;
+    line-height: 1;
     pointer-events: none;
   }
 
