@@ -32,6 +32,19 @@
     editor.selected !== null && !editor.hasRangeSelection ? editor.eventArticulations : null,
   );
   const range = $derived(editor.rangeSelection);
+  const VALUE_FRACTIONS: Record<string, string> = {
+    Whole: "1/1",
+    Half: "1/2",
+    Quarter: "1/4",
+    Eighth: "1/8",
+    Sixteenth: "1/16",
+    ThirtySecond: "1/32",
+    SixtyFourth: "1/64",
+  };
+  // Shifting moves by the note value chosen in the input bar.
+  const stepLabel = $derived(
+    `${"dotted ".repeat(editor.duration.dots)}${VALUE_FRACTIONS[editor.duration.value]}`,
+  );
   const rangeSummary = $derived.by(() => {
     if (!range) return "";
     if (!editor.hasRangeSelection) {
@@ -126,6 +139,17 @@
             {/each}
           </select>
         </label>
+        <div class="row">
+          <button
+            onclick={() => editor.shiftSelection(false)}
+            title="Move the selected notes earlier through rests (Ctrl+←)"
+          >◀ Earlier</button>
+          <button
+            onclick={() => editor.shiftSelection(true)}
+            title="Move the selected notes later through rests (Ctrl+→)"
+          >Later ▶</button>
+          <span class="step">by {stepLabel}</span>
+        </div>
       {/if}
       <div class="row">
         <button onclick={() => editor.clearSelection()} title="Clear the selection (Esc)">Clear</button>
@@ -422,6 +446,11 @@
     justify-content: space-between;
     gap: 0.5rem;
     font-size: 0.82rem;
+  }
+
+  .step {
+    color: var(--muted);
+    font-size: 0.8rem;
   }
 
   .hint {

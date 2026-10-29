@@ -10,6 +10,7 @@ mod markings;
 mod pitch;
 mod score;
 pub mod selection;
+pub mod shift;
 
 pub use command::Command;
 pub use duration::{

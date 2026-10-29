@@ -284,6 +284,12 @@ export const api = {
     invoke<Edited>("toggle_hairpin", { start, end, kind }),
   removeHairpin: (event: number) => invoke<Edited>("remove_hairpin", { event }),
   select: (request: SelectionRequest) => invoke<SelectionInfo | null>("select", { request }),
+  shiftSelection: (selection: Selection, forward: boolean, duration: Duration) =>
+    invoke<{ edited: Edited; selection: SelectionInfo | null }>("shift_selection", {
+      selection,
+      forward,
+      duration,
+    }),
   editSelection: (selection: Selection, edit: SelectionEdit) =>
     invoke<Edited>("edit_selection", { selection, edit }),
   removeSlur: (event: number, phrase: boolean) => invoke<Edited>("remove_slur", { event, phrase }),

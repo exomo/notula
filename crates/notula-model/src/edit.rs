@@ -116,18 +116,23 @@ pub fn cursor_at_content_end(score: &Score, cursor: Cursor) -> Option<Cursor> {
     Some(Cursor { tick, ..cursor })
 }
 
-/// Resolves a layout hit against the clicked staff's own voice, not shared score columns.
+/// Resolves a layout hit against the clicked staff's own voice, not shared score columns: the
+/// cursor goes to the start of the first note or rest at or after the clicked column, or to the
+/// end of the content when the voice has none there.
 pub fn cursor_at_staff_hit(score: &Score, cursor: Cursor) -> Option<Cursor> {
     let voice = score.voice(cursor.at()).ok()?;
-    if voice.events.is_empty() || note_at_cursor(score, cursor).is_some() {
-        return Some(Cursor {
-            tick: if voice.events.is_empty() {
-                0
-            } else {
-                cursor.tick
-            },
-            ..cursor
-        });
+    if voice.events.is_empty() {
+        return Some(Cursor { tick: 0, ..cursor });
+    }
+    let mut onset = 0;
+    for event in &voice.events {
+        if onset >= cursor.tick {
+            return Some(Cursor {
+                tick: onset,
+                ..cursor
+            });
+        }
+        onset += event.duration.ticks();
     }
     cursor_at_content_end(score, cursor)
 }
@@ -151,7 +156,7 @@ pub fn snap_cursor(score: &Score, cursor: Cursor) -> Result<Cursor, ModelError> 
     Ok(Cursor { tick, ..cursor })
 }
 
-fn rest_durations(mut ticks: u32) -> Result<Vec<Duration>, ModelError> {
+pub(crate) fn rest_durations(mut ticks: u32) -> Result<Vec<Duration>, ModelError> {
     const VALUES: [NoteValue; 7] = [
         NoteValue::Whole,
         NoteValue::Half,

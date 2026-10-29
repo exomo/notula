@@ -37,6 +37,7 @@ pub fn run() {
             commands::remove_slur,
             commands::select,
             commands::edit_selection,
+            commands::shift_selection,
             commands::tempo_direction_at,
             commands::set_tempo_direction,
             commands::tempo_change_at,

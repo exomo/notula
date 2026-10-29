@@ -33,11 +33,7 @@
   {/if}
   <footer>
     <span class="mode">{editor.inputMode ? "Note input" : "Select"}</span>
-    {#if editor.spansStaves && !editor.hasRangeSelection && !editor.hairpinMode && !editor.slurMode && !editor.phraseSlurMode}
-      <span>Cursor across {editor.rangeSelection?.resolved.staves.length} staves: notes you enter go into each · Shift+↑/↓ changes the staves · Shift+←/→ selects · Esc returns to one staff</span>
-    {:else if editor.hasRangeSelection && !editor.hairpinMode && !editor.slurMode && !editor.phraseSlurMode}
-      <span>Selection: ↑/↓ transposes · Ctrl+↑/↓ by octave · Delete turns notes into rests · Shift+←/→ by note · Shift+Ctrl+←/→ by measure · Shift+↑/↓ staves · Shift+click extends · Esc clears</span>
-    {:else if editor.hairpinMode}
+    {#if editor.hairpinMode}
       {@const name = editor.hairpinMode === "Crescendo" ? "Crescendo" : "Diminuendo"}
       {#if editor.hairpinStart === null}
         <span>{name}: click the note where it starts · Esc cancels</span>
@@ -48,6 +44,10 @@
       <span>{editor.phraseSlurMode ? "Phrase slur" : "Slur"}: click a start note, then an end note · Esc cancels</span>
     {:else if editor.message}
       <span class="error">{editor.message}</span>
+    {:else if editor.spansStaves && !editor.hasRangeSelection}
+      <span>Cursor across {editor.rangeSelection?.resolved.staves.length} staves: notes you enter go into each · Shift+↑/↓ changes the staves · Shift+←/→ selects · Esc returns to one staff</span>
+    {:else if editor.hasRangeSelection}
+      <span>Selection: Ctrl+←/→ moves by the input bar's note value · ↑/↓ transposes · Ctrl+↑/↓ by octave · Delete turns notes into rests · Shift+←/→ by note · Shift+Ctrl+←/→ by measure · Shift+↑/↓ staves · Shift+click extends · Esc clears</span>
     {:else if editor.inputMode}
       <span>A–G enter notes · 1–7 duration · . dot · 0 rest · ←/→ move cursor · Alt+↑/↓ changes voice, then staff · Ctrl+wheel zooms · click a chord tone to target it · ↑/↓ moves target tone or chord · Ctrl+↑/↓ moves an octave · Shift+click adds to chord · Esc leaves</span>
     {:else}

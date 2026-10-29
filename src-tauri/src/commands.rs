@@ -276,6 +276,37 @@ pub enum SelectionEdit {
     ToggleArticulation { articulation: Articulation },
 }
 
+#[derive(Serialize)]
+pub struct Shifted {
+    edited: Edited,
+    /// The selection at the notes' new place.
+    selection: Option<SelectionInfo>,
+}
+
+/// Moves the selected notes earlier or later by one note value, through rests only.
+#[tauri::command]
+pub fn shift_selection(
+    app: AppHandle,
+    state: State<AppState>,
+    selection: Selection,
+    forward: bool,
+    duration: Duration,
+) -> Reply<Shifted> {
+    let mut session = state.lock();
+    duration.validate().map_err(text)?;
+    let moved = notula_model::shift::shift_selection(
+        &mut session.doc,
+        &selection,
+        forward,
+        duration.ticks(),
+    )
+    .map_err(text)?;
+    Ok(Shifted {
+        selection: selection_info(session.doc.score(), moved),
+        edited: finish(&app, &session, None, None),
+    })
+}
+
 #[tauri::command]
 pub fn edit_selection(
     app: AppHandle,

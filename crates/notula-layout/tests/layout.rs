@@ -1252,3 +1252,66 @@ fn a_box_selects_the_staves_and_note_columns_it_covers() {
     // Empty paper selects nothing.
     assert!(box_selection(builder.doc.score(), &list, (0.0, 0.0), (1.0, 1.0)).is_none());
 }
+
+#[test]
+fn clicks_between_events_put_the_cursor_before_the_event_to_the_right() {
+    let mut builder = Builder::new(&[("Piano", &[Clef::Treble, Clef::Bass])]);
+    builder.note(0, 0, Pitch::new(Step::C, 0, 5), NoteValue::Quarter);
+    builder.append(0, 0, EventKind::Rest, NoteValue::Quarter);
+    builder.note(0, 0, Pitch::new(Step::E, 0, 5), NoteValue::Half);
+    // The lower staff holds a whole note, so the upper staff's columns are not its own.
+    builder.note(1, 0, Pitch::new(Step::C, 0, 3), NoteValue::Whole);
+    let staves = builder.staves.clone();
+    let list = builder.layout(60.0);
+    let score = builder.doc.score();
+    let area = |staff| {
+        list.areas
+            .iter()
+            .find(|area| area.staff == staff && area.measure == 0)
+            .unwrap()
+            .clone()
+    };
+    let upper = area(staves[0]);
+    let column = |tick: u32| upper.columns.iter().find(|c| c.0 == tick).unwrap().1;
+    // Where a click at `x` puts the cursor in `staff`, as the editor resolves it.
+    let cursor_tick = |staff, x: f32| {
+        let top = area(staff).y_top;
+        let hit = hit_test(score, &list, x, top + 2.0).unwrap();
+        hit.tick.and_then(|tick| {
+            edit::cursor_at_staff_hit(
+                score,
+                Cursor {
+                    staff,
+                    measure: 0,
+                    voice: 0,
+                    tick,
+                },
+            )
+            .map(|cursor| cursor.tick)
+        })
+    };
+    let between = |left: f32, right: f32, fraction: f32| left + (right - left) * fraction;
+
+    // Anywhere in the gap after the C goes before the rest, after the rest before the E.
+    for fraction in [0.4, 0.6, 0.9] {
+        assert_eq!(
+            cursor_tick(staves[0], between(column(0), column(960), fraction)),
+            Some(960)
+        );
+        assert_eq!(
+            cursor_tick(staves[0], between(column(960), column(1920), fraction)),
+            Some(1920)
+        );
+    }
+    // On a notehead, and before the first note, it is that note.
+    assert_eq!(cursor_tick(staves[0], column(0) + 0.5), Some(0));
+    assert_eq!(cursor_tick(staves[0], upper.x_start + 0.3), Some(0));
+    // In the lower staff, the upper staff's columns lead to the end of its whole note.
+    assert_eq!(
+        cursor_tick(staves[1], between(column(0), column(960), 0.6)),
+        Some(0)
+    );
+    // Past the last notehead is the end of the measure.
+    let end = hit_test(score, &list, upper.x_end - 0.5, upper.y_top + 2.0).unwrap();
+    assert_eq!(end.tick, None);
+}

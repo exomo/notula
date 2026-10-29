@@ -202,6 +202,10 @@ class Editor {
     const id = ++this.selectionRequest;
     const info = await this.run(() => api.select(request));
     if (id !== this.selectionRequest || info === undefined) return;
+    this.showSelection(info);
+  }
+
+  private showSelection(info: SelectionInfo | null) {
     if (!info) {
       this.rangeSelection = null;
       return;
@@ -269,6 +273,27 @@ class Editor {
     const range = this.rangeSelection;
     if (!range) return;
     await this.applySelection({ kind: "resolve", selection: { ...range.selection, voice } });
+  }
+
+  /**
+   * Moves the selected notes, or the selected note, by the input bar's note value, through
+   * rests only; the selection and cursor move with them.
+   */
+  async shiftSelection(forward: boolean) {
+    if (!this.hasRangeSelection && this.selected !== null) {
+      await this.applySelection({ kind: "event", event: this.selected });
+    }
+    const range = this.rangeSelection;
+    if (!range || !this.hasRangeSelection) {
+      this.message = "Select notes to move them.";
+      return;
+    }
+    const result = await this.run(() => api.shiftSelection(range.selection, forward, this.duration));
+    if (!result) return;
+    this.apply(result.edited);
+    // The moved selection replaces the re-resolved old one.
+    this.selectionRequest++;
+    this.showSelection(result.selection);
   }
 
   /** Applies an edit to every selected event as one undoable step; the selection stays. */
@@ -1083,8 +1108,11 @@ class Editor {
           return true;
         case "arrowleft":
         case "arrowright":
-          if (!event.shiftKey) return false;
-          void this.extendSelection(key === "ArrowLeft" ? "previous_measure" : "next_measure");
+          if (event.shiftKey) {
+            void this.extendSelection(key === "ArrowLeft" ? "previous_measure" : "next_measure");
+          } else {
+            void this.shiftSelection(key === "ArrowRight");
+          }
           return true;
         case "arrowup":
           if (this.selectedTone !== null && !this.hasRangeSelection) void this.transposeChordTone(12);
@@ -1140,7 +1168,11 @@ class Editor {
         void this.enterRest();
         return true;
       case " ":
-        if (!this.inputMode) return false;
+        if (!this.inputMode) {
+          // Otherwise the browser scrolls the score down a page. A focused button keeps Space.
+          const focus = document.activeElement;
+          return focus === this.noteEditor || focus === document.body;
+        }
         void this.enterRest();
         return true;
       case ".":

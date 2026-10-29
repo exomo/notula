@@ -308,8 +308,10 @@ pub struct Hit {
     pub pitch: Pitch,
 }
 
-/// Staff spaces beyond the last column that still count as that column.
+/// Staff spaces before the barline that count as the end of the measure.
 const END_OF_MEASURE_REACH: f32 = 2.5;
+/// A click this far right of a column still lands on that column's notehead.
+const NOTEHEAD_REACH: f32 = 1.2;
 /// How far from the middle of a staff a click still belongs to it.
 const STAFF_REACH: f32 = 4.5;
 
@@ -405,13 +407,15 @@ pub fn hit_test(score: &Score, list: &RenderList, x: f32, y: f32) -> Option<Hit>
     let staff = score.staff(area.staff).ok()?;
     let key = score.measures.get(area.measure)?.key_signature;
     let near_measure_end = x >= area.x_end - END_OF_MEASURE_REACH;
-    let tick = match area.columns.last() {
-        Some(&(_, last_x)) if !near_measure_end && x <= last_x + END_OF_MEASURE_REACH => area
-            .columns
+    // A click belongs to the notehead it lands on, or else to the next column to its right;
+    // with none to the right, it is at the end of the measure.
+    let tick = if near_measure_end {
+        None
+    } else {
+        area.columns
             .iter()
-            .min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs()))
-            .map(|&(tick, _)| tick),
-        _ => None,
+            .find(|&&(_, column_x)| x <= column_x + NOTEHEAD_REACH)
+            .map(|&(tick, _)| tick)
     };
     Some(Hit {
         staff: area.staff,
