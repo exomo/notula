@@ -313,6 +313,65 @@ const END_OF_MEASURE_REACH: f32 = 2.5;
 /// How far from the middle of a staff a click still belongs to it.
 const STAFF_REACH: f32 = 4.5;
 
+/// The staves and time a box drawn over the page covers, as a selection: staves whose lines
+/// it touches, and the note columns inside it. An empty measure it touches counts in full.
+pub fn box_selection(
+    score: &Score,
+    list: &RenderList,
+    (x0, y0): (f32, f32),
+    (x1, y1): (f32, f32),
+) -> Option<notula_model::selection::Selection> {
+    let (left, right) = (x0.min(x1), x0.max(x1));
+    let (top, bottom) = (y0.min(y1), y0.max(y1));
+    let mut measure_starts = Vec::with_capacity(score.measures.len() + 1);
+    let mut tick = 0_u64;
+    for info in &score.measures {
+        measure_starts.push(tick);
+        tick += u64::from(info.capacity());
+    }
+    measure_starts.push(tick);
+
+    let mut staves = Vec::new();
+    let (mut start, mut end) = (u64::MAX, 0_u64);
+    for area in &list.areas {
+        let touches_staff = area.y_top <= bottom && top <= area.y_top + STAFF_HEIGHT;
+        let touches_measure = area.x_start <= right && left <= area.x_end;
+        if !touches_staff || !touches_measure {
+            continue;
+        }
+        let measure_start = measure_starts[area.measure];
+        let ticks: Vec<u64> = area
+            .columns
+            .iter()
+            .filter(|(_, x)| left <= *x && *x <= right)
+            .map(|(column, _)| measure_start + u64::from(*column))
+            .collect();
+        if area.columns.is_empty() {
+            start = start.min(measure_start);
+            end = end.max(measure_starts[area.measure + 1]);
+        } else if let (Some(first), Some(last)) = (ticks.iter().min(), ticks.iter().max()) {
+            // The last column's notes are completed when the selection is resolved.
+            start = start.min(*first);
+            end = end.max(last + 1);
+        } else {
+            continue;
+        }
+        if !staves.contains(&area.staff) {
+            staves.push(area.staff);
+        }
+    }
+    if staves.is_empty() || start >= end {
+        return None;
+    }
+    let order: Vec<StaffId> = score.staves().map(|staff| staff.id).collect();
+    staves.sort_by_key(|staff| order.iter().position(|id| id == staff));
+    Some(notula_model::selection::Selection::range(
+        staves[0],
+        *staves.last()?,
+        notula_model::selection::Span { start, end },
+    ))
+}
+
 pub fn hit_test(score: &Score, list: &RenderList, x: f32, y: f32) -> Option<Hit> {
     let area = list
         .areas

@@ -33,8 +33,15 @@
   {/if}
   <footer>
     <span class="mode">{editor.inputMode ? "Note input" : "Select"}</span>
-    {#if editor.hairpinMode}
-      <span>{editor.hairpinMode === "Crescendo" ? "Crescendo" : "Diminuendo"}: click a start note, then an end note (the same note for one note) · Esc cancels</span>
+    {#if editor.rangeSelection && !editor.hairpinMode && !editor.slurMode && !editor.phraseSlurMode}
+      <span>Selection: Shift+←/→ by note · Shift+Ctrl+←/→ by measure · Shift+↑/↓ staves · Shift+click extends · Esc clears</span>
+    {:else if editor.hairpinMode}
+      {@const name = editor.hairpinMode === "Crescendo" ? "Crescendo" : "Diminuendo"}
+      {#if editor.hairpinStart === null}
+        <span>{name}: click the note where it starts · Esc cancels</span>
+      {:else}
+        <span>{name}: click the note where it ends, or the same note again to put it on that note alone · Esc cancels</span>
+      {/if}
     {:else if editor.slurMode || editor.phraseSlurMode}
       <span>{editor.phraseSlurMode ? "Phrase slur" : "Slur"}: click a start note, then an end note · Esc cancels</span>
     {:else if editor.message}

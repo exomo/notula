@@ -51,6 +51,52 @@ export interface TempoChangeMark {
   hidden?: boolean;
 }
 
+/** Score time in ticks from the start of the score, end exclusive. */
+export interface Span {
+  start: number;
+  end: number;
+}
+
+/** A range selection: a time span across a run of staves, optionally one voice only. */
+export interface Selection {
+  anchor_staff: number;
+  anchor_voice: number;
+  anchor: Span;
+  focus_staff: number;
+  focus: Span;
+  voice: number | null;
+}
+
+export type SelectionStep =
+  | "next"
+  | "previous"
+  | "next_measure"
+  | "previous_measure"
+  | "staff_up"
+  | "staff_down";
+
+/** The part of one measure a selection covers, in ticks within that measure. */
+export interface MeasureSpan {
+  measure: number;
+  start: number;
+  end: number;
+  to_end: boolean;
+}
+
+export interface SelectionInfo {
+  selection: Selection;
+  resolved: { staves: number[]; span: Span; measures: MeasureSpan[]; events: number[] };
+}
+
+export type SelectionRequest =
+  | { kind: "at_cursor"; cursor: Cursor }
+  | { kind: "event"; event: number }
+  | { kind: "all" }
+  | { kind: "extend"; selection: Selection; step: SelectionStep }
+  | { kind: "extend_to"; selection: Selection; event: number }
+  | { kind: "box"; width: number; from: [number, number]; to: [number, number] }
+  | { kind: "resolve"; selection: Selection };
+
 export interface Pitch {
   step: Step;
   alter: number;
@@ -209,6 +255,7 @@ export const api = {
   toggleHairpin: (start: number, end: number, kind: Hairpin) =>
     invoke<Edited>("toggle_hairpin", { start, end, kind }),
   removeHairpin: (event: number) => invoke<Edited>("remove_hairpin", { event }),
+  select: (request: SelectionRequest) => invoke<SelectionInfo | null>("select", { request }),
   removeSlur: (event: number, phrase: boolean) => invoke<Edited>("remove_slur", { event, phrase }),
   tempoDirectionAt: (measure: number, tick: number) =>
     invoke<TempoDirection | null>("tempo_direction_at", { measure, tick }),

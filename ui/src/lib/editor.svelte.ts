@@ -9,6 +9,10 @@ import {
   type EventArticulations,
   type NoteValue,
   type Pitch,
+  type Selection,
+  type SelectionInfo,
+  type SelectionRequest,
+  type SelectionStep,
   type PlaybackStatus,
   type SlurPlacement,
   type Status,
@@ -87,6 +91,9 @@ class Editor {
   });
   cursor = $state<Cursor | null>(null);
   selected = $state<number | null>(null);
+  /** A range selection across notes, staves, and voices; separate from `selected`. */
+  rangeSelection = $state<SelectionInfo | null>(null);
+  selectedEvents = $derived(new Set(this.rangeSelection?.resolved.events ?? []));
   eventArticulations = $state<EventArticulations | null>(null);
   selectedTone = $state<{ event: number; pitch: Pitch; y: number } | null>(null);
   slurMode = $state(false);
@@ -123,6 +130,7 @@ class Editor {
   private articulationRequest = 0;
   private tempoDirectionRequest = 0;
   private tempoChangeRequest = 0;
+  private selectionRequest = 0;
 
   zoomIn() {
     this.zoom = Math.min(MAX_ZOOM, this.zoom + 1);
@@ -183,6 +191,68 @@ class Editor {
       this.selected = edited.selected;
     }
     this.revision++;
+    // The same staves and time span may now hold different notes.
+    const range = this.rangeSelection;
+    if (range) void this.applySelection({ kind: "resolve", selection: range.selection });
+  }
+
+  private async applySelection(request: SelectionRequest) {
+    const id = ++this.selectionRequest;
+    const info = await this.run(() => api.select(request));
+    if (id !== this.selectionRequest || info === undefined) return;
+    this.rangeSelection = info;
+  }
+
+  /** The current range selection, or one started from the selected note or the cursor. */
+  private async selectionBase(): Promise<Selection | null> {
+    if (this.rangeSelection) return this.rangeSelection.selection;
+    const request: SelectionRequest | null =
+      this.selected !== null
+        ? { kind: "event", event: this.selected }
+        : this.cursor
+          ? { kind: "at_cursor", cursor: this.cursor }
+          : null;
+    if (!request) return null;
+    return (await this.run(() => api.select(request)))?.selection ?? null;
+  }
+
+  async extendSelection(step: SelectionStep) {
+    const base = await this.selectionBase();
+    if (!base) {
+      this.message = "Select a note or click in the score first.";
+      return;
+    }
+    await this.applySelection({ kind: "extend", selection: base, step });
+  }
+
+  async extendSelectionTo(event: number) {
+    const base = await this.selectionBase();
+    if (!base) {
+      await this.applySelection({ kind: "event", event });
+      return;
+    }
+    await this.applySelection({ kind: "extend_to", selection: base, event });
+  }
+
+  async selectAll() {
+    await this.applySelection({ kind: "all" });
+  }
+
+  async selectBox(from: [number, number], to: [number, number]) {
+    this.selected = null;
+    this.selectedTone = null;
+    await this.applySelection({ kind: "box", width: this.layoutWidth, from, to });
+  }
+
+  async setSelectionVoice(voice: number | null) {
+    const range = this.rangeSelection;
+    if (!range) return;
+    await this.applySelection({ kind: "resolve", selection: { ...range.selection, voice } });
+  }
+
+  clearSelection() {
+    this.selectionRequest++;
+    this.rangeSelection = null;
   }
 
   private async run<T>(action: () => Promise<T>): Promise<T | undefined> {
@@ -285,6 +355,11 @@ class Editor {
 
   async clickStaff(x: number, y: number, shift = false) {
     const hit = await this.run(() => api.hitTest(this.layoutWidth, x, y, this.cursor?.voice ?? 0));
+    if (shift && !this.inputMode && hit?.note != null) {
+      await this.extendSelectionTo(hit.note);
+      return;
+    }
+    this.clearSelection();
     if (!hit) {
       this.selected = null;
       return;
@@ -340,6 +415,12 @@ class Editor {
   }
 
   async clickEvent(id: number, x: number, y: number, shift = false) {
+    // In note input, Shift+click adds a tone to a chord instead.
+    if (shift && !this.inputMode && !this.hairpinMode && !this.slurMode && !this.phraseSlurMode) {
+      await this.extendSelectionTo(id);
+      return;
+    }
+    this.clearSelection();
     const eventCursor = await this.run(() => api.selectEvent(id));
     if (!eventCursor) return;
     if (this.hairpinMode) {
@@ -439,8 +520,9 @@ class Editor {
     }
     this.cancelSlurMode();
     this.hairpinMode = kind;
+    // A selected note is the start; the footer explains the next click.
     this.hairpinStart = this.selected;
-    this.message = this.hairpinStart === null ? null : "Hairpin start selected. Click the ending note.";
+    this.message = null;
   }
 
   cancelHairpinMode() {
@@ -458,7 +540,6 @@ class Editor {
     const start = this.hairpinStart;
     if (start === null) {
       this.hairpinStart = event;
-      this.message = "Hairpin start selected. Click the ending note.";
       return;
     }
     this.cancelHairpinMode();
@@ -707,6 +788,7 @@ class Editor {
   async moveCursor(forward: boolean, movement = "step") {
     const cursor = this.cursor;
     if (cursor === null) return;
+    this.clearSelection();
     this.selectedTone = null;
     const next = await this.run(() => api.moveCursor(cursor, this.selected, forward, movement));
     if (next) {
@@ -912,6 +994,14 @@ class Editor {
         case "n":
           this.newScoreOpen = true;
           return true;
+        case "a":
+          void this.selectAll();
+          return true;
+        case "arrowleft":
+        case "arrowright":
+          if (!event.shiftKey) return false;
+          void this.extendSelection(key === "ArrowLeft" ? "previous_measure" : "next_measure");
+          return true;
         case "arrowup":
           if (this.selectedTone !== null) void this.transposeChordTone(12);
           else void this.transposeOctave(1);
@@ -925,6 +1015,16 @@ class Editor {
       }
     }
     if (event.altKey && !key.startsWith("Arrow")) return false;
+
+    if (event.shiftKey && !event.altKey) {
+      const step = (
+        { ArrowLeft: "previous", ArrowRight: "next", ArrowUp: "staff_up", ArrowDown: "staff_down" } as const
+      )[key as "ArrowLeft"];
+      if (step) {
+        void this.extendSelection(step);
+        return true;
+      }
+    }
 
     if (/^[a-g]$/i.test(key)) {
       const step = key.toUpperCase() as Step;
@@ -963,7 +1063,8 @@ class Editor {
         void this.toggleDot();
         return true;
       case "Escape":
-        if (this.hairpinMode) this.cancelHairpinMode();
+        if (this.rangeSelection) this.clearSelection();
+        else if (this.hairpinMode) this.cancelHairpinMode();
         else if (this.slurMode || this.phraseSlurMode) this.cancelSlurMode();
         else if (this.inputMode) this.disableInputMode();
         else this.selected = null;

@@ -1158,3 +1158,84 @@ fn hairpins_continue_across_system_breaks() {
         assert!((end - start).abs() < 0.05);
     }
 }
+
+#[test]
+fn a_box_selects_the_staves_and_note_columns_it_covers() {
+    use notula_layout::box_selection;
+    use notula_model::selection::Span;
+    let mut builder = Builder::new(&[("Piano", &[Clef::Treble, Clef::Bass])]);
+    builder.measures(2);
+    let quarters: Vec<_> = (0..4)
+        .map(|_| builder.note(0, 0, Pitch::new(Step::C, 0, 5), NoteValue::Quarter))
+        .collect();
+    builder.note(1, 0, Pitch::new(Step::C, 0, 3), NoteValue::Whole);
+    let staves = builder.staves.clone();
+    let list = builder.layout(100.0);
+    let area = |staff, measure| {
+        list.areas
+            .iter()
+            .find(|area| area.staff == staff && area.measure == measure)
+            .unwrap()
+            .clone()
+    };
+    let upper = area(staves[0], 0);
+    let lower = area(staves[1], 0);
+    let x = |tick: u32| {
+        upper
+            .columns
+            .iter()
+            .find(|column| column.0 == tick)
+            .unwrap()
+            .1
+    };
+
+    // Around the second and third quarter of the upper staff only.
+    let around_two = box_selection(
+        builder.doc.score(),
+        &list,
+        (x(960) - 0.5, upper.y_top - 1.0),
+        (x(1920) + 0.5, upper.y_top + 5.0),
+    )
+    .unwrap();
+    let resolved = around_two.resolve(builder.doc.score()).unwrap();
+    assert_eq!(resolved.staves, vec![staves[0]]);
+    assert_eq!(
+        resolved.span,
+        Span {
+            start: 960,
+            end: 2880
+        }
+    );
+    assert_eq!(resolved.events, vec![quarters[1], quarters[2]]);
+
+    // Dragged from the lower staff up: both staves; the lower staff's whole note starts at 0,
+    // outside the box, so it is not selected.
+    let both = box_selection(
+        builder.doc.score(),
+        &list,
+        (x(1920) + 0.5, lower.y_top + 4.0),
+        (x(960) - 0.5, upper.y_top),
+    )
+    .unwrap();
+    assert_eq!(both.resolve(builder.doc.score()).unwrap().staves, staves);
+
+    // An empty measure counts in full.
+    let empty = area(staves[0], 1);
+    let in_empty = box_selection(
+        builder.doc.score(),
+        &list,
+        (empty.x_start + 1.0, empty.y_top + 1.0),
+        (empty.x_start + 2.0, empty.y_top + 2.0),
+    )
+    .unwrap();
+    assert_eq!(
+        in_empty.span(),
+        Span {
+            start: 3840,
+            end: 7680
+        }
+    );
+
+    // Empty paper selects nothing.
+    assert!(box_selection(builder.doc.score(), &list, (0.0, 0.0), (1.0, 1.0)).is_none());
+}

@@ -9,6 +9,7 @@ mod ids;
 mod markings;
 mod pitch;
 mod score;
+pub mod selection;
 
 pub use command::Command;
 pub use duration::{

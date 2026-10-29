@@ -28,6 +28,27 @@
     Number.isInteger(tempoUnitsChoice) && tempoUnitsChoice >= 1 && tempoUnitsChoice <= 1000,
   );
   const selectedNote = $derived(editor.selected !== null ? editor.eventArticulations : null);
+  const range = $derived(editor.rangeSelection);
+  const rangeSummary = $derived.by(() => {
+    if (!range) return "";
+    const { events, measures, staves } = range.resolved;
+    const first = measures[0]?.measure ?? 0;
+    const last = measures[measures.length - 1]?.measure ?? first;
+    const measureText = first === last ? `measure ${first + 1}` : `measures ${first + 1}–${last + 1}`;
+    const staffText = staves.length === 1 ? "1 staff" : `${staves.length} staves`;
+    const itemText = events.length === 1 ? "1 note or rest" : `${events.length} notes and rests`;
+    return `${itemText} · ${measureText} · ${staffText}`;
+  });
+  // Voices that occur in the selected staves and measures.
+  const rangeVoices = $derived.by(() => {
+    if (!range) return 1;
+    const staves = new Set(range.resolved.staves);
+    const measures = new Set(range.resolved.measures.map((span) => span.measure));
+    const counts = editor.areas
+      .filter((area) => staves.has(area.staff) && measures.has(area.measure))
+      .map((area) => area.voice_count);
+    return Math.max(1, (range.selection.voice ?? 0) + 1, ...counts);
+  });
   // A new hairpin or slur can start where none is, or replace one starting at the selection.
   const hairpinPosition = $derived(selectedNote?.hairpin ?? null);
   const slurPosition = $derived(selectedNote?.slur ?? null);
@@ -78,6 +99,32 @@
   onclick={returnFocusAfterClick}
   onchange={returnFocusAfterChoice}
 >
+  {#if range}
+    <section class="selection">
+      <h2>Selection</h2>
+      <p class="hint">{rangeSummary}</p>
+      <label class="field">
+        <span>Voices</span>
+        <select
+          aria-label="Voices in the selection"
+          value={range.selection.voice === null ? "" : String(range.selection.voice)}
+          onchange={(event) => {
+            const value = event.currentTarget.value;
+            void editor.setSelectionVoice(value === "" ? null : Number(value));
+          }}
+        >
+          <option value="">All voices</option>
+          {#each Array.from({ length: rangeVoices }, (_, index) => index) as voice}
+            <option value={String(voice)}>Voice {voice + 1}</option>
+          {/each}
+        </select>
+      </label>
+      <div class="row">
+        <button onclick={() => editor.clearSelection()} title="Clear the selection (Esc)">Clear</button>
+      </div>
+    </section>
+  {/if}
+
   <section>
     <h2>Dynamic</h2>
     {#if selectedNote}
@@ -309,6 +356,11 @@
     overflow-y: auto;
     border-left: 1px solid var(--line);
     background: var(--toolbar);
+  }
+
+  section.selection {
+    border-color: rgba(26, 115, 232, 0.45);
+    background: rgba(26, 115, 232, 0.04);
   }
 
   section {

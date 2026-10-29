@@ -10,6 +10,7 @@ Implemented capabilities include score setup and properties, instruments and mul
 
 ## Recent Completed Work
 
+- Multi-selection, step 1 (model, display, controls), as planned in [Planned: multi-selection](#planned-multi-selection). `notula_model::selection` holds the range selection (anchor and focus spans, staves between anchor and focus staff, optional voice filter), keyboard steps, select all, Shift+click extension, and resolving to selected events and per-measure spans after growing to whole notes; `notula_layout::box_selection` maps a dragged box to a selection. One Tauri command, `select`, handles all requests. The UI keeps it in `editor.rangeSelection` (re-resolved after every edit), highlights selected notes, draws one box per measure across the selected staves, shows a Selection section with summary, voice filter, and Clear in the side panel, and lists the keys in the footer. Shift+click extends only in select mode, since in note input it adds a chord tone. No operations use the selection yet.
 - Dynamics and hairpins can be edited, are engraved, and round-trip through MusicXML. They stay on the events of one staff (so instruments, and staves of one instrument, can differ), matching MusicXML. Playback ignores them for now.
   - Model: `Markings::dynamic`, plus `hairpin_start: Option<Hairpin>` and `hairpin_stop: bool` like slurs; `Hairpin` is `Crescendo`/`Diminuendo`. `notula_model::edit::hairpins()` pairs them per staff and voice: at an event, a stop closes the open hairpin before a start opens the next; with none open, a start comes first. So one event can hold a whole hairpin (one note) or end one and start the next ("< >"). Files with the older single `hairpin` field (`Crescendo`/`Diminuendo`/`End`) still load; an old `End` becomes a stop on that event, so such a hairpin now runs through that event instead of ending at it.
   - Editing: `set_dynamic`, `toggle_hairpin(start, end, kind)` (same voice, may be one event, overlaps rejected except touching at a shared event, a new hairpin from the same start replaces the old), `remove_hairpin(event)`, `hairpin_at(event)`. Toolbar: a dynamic select for the selected note or rest, Cresc./Dim. modes that work like the slur tool (start note, then end note, Esc cancels), and Remove hairpin.
@@ -26,11 +27,14 @@ Implemented capabilities include score setup and properties, instruments and mul
 
 ## Suggested Next Work
 
-1. Polish volume marks: between the staves of a grand staff (5 spaces apart) the dynamics line can come close to ledger-line notes above it, and up-stems of the lower staff reach into it; consider local collision avoidance or more room between staves. Also consider text dynamics and hairpin variants ("cresc.", "dim.", niente circles), dynamics shared by both staves of one instrument, and keyboard shortcuts.
-2. Make rit./accel./rall. affect playback; see [Planned: tempo transitions](#planned-tempo-transitions).
-3. Playback, to be designed as one larger topic later: dynamics and hairpins (velocity and gradual volume), tempo transitions, and an option to start playback at the current cursor position instead of the beginning of the score. None of this is implemented yet; the first dynamics change is notation, editing, and MusicXML only.
-4. Consider tempo text such as "Allegro" (with an optional metronome) as a score-wide mark; MusicXML import currently drops it.
-5. PNG/PDF export loads only Bravura into usvg, so plain text items (part names, tempo text) likely fall back to an unavailable font there. Verify and load or embed a text font if needed.
+1. **Next: operations on selections** (multi-selection step 2: delete, transpose, articulations; then shift as step 3), building on the finished selection model. Shifting single notes alone was judged too limited; shifting a selection is the first time operation to build on it. See [Planned: multi-selection](#planned-multi-selection) and [Planned: horizontal note shifting](#planned-horizontal-note-shifting).
+2. Copy and paste, transpose, and other operations on selections, building on the selection model.
+3. Repeats and other barline types, for later (repeat barlines, possibly endings and double barlines). They affect playback order as well as notation and MusicXML; MusicXML import currently reports barline styles and repeats as unsupported.
+4. Polish volume marks: between the staves of a grand staff (5 spaces apart) the dynamics line can come close to ledger-line notes above it, and up-stems of the lower staff reach into it; consider local collision avoidance or more room between staves. Also consider text dynamics and hairpin variants ("cresc.", "dim.", niente circles), dynamics shared by both staves of one instrument, and keyboard shortcuts.
+5. Make rit./accel./rall. affect playback; see [Planned: tempo transitions](#planned-tempo-transitions).
+6. Playback, to be designed as one larger topic later: dynamics and hairpins (velocity and gradual volume), tempo transitions, and an option to start playback at the current cursor position instead of the beginning of the score. None of this is implemented yet; the first dynamics change is notation, editing, and MusicXML only.
+7. Consider tempo text such as "Allegro" (with an optional metronome) as a score-wide mark; MusicXML import currently drops it.
+8. PNG/PDF export loads only Bravura into usvg, so plain text items (part names, tempo text) likely fall back to an unavailable font there. Verify and load or embed a text font if needed.
 
 These are recommendations based on current code, not committed feature promises. Follow the user's latest request if priorities differ.
 
@@ -56,6 +60,42 @@ Agreed direction for making `rit.`, `rall.`, and `accel.` change playback speed,
 - On import, fold `<sound tempo>` steps that fall inside a recognized `rit.`/`accel.` extent into one transition (end of the extent, last value as target) instead of creating many tempo changes, so a Notula round trip returns the same single transition.
 
 A dedicated playback annotation mode (timeline view, curve shapes, per-note timing) is a later topic; `TempoTransition` can gain a curve field without a format break.
+
+## Planned: Multi-Selection
+
+Agreed model, informed by MuseScore's range and list selections, Sibelius's passage selection, and Dorico's simpler selected-or-not model. None of these handles ranges that cut through notes cleanly; Dorico's developers call partial-note copying "complex".
+
+- **A selection is staves × time × voices:** a contiguous range of staves, a time interval between two rhythmic positions, and a voice filter. One voice is one staff with a voice filter; one instrument is its staves; the whole score is all staves. Score-wide marks (tempo) are not part of a selection yet.
+- **Membership:** in each selected staff and voice, an event belongs to the selection when it starts inside the interval. With notes of different lengths in different staves, a long note starting inside is included.
+- **Edges cut through notes:** the selection grows so its end covers every included note. The highlighted box therefore always contains whole notes, and can become wider than the position extended to. (Splitting with ties at the edge was considered and left out.)
+- **Voice filter:** selections include all voices by default; an explicit filter in the side panel (All / Voice 1 / Voice 2 …) narrows them, like MuseScore's selection filter.
+- **Keyboard:** Shift+←/→ moves the selection end by one note in the staff and voice where the selection started; Shift+Ctrl+←/→ by a measure; Shift+↑/↓ adds or removes staves; Ctrl+A selects everything; Esc clears it. Starting from a selected note or the cursor, the first Shift+arrow creates the selection.
+- **Mouse:** Shift+click extends the selection to the clicked note; dragging on empty score space draws a selection box that snaps to staves and rhythmic positions. Dragging on notes (to move them) is left for later.
+- **Operations:**
+  - Per-note operations use the events that start inside: transpose, delete (notes become rests), articulations, dynamics.
+  - Time operations use the grown extent with whole notes: shift, and later copy and paste.
+  - A list selection of scattered notes (Ctrl+click) may come later, for per-note operations only.
+- **Display:** a translucent box over the selected staves and time span, with selected notes highlighted as the single selection is today.
+- **Status:** step 1 (model, display, keyboard and mouse controls, voice filter) is done. Remaining: step 2, per-note operations on selections (delete, transpose, articulations); step 3, shift; then copy and paste.
+
+## Planned: Horizontal Note Shifting
+
+Agreed behaviour for moving the selected note or chord earlier or later in time. Not implemented yet. It is to be built on multi-selection: a selection moves as a block per staff and voice by the rules below, all selected voices together, and if any of them is blocked, nothing moves.
+
+- **What moves:** the selected event in its own voice, with everything attached to it (articulations, dynamic, slur, phrase slur, and hairpin starts and ends). Other voices and staves stay unchanged. The time it leaves becomes rest. Rests themselves are not moved.
+- **Step:** the note value selected in the input bar, dot included. Choosing a smaller value gives finer steps.
+- **Only through rests:** the time the note moves into must be rest in its voice. A neighbouring note blocks the move with a footer message; there is no partial move. Because notes never pass each other, slurs, hairpins, and ties keep their order.
+- **Barlines:** the note may move into the previous or next measure when it fits completely into that measure's rests. A move that would make the note straddle a barline is blocked for now; splitting it into tied notes is a possible later extension.
+- **Edge cases:**
+  - Ties are removed when the moved note no longer touches its partner (its own tie to the next note, and a tie into it from the previous note).
+  - A rest that would be overwritten while carrying marks (dynamic, hairpin start or end, fermata) blocks the move, so marks are never lost silently.
+  - An additional voice that does not exist or has ended (explicit voice end) in the target measure blocks the move.
+  - Pickup measures use their shorter length.
+  - Remaining rest time is rewritten with the largest rest values that fit, as when entering notes.
+- **Result:** one undoable step; the selection and cursor follow the moved note.
+- **Controls:** Ctrl+←/→ in select and note input mode (Shift+←/→ stays reserved for multi-selection), and "◀ Earlier" / "Later ▶" buttons in the side panel showing the step (for example "by 1/8"), disabled when nothing is selected. Mouse dragging comes later, designed together with drag selection.
+- **Later extension to multi-selection:** a selection within one voice moves as a block by the same rules, applied at its outer edges.
+- **Implementation sketch:** a model edit such as `edit::shift_event(doc, event, forward, step)` that works on the voice's events across the current and neighbouring measures and applies all changes as one `Command::Batch`, with model tests for each rule above; a Tauri command and UI wiring follow the existing pattern.
 
 ## Useful Code Map
 

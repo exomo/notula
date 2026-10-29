@@ -3,11 +3,12 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use notula_layout::{LayoutOptions, RenderList};
 use notula_model::edit::{self, Cursor};
+use notula_model::selection::{ResolvedSelection, Selection, Step as SelectionStep};
 use notula_model::{
     Articulation, Document, Duration, Dynamic, EventId, EventKind, Hairpin, KeySignature, Pitch,
     Step, Tempo, TempoChangeMark, TempoDirection, TimeSignature, TimeSignatureDisplay,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
@@ -178,6 +179,76 @@ pub fn current_state(app: AppHandle, state: State<AppState>) -> Edited {
 pub fn render_score(state: State<AppState>, width: f32) -> RenderList {
     let session = state.lock();
     notula_layout::layout(session.doc.score(), &LayoutOptions { width })
+}
+
+/// How to create or change a range selection.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SelectionRequest {
+    /// The note or empty measure part at the cursor.
+    AtCursor {
+        cursor: Cursor,
+    },
+    Event {
+        event: EventId,
+    },
+    All,
+    Extend {
+        selection: Selection,
+        step: SelectionStep,
+    },
+    /// Shift+click on an event.
+    ExtendTo {
+        selection: Selection,
+        event: EventId,
+    },
+    /// A box dragged over the page, in staff spaces.
+    Box {
+        width: f32,
+        from: (f32, f32),
+        to: (f32, f32),
+    },
+    /// The same selection again, after the score changed.
+    Resolve {
+        selection: Selection,
+    },
+}
+
+#[derive(Serialize)]
+pub struct SelectionInfo {
+    selection: Selection,
+    resolved: ResolvedSelection,
+}
+
+#[tauri::command]
+pub fn select(state: State<AppState>, request: SelectionRequest) -> Option<SelectionInfo> {
+    let session = state.lock();
+    let score = session.doc.score();
+    let selection = match request {
+        SelectionRequest::AtCursor { cursor } => Selection::at(
+            score,
+            cursor.staff,
+            cursor.voice,
+            cursor.measure,
+            cursor.tick,
+        )?,
+        SelectionRequest::Event { event } => Selection::for_event(score, event)?,
+        SelectionRequest::All => Selection::all(score)?,
+        SelectionRequest::Extend { selection, step } => selection.extend(score, step),
+        SelectionRequest::ExtendTo { selection, event } => {
+            selection.extend_to_event(score, event)?
+        }
+        SelectionRequest::Box { width, from, to } => {
+            let list = notula_layout::layout(score, &LayoutOptions { width });
+            notula_layout::box_selection(score, &list, from, to)?
+        }
+        SelectionRequest::Resolve { selection } => selection,
+    };
+    let resolved = selection.resolve(score)?;
+    Some(SelectionInfo {
+        selection,
+        resolved,
+    })
 }
 
 #[derive(Serialize)]
