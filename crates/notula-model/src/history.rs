@@ -48,6 +48,36 @@ impl Document {
         Ok(())
     }
 
+    /// Runs several edits as one undo step. If `edits` fails, everything it changed is undone
+    /// and the history is left as it was.
+    pub fn transaction<T>(
+        &mut self,
+        edits: impl FnOnce(&mut Self) -> Result<T, ModelError>,
+    ) -> Result<T, ModelError> {
+        let depth = self.undo_stack.len();
+        let redo = self.redo_stack.clone();
+        let result = edits(self);
+        let mut inverses: Vec<Command> = self.undo_stack.drain(depth..).collect();
+        inverses.reverse();
+        match result {
+            Ok(value) => {
+                if !inverses.is_empty() {
+                    self.undo_stack.push(Command::Batch { commands: inverses });
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                for inverse in inverses {
+                    let undone = inverse.apply(&mut self.score);
+                    debug_assert!(undone.is_ok(), "inverse of an applied command failed");
+                }
+                self.redo_stack = redo;
+                self.revision += 1;
+                Err(error)
+            }
+        }
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo_stack.is_empty()
     }

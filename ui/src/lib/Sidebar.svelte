@@ -27,10 +27,16 @@
   const tempoChoiceValid = $derived(
     Number.isInteger(tempoUnitsChoice) && tempoUnitsChoice >= 1 && tempoUnitsChoice <= 1000,
   );
-  const selectedNote = $derived(editor.selected !== null ? editor.eventArticulations : null);
+  // Single-note controls stay off while a range selection is active.
+  const selectedNote = $derived(
+    editor.selected !== null && !editor.hasRangeSelection ? editor.eventArticulations : null,
+  );
   const range = $derived(editor.rangeSelection);
   const rangeSummary = $derived.by(() => {
     if (!range) return "";
+    if (!editor.hasRangeSelection) {
+      return `Cursor across ${range.resolved.staves.length} staves: notes you enter go into each.`;
+    }
     const { events, measures, staves } = range.resolved;
     const first = measures[0]?.measure ?? 0;
     const last = measures[measures.length - 1]?.measure ?? first;
@@ -103,22 +109,24 @@
     <section class="selection">
       <h2>Selection</h2>
       <p class="hint">{rangeSummary}</p>
-      <label class="field">
-        <span>Voices</span>
-        <select
-          aria-label="Voices in the selection"
-          value={range.selection.voice === null ? "" : String(range.selection.voice)}
-          onchange={(event) => {
-            const value = event.currentTarget.value;
-            void editor.setSelectionVoice(value === "" ? null : Number(value));
-          }}
-        >
-          <option value="">All voices</option>
-          {#each Array.from({ length: rangeVoices }, (_, index) => index) as voice}
-            <option value={String(voice)}>Voice {voice + 1}</option>
-          {/each}
-        </select>
-      </label>
+      {#if editor.hasRangeSelection}
+        <label class="field">
+          <span>Voices</span>
+          <select
+            aria-label="Voices in the selection"
+            value={range.selection.voice === null ? "" : String(range.selection.voice)}
+            onchange={(event) => {
+              const value = event.currentTarget.value;
+              void editor.setSelectionVoice(value === "" ? null : Number(value));
+            }}
+          >
+            <option value="">All voices</option>
+            {#each Array.from({ length: rangeVoices }, (_, index) => index) as voice}
+              <option value={String(voice)}>Voice {voice + 1}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
       <div class="row">
         <button onclick={() => editor.clearSelection()} title="Clear the selection (Esc)">Clear</button>
       </div>
@@ -141,6 +149,8 @@
           {/each}
         </select>
       </label>
+    {:else if editor.hasRangeSelection}
+      <p class="hint">Dynamics are set on one note; click a note to edit its dynamic.</p>
     {:else}
       <p class="hint">Select a note or rest to set its dynamic.</p>
     {/if}

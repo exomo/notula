@@ -47,177 +47,163 @@ fn piano() -> (Document, [StaffId; 2], Vec<EventId>, EventId) {
     (doc, staves, quarters, whole)
 }
 
+fn caret(doc: &Document, staff: StaffId, measure: usize, tick: u32) -> Selection {
+    Selection::caret(doc.score(), staff, 0, measure, tick).unwrap()
+}
+
 #[test]
-fn keyboard_steps_follow_the_anchor_voice() {
+fn a_cursor_selects_nothing_until_it_is_extended_like_text() {
     let (doc, staves, quarters, _) = piano();
     let score = doc.score();
-    let start = Selection::for_event(score, quarters[1]).unwrap();
-    assert_eq!(
-        start.span(),
-        Span {
-            start: 960,
-            end: 1920
-        }
-    );
+    let start = caret(&doc, staves[0], 0, 960);
+    let resolved = start.resolve(score).unwrap();
+    assert!(start.is_caret());
+    assert!(resolved.events.is_empty() && resolved.measures.is_empty());
+    assert_eq!(resolved.caret, 960);
 
-    let right = start.extend(score, Step::Next);
+    // Shift+right selects the next note and puts the cursor after it.
+    let one = start.extend(score, Step::Next);
+    let resolved = one.resolve(score).unwrap();
     assert_eq!(
-        right.span(),
+        (resolved.span, resolved.caret),
+        (
+            Span {
+                start: 960,
+                end: 1920
+            },
+            1920
+        )
+    );
+    assert_eq!(resolved.events, vec![quarters[1]]);
+    let two = one.extend(score, Step::Next);
+    assert_eq!(
+        two.span(),
         Span {
             start: 960,
             end: 2880
         }
     );
-    // Stepping back past the anchor selects to its left instead.
-    let left = right
+
+    // Stepping back past the start selects to its left, with the cursor at the left edge.
+    let back = two
+        .extend(score, Step::Previous)
         .extend(score, Step::Previous)
         .extend(score, Step::Previous);
+    let resolved = back.resolve(score).unwrap();
     assert_eq!(
-        left.span(),
-        Span {
-            start: 0,
-            end: 1920
-        }
+        (resolved.span, resolved.caret),
+        (Span { start: 0, end: 960 }, 0)
     );
     assert_eq!(
-        left.extend(score, Step::Previous),
-        left,
-        "no step before the first note"
+        back.extend(score, Step::Previous),
+        back,
+        "nothing before the start"
     );
 
-    // The empty second measure counts as one step.
-    let into_empty = Selection::for_event(score, quarters[3])
-        .unwrap()
-        .extend(score, Step::Next);
-    assert_eq!(
-        into_empty.span(),
-        Span {
-            start: 2880,
-            end: 7680
-        }
-    );
-
-    let resolved = start.resolve(score).unwrap();
-    assert_eq!(resolved.staves, vec![staves[0]]);
-    assert_eq!(resolved.events, vec![quarters[1]]);
-}
-
-#[test]
-fn measure_steps_move_the_moving_edge_to_barlines() {
-    let (doc, _, quarters, _) = piano();
-    let score = doc.score();
-    let start = Selection::for_event(score, quarters[1]).unwrap();
-
-    let to_measure_end = start.extend(score, Step::NextMeasure);
-    assert_eq!(
-        to_measure_end.span(),
-        Span {
-            start: 960,
-            end: 3840
-        }
-    );
-    let next_measure = to_measure_end.extend(score, Step::NextMeasure);
-    assert_eq!(
-        next_measure.span(),
-        Span {
-            start: 960,
-            end: 7680
-        }
-    );
-    assert_eq!(
-        next_measure.extend(score, Step::NextMeasure),
-        next_measure,
-        "no measure after the last"
-    );
-
-    // Stepping back shrinks to the previous barline, then crosses the anchor.
-    let back = next_measure.extend(score, Step::PreviousMeasure);
-    assert_eq!(
-        back.span(),
-        Span {
-            start: 960,
-            end: 3840
-        }
-    );
-    let past_anchor = back.extend(score, Step::PreviousMeasure);
-    assert_eq!(
-        past_anchor.span(),
-        Span {
-            start: 0,
-            end: 1920
-        }
-    );
-    assert_eq!(
-        past_anchor.extend(score, Step::PreviousMeasure),
-        past_anchor
-    );
-    let forward_again = past_anchor.extend(score, Step::NextMeasure);
-    assert_eq!(
-        forward_again.span(),
-        Span {
-            start: 960,
-            end: 3840
-        }
-    );
-}
-
-#[test]
-fn notes_starting_inside_grow_the_selection_to_whole_notes() {
-    let (doc, staves, quarters, whole) = piano();
-    let score = doc.score();
-    // One quarter in the upper staff, extended down to the lower staff with its whole note.
-    let both = Selection::for_event(score, quarters[0])
-        .unwrap()
-        .extend(score, Step::StaffDown);
-    let resolved = both.resolve(score).unwrap();
-    assert_eq!(resolved.staves, staves.to_vec());
+    // An empty measure is one step.
+    let empty = caret(&doc, staves[0], 1, 0).extend(score, Step::Next);
+    let resolved = empty.resolve(score).unwrap();
     assert_eq!(
         resolved.span,
         Span {
-            start: 0,
-            end: 3840
+            start: 3840,
+            end: 7680
         }
     );
-    // Growing to the whole note brings in the quarters that start in the grown part.
-    let mut events = resolved.events.clone();
-    events.sort_by_key(|id| id.0);
-    let mut expected = [quarters.clone(), vec![whole]].concat();
-    expected.sort_by_key(|id| id.0);
-    assert_eq!(events, expected);
+    assert!(resolved.events.is_empty());
     assert_eq!(
         resolved.measures,
         vec![MeasureSpan {
-            measure: 0,
+            measure: 1,
             start: 0,
             end: 3840,
             to_end: true,
         }]
     );
+}
 
-    assert_eq!(both.extend(score, Step::StaffDown), both, "no staff below");
-    let up = both.extend(score, Step::StaffUp);
+#[test]
+fn measure_steps_stop_at_barlines() {
+    let (doc, staves, _, _) = piano();
+    let score = doc.score();
+    let start = caret(&doc, staves[0], 0, 960);
+    let first = start.extend(score, Step::NextMeasure);
+    assert_eq!(
+        first.span(),
+        Span {
+            start: 960,
+            end: 3840
+        }
+    );
+    let second = first.extend(score, Step::NextMeasure);
+    assert_eq!(
+        second.span(),
+        Span {
+            start: 960,
+            end: 7680
+        }
+    );
+    assert_eq!(
+        second.extend(score, Step::NextMeasure),
+        second,
+        "no barline after the end"
+    );
+    let back = second
+        .extend(score, Step::PreviousMeasure)
+        .extend(score, Step::PreviousMeasure);
+    assert_eq!(back.span(), Span { start: 0, end: 960 });
+}
+
+#[test]
+fn a_cursor_spans_staves_and_grows_to_whole_notes_once_extended() {
+    let (doc, staves, quarters, whole) = piano();
+    let score = doc.score();
+    let spanning = caret(&doc, staves[0], 0, 0).extend(score, Step::StaffDown);
+    let resolved = spanning.resolve(score).unwrap();
+    assert!(spanning.is_caret());
+    assert_eq!(resolved.staves, staves.to_vec());
+    assert!(resolved.events.is_empty());
+    assert_eq!(
+        spanning.extend(score, Step::StaffDown),
+        spanning,
+        "no staff below"
+    );
+
+    // One step selects the first quarter and the whole note, which grows it to the barline
+    // and brings in the quarters starting in the grown part; the cursor follows the growth.
+    let resolved = spanning.extend(score, Step::Next).resolve(score).unwrap();
+    assert_eq!(
+        (resolved.span, resolved.caret),
+        (
+            Span {
+                start: 0,
+                end: 3840
+            },
+            3840
+        )
+    );
+    let mut events = resolved.events.clone();
+    events.sort_by_key(|id| id.0);
+    let mut expected = [quarters.clone(), vec![whole]].concat();
+    expected.sort_by_key(|id| id.0);
+    assert_eq!(events, expected);
+
+    let up = spanning.extend(score, Step::StaffUp);
     assert_eq!(up.resolve(score).unwrap().staves, vec![staves[0]]);
 }
 
 #[test]
 fn a_voice_filter_limits_the_selection() {
     let (mut doc, staves, quarters, _) = piano();
-    let measure_voices = |doc: &Document| {
-        doc.score().staff(staves[0]).unwrap().measures[0]
-            .voices
-            .len()
-    };
-    let cursor = Cursor {
-        staff: staves[0],
-        measure: 0,
-        voice: 0,
-        tick: 0,
-    };
     edit::add_voice(&mut doc, staves[0], 0).unwrap();
-    assert_eq!(measure_voices(&doc), 2);
     let second = enter_note(
         &mut doc,
-        Cursor { voice: 1, ..cursor },
+        Cursor {
+            staff: staves[0],
+            measure: 0,
+            voice: 1,
+            tick: 0,
+        },
         Pitch::new(PitchStep::E, 0, 4),
         Duration::new(NoteValue::Half, 0),
     )
@@ -236,21 +222,37 @@ fn a_voice_filter_limits_the_selection() {
 }
 
 #[test]
-fn clicks_extend_to_events_and_select_all_covers_the_score() {
+fn clicks_extend_in_either_direction_and_select_all_covers_the_score() {
     let (doc, staves, quarters, whole) = piano();
     let score = doc.score();
-    let clicked = Selection::for_event(score, quarters[2])
-        .unwrap()
-        .extend_to_event(score, whole)
-        .unwrap();
-    let resolved = clicked.resolve(score).unwrap();
+    let start = caret(&doc, staves[0], 0, 1920);
+
+    let later = start.extend_to_event(score, quarters[3]).unwrap();
+    let resolved = later.resolve(score).unwrap();
+    assert_eq!(
+        (resolved.span, resolved.caret),
+        (
+            Span {
+                start: 1920,
+                end: 3840
+            },
+            3840
+        )
+    );
+
+    // The whole note starts before the cursor: the selection reaches back to its start.
+    let earlier = start.extend_to_event(score, whole).unwrap();
+    let resolved = earlier.resolve(score).unwrap();
     assert_eq!(resolved.staves, staves.to_vec());
     assert_eq!(
-        resolved.span,
-        Span {
-            start: 0,
-            end: 3840
-        }
+        (resolved.span, resolved.caret),
+        (
+            Span {
+                start: 0,
+                end: 3840
+            },
+            0
+        )
     );
 
     let all = Selection::all(score).unwrap().resolve(score).unwrap();
@@ -263,7 +265,6 @@ fn clicks_extend_to_events_and_select_all_covers_the_score() {
         }
     );
     assert_eq!(all.events.len(), 5);
-    assert_eq!(all.measures.len(), 2);
 
     let box_drawn = Selection::range(
         staves[1],
@@ -273,9 +274,149 @@ fn clicks_extend_to_events_and_select_all_covers_the_score() {
             end: 1920,
         },
     );
-    let resolved = box_drawn.resolve(score).unwrap();
     assert!(
-        resolved.events.is_empty(),
-        "the whole note starts before the box"
+        box_drawn.resolve(score).unwrap().events.is_empty(),
+        "the whole note starts before"
     );
+
+    // A barline position belongs to the next measure, except at the end of the score.
+    assert_eq!(notula_model::selection::position(score, 3840), (1, 0));
+    assert_eq!(notula_model::selection::position(score, 7680), (1, 3840));
+    assert_eq!(notula_model::selection::absolute(score, 1, 960), Some(4800));
+}
+
+fn pitches(doc: &Document, id: EventId) -> Vec<Pitch> {
+    let located = edit::locate(doc.score(), id).unwrap();
+    let staff = doc.score().staff(located.cursor.staff).unwrap();
+    match &staff.measures[located.cursor.measure].voices[located.cursor.voice].events[located.index]
+        .kind
+    {
+        notula_model::EventKind::Chord { pitches, .. } => pitches.clone(),
+        notula_model::EventKind::Rest => Vec::new(),
+    }
+}
+
+#[test]
+fn selected_notes_transpose_together_and_undo_in_one_step() {
+    let (mut doc, _, quarters, whole) = piano();
+    let selection = Selection::for_event(doc.score(), quarters[0])
+        .unwrap()
+        .extend(doc.score(), Step::StaffDown);
+    let events = selection.resolve(doc.score()).unwrap().events;
+    assert_eq!(events.len(), 5, "four quarters and the whole note");
+
+    assert_eq!(edit::transpose_events(&mut doc, &events, 2, 0).unwrap(), 5);
+    assert_eq!(
+        pitches(&doc, quarters[0]),
+        vec![Pitch::new(PitchStep::D, 0, 5)]
+    );
+    assert_eq!(pitches(&doc, whole), vec![Pitch::new(PitchStep::D, 0, 3)]);
+    edit::transpose_events(&mut doc, &events, 0, 1).unwrap();
+    assert_eq!(pitches(&doc, whole), vec![Pitch::new(PitchStep::D, 0, 4)]);
+    doc.undo().unwrap();
+    doc.undo().unwrap();
+    assert_eq!(pitches(&doc, whole), vec![Pitch::new(PitchStep::C, 0, 3)]);
+
+    // Too far for one note means no note moves.
+    let before = doc.score().clone();
+    assert!(edit::transpose_events(&mut doc, &events, 0, 10).is_err());
+    assert_eq!(doc.score(), &before);
+}
+
+#[test]
+fn selected_notes_are_deleted_to_rests() {
+    let (mut doc, _, quarters, _) = piano();
+    let selection = Selection::for_event(doc.score(), quarters[1])
+        .unwrap()
+        .extend(doc.score(), Step::Next);
+    let events = selection.resolve(doc.score()).unwrap().events;
+    assert_eq!(edit::delete_events(&mut doc, &events).unwrap(), 2);
+    assert!(pitches(&doc, quarters[1]).is_empty());
+    assert!(pitches(&doc, quarters[2]).is_empty());
+    assert_eq!(pitches(&doc, quarters[0]).len(), 1);
+    // Deleting rests again changes nothing and adds no undo step.
+    assert_eq!(edit::delete_events(&mut doc, &events).unwrap(), 0);
+    doc.undo().unwrap();
+    assert_eq!(pitches(&doc, quarters[2]).len(), 1);
+}
+
+#[test]
+fn articulations_toggle_for_the_whole_selection() {
+    use notula_model::Articulation;
+    let (mut doc, _, quarters, _) = piano();
+    edit::toggle_articulation(&mut doc, quarters[0], Articulation::Staccato).unwrap();
+    edit::delete_event(&mut doc, quarters[3]).unwrap();
+    let events = Selection::for_event(doc.score(), quarters[0])
+        .unwrap()
+        .extend(doc.score(), Step::NextMeasure)
+        .resolve(doc.score())
+        .unwrap()
+        .events;
+    assert_eq!(events.len(), 4);
+    assert!(edit::common_articulations(doc.score(), &events).is_empty());
+
+    // Only one note had it, so all notes get it; the rest is skipped.
+    assert_eq!(
+        edit::toggle_articulation_events(&mut doc, &events, Articulation::Staccato).unwrap(),
+        2
+    );
+    assert_eq!(
+        edit::common_articulations(doc.score(), &events),
+        vec![Articulation::Staccato]
+    );
+    // Now all have it, so it is removed from all.
+    assert_eq!(
+        edit::toggle_articulation_events(&mut doc, &events, Articulation::Staccato).unwrap(),
+        3
+    );
+    assert!(edit::common_articulations(doc.score(), &events).is_empty());
+    // A fermata may also go on the rest.
+    assert_eq!(
+        edit::toggle_articulation_events(&mut doc, &events, Articulation::Fermata).unwrap(),
+        4
+    );
+}
+
+#[test]
+fn entering_in_several_staves_is_one_undo_step_or_nothing() {
+    let (mut doc, staves, _, _) = piano();
+    let cursor = Cursor {
+        staff: staves[0],
+        measure: 1,
+        voice: 0,
+        tick: 0,
+    };
+    let entry = edit::enter_in_staves(&mut doc, cursor, &staves, |doc, at| {
+        edit::enter_step(doc, at, PitchStep::G, Duration::new(NoteValue::Half, 0))
+    })
+    .unwrap();
+    assert_eq!(entry.next.tick, 1920);
+    let first_event = |doc: &Document, staff: StaffId| {
+        doc.score().staff(staff).unwrap().measures[1].voices[0]
+            .events
+            .first()
+            .map(|event| event.id)
+    };
+    let upper = first_event(&doc, staves[0]).unwrap();
+    let lower = first_event(&doc, staves[1]).unwrap();
+    // Same letter, octave nearest each staff's previous note.
+    assert_eq!(pitches(&doc, upper), vec![Pitch::new(PitchStep::G, 0, 4)]);
+    assert_eq!(pitches(&doc, lower), vec![Pitch::new(PitchStep::G, 0, 2)]);
+    doc.undo().unwrap();
+    assert!(first_event(&doc, staves[0]).is_none() && first_event(&doc, staves[1]).is_none());
+
+    // A failure in one staff leaves both unchanged.
+    doc.redo().unwrap();
+    let before = doc.score().clone();
+    let mut calls = 0;
+    let failed = edit::enter_in_staves(&mut doc, cursor, &staves, |doc, at| {
+        calls += 1;
+        if calls == 2 {
+            return Err(notula_model::ModelError::Invalid("refused"));
+        }
+        edit::enter_step(doc, at, PitchStep::A, Duration::new(NoteValue::Quarter, 0))
+    });
+    assert!(failed.is_err());
+    assert_eq!(doc.score(), &before);
+    assert!(doc.can_redo() || doc.can_undo());
 }

@@ -57,13 +57,17 @@ export interface Span {
   end: number;
 }
 
-/** A range selection: a time span across a run of staves, optionally one voice only. */
+/**
+ * Like a text selection: everything between two score positions (ticks from the start), across
+ * the staves from the anchor staff to the focus staff. With equal positions it selects nothing
+ * and is a cursor spanning those staves.
+ */
 export interface Selection {
   anchor_staff: number;
   anchor_voice: number;
-  anchor: Span;
+  anchor: number;
   focus_staff: number;
-  focus: Span;
+  focus: number;
   voice: number | null;
 }
 
@@ -85,11 +89,27 @@ export interface MeasureSpan {
 
 export interface SelectionInfo {
   selection: Selection;
-  resolved: { staves: number[]; span: Span; measures: MeasureSpan[]; events: number[] };
+  resolved: { staves: number[]; span: Span; measures: MeasureSpan[]; events: number[]; caret: number };
+  /** Selected notes and chords, not counting rests. */
+  notes: number;
+  /** Articulations every selected event that can carry them already has. */
+  common_articulations: Articulation[];
+  /** Where the cursor goes, and the selection's start and end, in the anchor staff. */
+  cursor: Cursor;
+  start: Cursor;
+  end: Cursor;
 }
 
+/** An edit applied to every event in a range selection. */
+export type SelectionEdit =
+  | { kind: "delete" }
+  | { kind: "transpose"; semitones: number }
+  | { kind: "transpose_octaves"; octaves: number }
+  | { kind: "toggle_articulation"; articulation: Articulation };
+
 export type SelectionRequest =
-  | { kind: "at_cursor"; cursor: Cursor }
+  | { kind: "caret"; cursor: Cursor }
+  | { kind: "collapse"; selection: Selection; cursor: Cursor }
   | { kind: "event"; event: number }
   | { kind: "all" }
   | { kind: "extend"; selection: Selection; step: SelectionStep }
@@ -230,17 +250,25 @@ export const api = {
   selectEvent: (event: number) => invoke<Cursor | null>("select_event", { event }),
   moveCursor: (cursor: Cursor, selected: number | null, forward: boolean, movement = "step") =>
     invoke<CursorPosition | null>("move_cursor", { cursor, selected, forward, movement }),
-  enterNote: (cursor: Cursor, pitch: Pitch, duration: Duration, holdCursor = false) =>
-    invoke<Edited>("enter_note", { cursor, pitch, duration, holdCursor }),
+  // `also` lists further staves to enter the same note or rest into, as one undo step.
+  enterNote: (cursor: Cursor, pitch: Pitch, duration: Duration, holdCursor = false, also: number[] = []) =>
+    invoke<Edited>("enter_note", { cursor, pitch, duration, options: { hold_cursor: holdCursor, also } }),
   enterStep: (
     cursor: Cursor,
     step: Step,
     duration: Duration,
     holdCursor = false,
     alter: number | null = null,
-  ) => invoke<Edited>("enter_step", { cursor, step, duration, holdCursor, alter }),
-  enterRest: (cursor: Cursor, duration: Duration) =>
-    invoke<Edited>("enter_rest", { cursor, duration }),
+    also: number[] = [],
+  ) =>
+    invoke<Edited>("enter_step", {
+      cursor,
+      step,
+      duration,
+      options: { hold_cursor: holdCursor, alter, also },
+    }),
+  enterRest: (cursor: Cursor, duration: Duration, also: number[] = []) =>
+    invoke<Edited>("enter_rest", { cursor, duration, options: { also } }),
   setDuration: (event: number, duration: Duration) =>
     invoke<Edited>("set_duration", { event, duration }),
   toggleArticulation: (event: number, articulation: Articulation) =>
@@ -256,6 +284,8 @@ export const api = {
     invoke<Edited>("toggle_hairpin", { start, end, kind }),
   removeHairpin: (event: number) => invoke<Edited>("remove_hairpin", { event }),
   select: (request: SelectionRequest) => invoke<SelectionInfo | null>("select", { request }),
+  editSelection: (selection: Selection, edit: SelectionEdit) =>
+    invoke<Edited>("edit_selection", { selection, edit }),
   removeSlur: (event: number, phrase: boolean) => invoke<Edited>("remove_slur", { event, phrase }),
   tempoDirectionAt: (measure: number, tick: number) =>
     invoke<TempoDirection | null>("tempo_direction_at", { measure, tick }),

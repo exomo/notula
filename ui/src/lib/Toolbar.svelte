@@ -195,7 +195,7 @@
           aria-pressed={editor.inputMode && editor.entryAlter === accidental.alter}
           aria-label={accidental.label}
           title={accidental.label}
-          disabled={!hasSelection && !editor.inputMode}
+          disabled={!editor.inputMode && (!hasSelection || editor.hasRangeSelection)}
           onclick={() => editor.setAlter(accidental.alter)}><span class="glyph">{accidental.glyph}</span></button
         >
       {/each}

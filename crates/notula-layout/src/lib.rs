@@ -313,8 +313,9 @@ const END_OF_MEASURE_REACH: f32 = 2.5;
 /// How far from the middle of a staff a click still belongs to it.
 const STAFF_REACH: f32 = 4.5;
 
-/// The staves and time a box drawn over the page covers, as a selection: staves whose lines
-/// it touches, and the note columns inside it. An empty measure it touches counts in full.
+/// The staves and time a box dragged from `(x0, y0)` to `(x1, y1)` covers, as a selection:
+/// staves whose lines it touches, and the note columns inside it. An empty measure it touches
+/// counts in full.
 pub fn box_selection(
     score: &Score,
     list: &RenderList,
@@ -365,11 +366,17 @@ pub fn box_selection(
     }
     let order: Vec<StaffId> = score.staves().map(|staff| staff.id).collect();
     staves.sort_by_key(|staff| order.iter().position(|id| id == staff));
-    Some(notula_model::selection::Selection::range(
+    let selection = notula_model::selection::Selection::range(
         staves[0],
         *staves.last()?,
         notula_model::selection::Span { start, end },
-    ))
+    );
+    // The cursor goes where the drag ended: the left edge when drawn right to left.
+    Some(if x1 < x0 {
+        selection.reversed()
+    } else {
+        selection
+    })
 }
 
 pub fn hit_test(score: &Score, list: &RenderList, x: f32, y: f32) -> Option<Hit> {

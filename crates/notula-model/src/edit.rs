@@ -388,6 +388,44 @@ pub fn enter_step_with_alter(
     enter_note(doc, cursor, pitch, duration)
 }
 
+/// Enters at the cursor and at the same position in other staves, as one undo step. In each
+/// other staff the cursor's voice is used when the measure has it, otherwise the first voice.
+/// Returns the entry at the cursor.
+pub fn enter_in_staves(
+    doc: &mut Document,
+    cursor: Cursor,
+    also: &[StaffId],
+    mut enter: impl FnMut(&mut Document, Cursor) -> Result<Entry, ModelError>,
+) -> Result<Entry, ModelError> {
+    doc.transaction(|doc| {
+        let entry = enter(doc, cursor)?;
+        for &staff in also.iter().filter(|staff| **staff != cursor.staff) {
+            let voices = doc
+                .score()
+                .staff(staff)?
+                .measures
+                .get(cursor.measure)
+                .ok_or(ModelError::MeasureOutOfRange(cursor.measure))?
+                .voices
+                .len();
+            let voice = if cursor.voice < voices {
+                cursor.voice
+            } else {
+                0
+            };
+            enter(
+                doc,
+                Cursor {
+                    staff,
+                    voice,
+                    ..cursor
+                },
+            )?;
+        }
+        Ok(entry)
+    })
+}
+
 /// Replaces a note with a rest of the same length; returns false if it already was a rest.
 pub fn delete_event(doc: &mut Document, id: EventId) -> Result<bool, ModelError> {
     let (located, event) = find(doc.score(), id)?;
@@ -405,6 +443,172 @@ pub fn delete_event(doc: &mut Document, id: EventId) -> Result<bool, ModelError>
         event: rest,
     })?;
     Ok(true)
+}
+
+/// Where each of the given events is, found in one pass over the score.
+fn locate_events(
+    score: &Score,
+    ids: &[EventId],
+) -> std::collections::HashMap<EventId, (VoiceLocation, usize)> {
+    let wanted: std::collections::HashSet<_> = ids.iter().copied().collect();
+    let mut found = std::collections::HashMap::with_capacity(wanted.len());
+    for staff in score.staves() {
+        for (measure, content) in staff.measures.iter().enumerate() {
+            for (voice, events) in content.voices.iter().enumerate() {
+                for (index, event) in events.events.iter().enumerate() {
+                    if wanted.contains(&event.id) {
+                        let at = VoiceLocation {
+                            staff: staff.id,
+                            measure,
+                            voice,
+                        };
+                        found.insert(event.id, (at, index));
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Applies `change` to each event in one undoable step and returns how many it changed.
+/// `change` returns `Ok(false)` to leave an event alone; any error leaves the score unchanged.
+fn change_events(
+    doc: &mut Document,
+    ids: &[EventId],
+    mut change: impl FnMut(&mut Event) -> Result<bool, ModelError>,
+) -> Result<usize, ModelError> {
+    let locations = locate_events(doc.score(), ids);
+    let mut commands = Vec::new();
+    for id in ids {
+        let &(at, index) = locations.get(id).ok_or(ModelError::EventNotFound(*id))?;
+        let mut event = doc.score().voice(at)?.events[index].clone();
+        if change(&mut event)? {
+            commands.push(Command::ReplaceEvent { at, index, event });
+        }
+    }
+    let changed = commands.len();
+    if changed > 0 {
+        doc.execute(Command::Batch { commands })?;
+    }
+    Ok(changed)
+}
+
+/// Replaces every given note with a rest of the same length; rests stay as they are.
+pub fn delete_events(doc: &mut Document, ids: &[EventId]) -> Result<usize, ModelError> {
+    change_events(doc, ids, |event| {
+        if event.kind == EventKind::Rest {
+            return Ok(false);
+        }
+        event.kind = EventKind::Rest;
+        event.markings = event.markings.clone().for_rest();
+        Ok(true)
+    })
+}
+
+/// Moves every pitch of the given notes by semitones, or by octaves when `octaves` is set.
+/// Nothing changes if any pitch would leave the supported range.
+pub fn transpose_events(
+    doc: &mut Document,
+    ids: &[EventId],
+    semitones: i8,
+    octaves: i8,
+) -> Result<usize, ModelError> {
+    change_events(doc, ids, |event| {
+        let EventKind::Chord { pitches, .. } = &mut event.kind else {
+            return Ok(false);
+        };
+        for pitch in pitches.iter_mut() {
+            let moved = if octaves != 0 {
+                Pitch {
+                    octave: pitch.octave.saturating_add(octaves),
+                    ..*pitch
+                }
+            } else {
+                Pitch::from_midi(pitch.midi() + i16::from(semitones), semitones > 0)
+                    .ok_or(ModelError::Invalid("pitch is outside the MIDI range"))?
+            };
+            moved.validate()?;
+            *pitch = moved;
+        }
+        Ok(true)
+    })
+}
+
+/// How many of the given events are notes or chords rather than rests.
+pub fn note_count(score: &Score, ids: &[EventId]) -> usize {
+    locate_events(score, ids)
+        .values()
+        .filter(|&&(at, index)| {
+            score
+                .voice(at)
+                .is_ok_and(|voice| matches!(voice.events[index].kind, EventKind::Chord { .. }))
+        })
+        .count()
+}
+
+/// Whether an articulation can go on an event: any on a note, only a fermata on a rest.
+fn takes_articulation(event: &Event, articulation: Articulation) -> bool {
+    !matches!(event.kind, EventKind::Rest) || articulation == Articulation::Fermata
+}
+
+/// Articulations that every given event able to carry them already has.
+pub fn common_articulations(score: &Score, ids: &[EventId]) -> Vec<Articulation> {
+    let locations = locate_events(score, ids);
+    let events: Vec<&Event> = ids
+        .iter()
+        .filter_map(|id| locations.get(id))
+        .filter_map(|&(at, index)| score.voice(at).ok()?.events.get(index))
+        .collect();
+    [
+        Articulation::Staccato,
+        Articulation::Staccatissimo,
+        Articulation::Tenuto,
+        Articulation::Accent,
+        Articulation::Marcato,
+        Articulation::Fermata,
+    ]
+    .into_iter()
+    .filter(|&articulation| {
+        let mut targets = events
+            .iter()
+            .filter(|event| takes_articulation(event, articulation))
+            .peekable();
+        targets.peek().is_some()
+            && targets.all(|event| event.markings.articulations.contains(&articulation))
+    })
+    .collect()
+}
+
+/// Adds the articulation to every given event that can carry it, or removes it from all of them
+/// when they all have it already.
+pub fn toggle_articulation_events(
+    doc: &mut Document,
+    ids: &[EventId],
+    articulation: Articulation,
+) -> Result<usize, ModelError> {
+    let remove = common_articulations(doc.score(), ids).contains(&articulation);
+    change_events(doc, ids, |event| {
+        if !takes_articulation(event, articulation) {
+            return Ok(false);
+        }
+        let position = event
+            .markings
+            .articulations
+            .iter()
+            .position(|existing| *existing == articulation);
+        match (remove, position) {
+            (true, Some(position)) => {
+                event.markings.articulations.remove(position);
+                Ok(true)
+            }
+            (false, None) => {
+                event.markings.articulations.push(articulation);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    })
 }
 
 /// Changes the length of an event, overwriting what follows.

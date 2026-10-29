@@ -74,7 +74,14 @@
       : area.columns.length > 0
         ? area.x_end - 1.0
         : area.x_start + 1.0;
-    return { x, area, voice: cursor.voice };
+    // A cursor spanning staves reaches from the top staff to the bottom one.
+    const staves = new Set(editor.rangeSelection?.resolved.staves ?? [cursor.staff]);
+    const tops = list.areas
+      .filter((candidate) => candidate.measure === cursor.measure && staves.has(candidate.staff))
+      .map((candidate) => candidate.y_top);
+    const top = Math.min(area.y_top, ...tops);
+    const bottom = Math.max(area.y_top, ...tops);
+    return { x, area, voice: cursor.voice, top, bottom };
   });
 
   const renderedItems = $derived.by(() => {
@@ -288,9 +295,9 @@
           <rect
             class="staff-highlight"
             x={caret.area.x_start}
-            y={caret.area.y_top - 2}
+            y={caret.top - 2}
             width={caret.area.x_end - caret.area.x_start}
-            height="8"
+            height={caret.bottom - caret.top + 8}
           />
         {/if}
         {#if caret.area.voice_count > 1}
@@ -305,9 +312,9 @@
           bind:this={caretElement}
           class="caret"
           x1={caret.x}
-          y1={caret.area.y_top - 1}
+          y1={caret.top - 1}
           x2={caret.x}
-          y2={caret.area.y_top + 5}
+          y2={caret.bottom + 5}
           stroke-width="0.2"
         />
       {/if}
@@ -318,7 +325,7 @@
         {#if item.type === "line"}
           <line
             class:selected
-            class:active-voice={editor.cursor !== null && item.staff === editor.cursor.staff && item.voice === editor.cursor.voice}
+            class:active-voice={!editor.spansStaves && editor.cursor !== null && item.staff === editor.cursor.staff && item.voice === editor.cursor.voice}
             data-event={item.event}
             x1={item.x1}
             y1={item.y1}
@@ -329,7 +336,7 @@
         {:else if item.type === "polygon"}
           <polygon
             class:selected
-            class:active-voice={editor.cursor !== null && item.staff === editor.cursor.staff && item.voice === editor.cursor.voice}
+            class:active-voice={!editor.spansStaves && editor.cursor !== null && item.staff === editor.cursor.staff && item.voice === editor.cursor.voice}
             data-event={item.event}
             points={item.points.map((p) => p.join(",")).join(" ")}
           />
@@ -340,7 +347,7 @@
             class:tie={item.type === "tie"}
             class:slur={item.type === "slur"}
             class:phrase-slur={item.type === "phrase_slur"}
-            class:active-staff={editor.cursor !== null && item.staff === editor.cursor.staff}
+            class:active-staff={!editor.spansStaves && editor.cursor !== null && item.staff === editor.cursor.staff}
             class:selected
             data-event={item.event}
             points={item.points.map((p) => p.join(",")).join(" ")}
@@ -351,7 +358,7 @@
           <text
             class="glyph"
             class:selected
-            class:active-voice={editor.cursor !== null && item.staff === editor.cursor.staff && item.voice === editor.cursor.voice}
+            class:active-voice={!editor.spansStaves && editor.cursor !== null && item.staff === editor.cursor.staff && item.voice === editor.cursor.voice}
             class:selected-tone={editor.inputMode && editor.selectedTone !== null && editor.selectedTone.event === item.event && Math.abs(item.y - editor.selectedTone.y) < 0.01}
             data-event={item.event}
             x={item.x}

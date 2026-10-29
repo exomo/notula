@@ -33,8 +33,10 @@
   {/if}
   <footer>
     <span class="mode">{editor.inputMode ? "Note input" : "Select"}</span>
-    {#if editor.rangeSelection && !editor.hairpinMode && !editor.slurMode && !editor.phraseSlurMode}
-      <span>Selection: Shift+←/→ by note · Shift+Ctrl+←/→ by measure · Shift+↑/↓ staves · Shift+click extends · Esc clears</span>
+    {#if editor.spansStaves && !editor.hasRangeSelection && !editor.hairpinMode && !editor.slurMode && !editor.phraseSlurMode}
+      <span>Cursor across {editor.rangeSelection?.resolved.staves.length} staves: notes you enter go into each · Shift+↑/↓ changes the staves · Shift+←/→ selects · Esc returns to one staff</span>
+    {:else if editor.hasRangeSelection && !editor.hairpinMode && !editor.slurMode && !editor.phraseSlurMode}
+      <span>Selection: ↑/↓ transposes · Ctrl+↑/↓ by octave · Delete turns notes into rests · Shift+←/→ by note · Shift+Ctrl+←/→ by measure · Shift+↑/↓ staves · Shift+click extends · Esc clears</span>
     {:else if editor.hairpinMode}
       {@const name = editor.hairpinMode === "Crescendo" ? "Crescendo" : "Diminuendo"}
       {#if editor.hairpinStart === null}

@@ -10,6 +10,7 @@ import {
   type NoteValue,
   type Pitch,
   type Selection,
+  type SelectionEdit,
   type SelectionInfo,
   type SelectionRequest,
   type SelectionStep,
@@ -196,24 +197,44 @@ class Editor {
     if (range) void this.applySelection({ kind: "resolve", selection: range.selection });
   }
 
+  /** The cursor follows the selection's moving edge, as in a text editor. */
   private async applySelection(request: SelectionRequest) {
     const id = ++this.selectionRequest;
     const info = await this.run(() => api.select(request));
     if (id !== this.selectionRequest || info === undefined) return;
-    this.rangeSelection = info;
+    if (!info) {
+      this.rangeSelection = null;
+      return;
+    }
+    this.cursor = info.cursor;
+    this.selectedTone = null;
+    const selectsNotes = info.resolved.span.start < info.resolved.span.end;
+    // A cursor on a single staff needs no selection.
+    this.rangeSelection = selectsNotes || info.resolved.staves.length > 1 ? info : null;
+    if (selectsNotes) {
+      // Note input stops once notes are selected; the single-note selection gives way.
+      this.selected = null;
+      if (this.inputMode) this.disableInputMode();
+    }
   }
 
-  /** The current range selection, or one started from the selected note or the cursor. */
+  /** The current selection, or an empty one at the cursor, like a text cursor. */
   private async selectionBase(): Promise<Selection | null> {
     if (this.rangeSelection) return this.rangeSelection.selection;
-    const request: SelectionRequest | null =
-      this.selected !== null
-        ? { kind: "event", event: this.selected }
-        : this.cursor
-          ? { kind: "at_cursor", cursor: this.cursor }
-          : null;
-    if (!request) return null;
-    return (await this.run(() => api.select(request)))?.selection ?? null;
+    const cursor = this.cursor;
+    if (!cursor) return null;
+    return (await this.run(() => api.select({ kind: "caret", cursor })))?.selection ?? null;
+  }
+
+  /** The selection's staves, collapsed to a cursor position; one staff means no selection. */
+  private async collapseSelection(cursor: Cursor) {
+    const range = this.rangeSelection;
+    if (range && range.resolved.staves.length > 1) {
+      await this.applySelection({ kind: "collapse", selection: range.selection, cursor });
+    } else {
+      this.clearSelection();
+      this.cursor = cursor;
+    }
   }
 
   async extendSelection(step: SelectionStep) {
@@ -250,9 +271,35 @@ class Editor {
     await this.applySelection({ kind: "resolve", selection: { ...range.selection, voice } });
   }
 
+  /** Applies an edit to every selected event as one undoable step; the selection stays. */
+  async editSelection(edit: SelectionEdit) {
+    const range = this.rangeSelection;
+    if (!range) return;
+    this.apply((await this.run(() => api.editSelection(range.selection, edit))) ?? null);
+  }
+
   clearSelection() {
     this.selectionRequest++;
     this.rangeSelection = null;
+  }
+
+  /** Notes are selected, as opposed to a cursor that only spans several staves. */
+  get hasRangeSelection() {
+    const range = this.rangeSelection;
+    return range !== null && range.resolved.span.start < range.resolved.span.end;
+  }
+
+  /** The cursor or selection covers more than the cursor's own staff. */
+  get spansStaves() {
+    return (this.rangeSelection?.resolved.staves.length ?? 0) > 1;
+  }
+
+  /** Staves that note entry also writes to, besides the cursor's staff. */
+  private get extraStaves(): number[] {
+    const range = this.rangeSelection;
+    const cursor = this.cursor;
+    if (!range || !cursor) return [];
+    return range.resolved.staves.filter((staff) => staff !== cursor.staff);
   }
 
   private async run<T>(action: () => Promise<T>): Promise<T | undefined> {
@@ -351,6 +398,10 @@ class Editor {
       this.insertHistory.push({ event: edited.inserted, cursor: edited.undo_cursor });
     }
     this.apply(edited, true);
+    const range = this.rangeSelection;
+    if (range && this.cursor) {
+      await this.applySelection({ kind: "collapse", selection: range.selection, cursor: this.cursor });
+    }
   }
 
   async clickStaff(x: number, y: number, shift = false) {
@@ -406,7 +457,7 @@ class Editor {
         this.selectedTone = null;
         return;
       }
-      if (shift) await this.enterAtCursor(() => api.enterNote(cursor, this.entryPitch(hit.pitch), this.duration, true));
+      if (shift) await this.enterAtCursor(() => api.enterNote(cursor, this.entryPitch(hit.pitch), this.duration, true, this.extraStaves));
     } else {
       this.cursor = hit.cursor;
       this.selected = hit.note;
@@ -467,19 +518,19 @@ class Editor {
   async enterStep(step: Step) {
     const cursor = this.requireCursor();
     if (!cursor) return;
-    await this.enterAtCursor(() => api.enterStep(cursor, step, this.duration, false, this.entryAlter));
+    await this.enterAtCursor(() => api.enterStep(cursor, step, this.duration, false, this.entryAlter, this.extraStaves));
   }
 
   async enterStepHeld(step: Step) {
     const cursor = this.requireCursor();
     if (!cursor) return;
-    await this.enterAtCursor(() => api.enterStep(cursor, step, this.duration, true, this.entryAlter));
+    await this.enterAtCursor(() => api.enterStep(cursor, step, this.duration, true, this.entryAlter, this.extraStaves));
   }
 
   async enterRest() {
     const cursor = this.requireCursor();
     if (!cursor) return;
-    await this.enterAtCursor(() => api.enterRest(cursor, this.duration));
+    await this.enterAtCursor(() => api.enterRest(cursor, this.duration, this.extraStaves));
   }
 
   async addNoteAbove(step: Step) {
@@ -489,16 +540,25 @@ class Editor {
   }
 
   async deleteSelected() {
+    if (this.hasRangeSelection) {
+      await this.editSelection({ kind: "delete" });
+      return;
+    }
     const event = this.selected;
     if (event === null) return;
     this.apply((await this.run(() => api.deleteEvent(event))) ?? null);
   }
 
   hasArticulation(articulation: Articulation) {
+    if (this.hasRangeSelection) return this.rangeSelection!.common_articulations.includes(articulation);
     return this.eventArticulations?.articulations.includes(articulation) ?? false;
   }
 
   canToggleArticulation(articulation: Articulation) {
+    const range = this.rangeSelection;
+    if (range && this.hasRangeSelection) {
+      return range.notes > 0 || (articulation === "Fermata" && range.resolved.events.length > 0);
+    }
     const state = this.eventArticulations;
     return state !== null && (!state.is_rest || articulation === "Fermata");
   }
@@ -508,6 +568,7 @@ class Editor {
   }
 
   canToggleTie() {
+    if (this.hasRangeSelection) return false;
     const state = this.eventArticulations;
     return state !== null && !state.is_rest && (state.tied || state.tie_possible);
   }
@@ -659,6 +720,10 @@ class Editor {
   }
 
   async toggleArticulation(articulation: Articulation) {
+    if (this.hasRangeSelection) {
+      await this.editSelection({ kind: "toggle_articulation", articulation });
+      return;
+    }
     const event = this.selected;
     if (event === null || !this.canToggleArticulation(articulation)) return;
     const edited = await this.run(() => api.toggleArticulation(event, articulation));
@@ -725,6 +790,10 @@ class Editor {
   }
 
   async transpose(semitones: number) {
+    if (this.hasRangeSelection) {
+      await this.editSelection({ kind: "transpose", semitones });
+      return;
+    }
     if (!this.inputMode) return;
     const event = this.selected;
     if (event === null) return;
@@ -749,6 +818,10 @@ class Editor {
   }
 
   async transposeOctave(octaves: number) {
+    if (this.hasRangeSelection) {
+      await this.editSelection({ kind: "transpose_octaves", octaves });
+      return;
+    }
     if (!this.inputMode) return;
     const event = this.selected;
     if (event === null) return;
@@ -788,12 +861,21 @@ class Editor {
   async moveCursor(forward: boolean, movement = "step") {
     const cursor = this.cursor;
     if (cursor === null) return;
-    this.clearSelection();
+    const range = this.rangeSelection;
     this.selectedTone = null;
+    if (range && this.hasRangeSelection && movement !== "staff") {
+      // Like a text editor: the first press goes to the selection's start or end.
+      await this.collapseSelection(forward ? range.end : range.start);
+      return;
+    }
+    // Moving to another staff ends a cursor spanning staves; moving in time keeps it.
+    const spanning = range && movement !== "staff" ? range.selection : null;
+    this.clearSelection();
     const next = await this.run(() => api.moveCursor(cursor, this.selected, forward, movement));
     if (next) {
       this.cursor = next.cursor;
       this.selected = next.selected;
+      if (spanning) await this.applySelection({ kind: "collapse", selection: spanning, cursor: next.cursor });
     }
   }
 
@@ -936,6 +1018,8 @@ class Editor {
     if (this.inputMode) {
       this.disableInputMode();
     } else {
+      const range = this.rangeSelection;
+      if (range && this.hasRangeSelection) void this.collapseSelection(range.end);
       this.inputMode = true;
     }
     this.message = null;
@@ -1003,11 +1087,11 @@ class Editor {
           void this.extendSelection(key === "ArrowLeft" ? "previous_measure" : "next_measure");
           return true;
         case "arrowup":
-          if (this.selectedTone !== null) void this.transposeChordTone(12);
+          if (this.selectedTone !== null && !this.hasRangeSelection) void this.transposeChordTone(12);
           else void this.transposeOctave(1);
           return true;
         case "arrowdown":
-          if (this.selectedTone !== null) void this.transposeChordTone(-12);
+          if (this.selectedTone !== null && !this.hasRangeSelection) void this.transposeChordTone(-12);
           else void this.transposeOctave(-1);
           return true;
         default:
@@ -1081,12 +1165,12 @@ class Editor {
         return true;
       case "ArrowUp":
         if (event.altKey) void this.moveUp();
-        else if (this.selectedTone !== null) void this.transposeChordTone(1);
+        else if (this.selectedTone !== null && !this.hasRangeSelection) void this.transposeChordTone(1);
         else void this.transpose(1);
         return true;
       case "ArrowDown":
         if (event.altKey) void this.moveDown();
-        else if (this.selectedTone !== null) void this.transposeChordTone(-1);
+        else if (this.selectedTone !== null && !this.hasRangeSelection) void this.transposeChordTone(-1);
         else void this.transpose(-1);
         return true;
       default:

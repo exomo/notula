@@ -6,7 +6,7 @@ use notula_model::edit::{self, Cursor};
 use notula_model::selection::{ResolvedSelection, Selection, Step as SelectionStep};
 use notula_model::{
     Articulation, Document, Duration, Dynamic, EventId, EventKind, Hairpin, KeySignature, Pitch,
-    Step, Tempo, TempoChangeMark, TempoDirection, TimeSignature, TimeSignatureDisplay,
+    StaffId, Step, Tempo, TempoChangeMark, TempoDirection, TimeSignature, TimeSignatureDisplay,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -185,8 +185,13 @@ pub fn render_score(state: State<AppState>, width: f32) -> RenderList {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SelectionRequest {
-    /// The note or empty measure part at the cursor.
-    AtCursor {
+    /// A cursor covering one staff and no notes.
+    Caret {
+        cursor: Cursor,
+    },
+    /// The selection's staves, collapsed to a cursor position, as when a key moves the cursor.
+    Collapse {
+        selection: Selection,
         cursor: Cursor,
     },
     Event {
@@ -218,6 +223,86 @@ pub enum SelectionRequest {
 pub struct SelectionInfo {
     selection: Selection,
     resolved: ResolvedSelection,
+    /// Selected notes and chords, not counting rests.
+    notes: usize,
+    /// Articulations every selected event that can carry them already has.
+    common_articulations: Vec<Articulation>,
+    /// Where the cursor goes, and the selection's start and end, in the anchor staff.
+    cursor: Cursor,
+    start: Cursor,
+    end: Cursor,
+}
+
+/// A cursor at a score position in a staff, in `voice` if that measure has it.
+fn cursor_at(
+    score: &notula_model::Score,
+    staff: StaffId,
+    voice: usize,
+    tick: u64,
+) -> Option<Cursor> {
+    let (measure, tick) = notula_model::selection::position(score, tick);
+    let voices = score.staff(staff).ok()?.measures.get(measure)?.voices.len();
+    Some(Cursor {
+        staff,
+        measure,
+        voice: if voice < voices { voice } else { 0 },
+        tick,
+    })
+}
+
+fn selection_info(score: &notula_model::Score, selection: Selection) -> Option<SelectionInfo> {
+    let resolved = selection.resolve(score)?;
+    let notes = edit::note_count(score, &resolved.events);
+    let common_articulations = edit::common_articulations(score, &resolved.events);
+    let at = |tick| cursor_at(score, selection.anchor_staff, selection.anchor_voice, tick);
+    Some(SelectionInfo {
+        cursor: at(resolved.caret)?,
+        start: at(resolved.span.start)?,
+        end: at(resolved.span.end)?,
+        selection,
+        resolved,
+        notes,
+        common_articulations,
+    })
+}
+
+/// An edit applied to every event in a range selection.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SelectionEdit {
+    Delete,
+    Transpose { semitones: i8 },
+    TransposeOctaves { octaves: i8 },
+    ToggleArticulation { articulation: Articulation },
+}
+
+#[tauri::command]
+pub fn edit_selection(
+    app: AppHandle,
+    state: State<AppState>,
+    selection: Selection,
+    edit: SelectionEdit,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    let events = selection
+        .resolve(session.doc.score())
+        .ok_or("the selection no longer fits the score")?
+        .events;
+    let doc = &mut session.doc;
+    match edit {
+        SelectionEdit::Delete => edit::delete_events(doc, &events),
+        SelectionEdit::Transpose { semitones } => {
+            edit::transpose_events(doc, &events, semitones, 0)
+        }
+        SelectionEdit::TransposeOctaves { octaves } => {
+            edit::transpose_events(doc, &events, 0, octaves)
+        }
+        SelectionEdit::ToggleArticulation { articulation } => {
+            edit::toggle_articulation_events(doc, &events, articulation)
+        }
+    }
+    .map_err(text)?;
+    Ok(finish(&app, &session, None, None))
 }
 
 #[tauri::command]
@@ -225,13 +310,23 @@ pub fn select(state: State<AppState>, request: SelectionRequest) -> Option<Selec
     let session = state.lock();
     let score = session.doc.score();
     let selection = match request {
-        SelectionRequest::AtCursor { cursor } => Selection::at(
+        SelectionRequest::Caret { cursor } => Selection::caret(
             score,
             cursor.staff,
             cursor.voice,
             cursor.measure,
             cursor.tick,
         )?,
+        SelectionRequest::Collapse { selection, cursor } => Selection {
+            anchor_staff: cursor.staff,
+            anchor_voice: cursor.voice,
+            ..selection
+        }
+        .collapsed_to(notula_model::selection::absolute(
+            score,
+            cursor.measure,
+            cursor.tick,
+        )?),
         SelectionRequest::Event { event } => Selection::for_event(score, event)?,
         SelectionRequest::All => Selection::all(score)?,
         SelectionRequest::Extend { selection, step } => selection.extend(score, step),
@@ -244,11 +339,7 @@ pub fn select(state: State<AppState>, request: SelectionRequest) -> Option<Selec
         }
         SelectionRequest::Resolve { selection } => selection,
     };
-    let resolved = selection.resolve(score)?;
-    Some(SelectionInfo {
-        selection,
-        resolved,
-    })
+    selection_info(score, selection)
 }
 
 #[derive(Serialize)]
@@ -353,6 +444,18 @@ pub struct CursorPosition {
     selected: Option<EventId>,
 }
 
+/// Optional settings shared by the note and rest entry commands.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+pub struct EntryOptions {
+    /// Keep the cursor on the entered event, as when building a chord.
+    hold_cursor: bool,
+    /// Accidental for a note entered by letter; `None` follows the key signature.
+    alter: Option<i8>,
+    /// Further staves to enter the same event into, as one undo step.
+    also: Vec<StaffId>,
+}
+
 #[tauri::command]
 pub fn enter_note(
     app: AppHandle,
@@ -360,11 +463,20 @@ pub fn enter_note(
     cursor: Cursor,
     pitch: Pitch,
     duration: Duration,
-    hold_cursor: bool,
+    options: EntryOptions,
 ) -> Reply<Edited> {
     let mut session = state.lock();
-    let entry = edit::enter_note(&mut session.doc, cursor, pitch, duration).map_err(text)?;
-    Ok(finish_entry(&app, &session, cursor, entry, hold_cursor))
+    let entry = edit::enter_in_staves(&mut session.doc, cursor, &options.also, |doc, at| {
+        edit::enter_note(doc, at, pitch, duration)
+    })
+    .map_err(text)?;
+    Ok(finish_entry(
+        &app,
+        &session,
+        cursor,
+        entry,
+        options.hold_cursor,
+    ))
 }
 
 #[tauri::command]
@@ -374,13 +486,20 @@ pub fn enter_step(
     cursor: Cursor,
     step: Step,
     duration: Duration,
-    hold_cursor: bool,
-    alter: Option<i8>,
+    options: EntryOptions,
 ) -> Reply<Edited> {
     let mut session = state.lock();
-    let entry = edit::enter_step_with_alter(&mut session.doc, cursor, step, duration, alter)
-        .map_err(text)?;
-    Ok(finish_entry(&app, &session, cursor, entry, hold_cursor))
+    let entry = edit::enter_in_staves(&mut session.doc, cursor, &options.also, |doc, at| {
+        edit::enter_step_with_alter(doc, at, step, duration, options.alter)
+    })
+    .map_err(text)?;
+    Ok(finish_entry(
+        &app,
+        &session,
+        cursor,
+        entry,
+        options.hold_cursor,
+    ))
 }
 
 #[tauri::command]
@@ -389,9 +508,13 @@ pub fn enter_rest(
     state: State<AppState>,
     cursor: Cursor,
     duration: Duration,
+    options: EntryOptions,
 ) -> Reply<Edited> {
     let mut session = state.lock();
-    let entry = edit::enter_rest(&mut session.doc, cursor, duration).map_err(text)?;
+    let entry = edit::enter_in_staves(&mut session.doc, cursor, &options.also, |doc, at| {
+        edit::enter_rest(doc, at, duration)
+    })
+    .map_err(text)?;
     Ok(finish_entry(&app, &session, cursor, entry, false))
 }
 

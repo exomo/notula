@@ -1208,8 +1208,9 @@ fn a_box_selects_the_staves_and_note_columns_it_covers() {
     );
     assert_eq!(resolved.events, vec![quarters[1], quarters[2]]);
 
-    // Dragged from the lower staff up: both staves; the lower staff's whole note starts at 0,
-    // outside the box, so it is not selected.
+    // Dragged from the lower staff up and from right to left: both staves; the lower staff's
+    // whole note starts at 0, outside the box, so it is not selected. The cursor goes to the
+    // left edge, where the drag ended.
     let both = box_selection(
         builder.doc.score(),
         &list,
@@ -1217,7 +1218,19 @@ fn a_box_selects_the_staves_and_note_columns_it_covers() {
         (x(960) - 0.5, upper.y_top),
     )
     .unwrap();
-    assert_eq!(both.resolve(builder.doc.score()).unwrap().staves, staves);
+    let resolved = both.resolve(builder.doc.score()).unwrap();
+    assert_eq!(resolved.staves, staves);
+    assert_eq!(
+        (resolved.span, resolved.caret),
+        (
+            Span {
+                start: 960,
+                end: 2880
+            },
+            960
+        )
+    );
+    assert_eq!(around_two.resolve(builder.doc.score()).unwrap().caret, 2880);
 
     // An empty measure counts in full.
     let empty = area(staves[0], 1);
