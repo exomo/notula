@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use notula_layout::{LayoutOptions, RenderList};
+use notula_model::clipboard::{self, Clip};
 use notula_model::edit::{self, Cursor};
 use notula_model::selection::{ResolvedSelection, Selection, Step as SelectionStep};
 use notula_model::{
@@ -279,7 +280,7 @@ pub enum SelectionEdit {
 #[derive(Serialize)]
 pub struct Shifted {
     edited: Edited,
-    /// The selection at the notes' new place.
+    /// The selection at the notes' new place, or around what was pasted.
     selection: Option<SelectionInfo>,
 }
 
@@ -304,6 +305,62 @@ pub fn shift_selection(
     Ok(Shifted {
         selection: selection_info(session.doc.score(), moved),
         edited: finish(&app, &session, None, None),
+    })
+}
+
+/// What the clipboard holds after copying or cutting.
+#[derive(Serialize)]
+pub struct ClipInfo {
+    staves: usize,
+}
+
+fn clip_info(clip: &Clip) -> ClipInfo {
+    ClipInfo {
+        staves: clip.staves.len(),
+    }
+}
+
+#[tauri::command]
+pub fn copy_selection(state: State<AppState>, selection: Selection) -> Reply<ClipInfo> {
+    let mut session = state.lock();
+    let clip = clipboard::copy(session.doc.score(), &selection).map_err(text)?;
+    let info = clip_info(&clip);
+    session.clipboard = Some(clip);
+    Ok(info)
+}
+
+#[derive(Serialize)]
+pub struct Cut {
+    edited: Edited,
+    clip: ClipInfo,
+}
+
+/// Copies the selection and turns its notes into rests.
+#[tauri::command]
+pub fn cut_selection(app: AppHandle, state: State<AppState>, selection: Selection) -> Reply<Cut> {
+    let mut session = state.lock();
+    let clip = clipboard::cut(&mut session.doc, &selection).map_err(text)?;
+    let info = clip_info(&clip);
+    session.clipboard = Some(clip);
+    Ok(Cut {
+        edited: finish(&app, &session, None, None),
+        clip: info,
+    })
+}
+
+/// Pastes the clipboard at the cursor or the selection's start and selects what was pasted.
+#[tauri::command]
+pub fn paste(app: AppHandle, state: State<AppState>, selection: Selection) -> Reply<Shifted> {
+    let mut session = state.lock();
+    let session = &mut *session;
+    let clip = session
+        .clipboard
+        .as_ref()
+        .ok_or("nothing has been copied")?;
+    let pasted = clipboard::paste(&mut session.doc, &selection, clip).map_err(text)?;
+    Ok(Shifted {
+        selection: selection_info(session.doc.score(), pasted),
+        edited: finish(&app, session, None, None),
     })
 }
 

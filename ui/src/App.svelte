@@ -45,9 +45,9 @@
     {:else if editor.message}
       <span class="error">{editor.message}</span>
     {:else if editor.spansStaves && !editor.hasRangeSelection}
-      <span>Cursor across {editor.rangeSelection?.resolved.staves.length} staves: notes you enter go into each · Shift+↑/↓ changes the staves · Shift+←/→ selects · Esc returns to one staff</span>
+      <span>Cursor across {editor.rangeSelection?.resolved.staves.length} staves: notes you enter go into each · Shift+↑/↓ changes the staves · Ctrl+V pastes into each · Shift+←/→ selects · Esc returns to one staff</span>
     {:else if editor.hasRangeSelection}
-      <span>Selection: Ctrl+←/→ moves by the input bar's note value · ↑/↓ transposes · Ctrl+↑/↓ by octave · Delete turns notes into rests · Shift+←/→ by note · Shift+Ctrl+←/→ by measure · Shift+↑/↓ staves · Shift+click extends · Esc clears</span>
+      <span>Selection: Ctrl+←/→ moves by the input bar's note value · ↑/↓ transposes · Ctrl+↑/↓ by octave · Delete turns notes into rests · Ctrl+C/X/V copy, cut, paste · Shift+←/→ by note · Shift+Ctrl+←/→ by measure · Shift+↑/↓ staves · Shift+click extends · Esc clears</span>
     {:else if editor.inputMode}
       <span>A–G enter notes · 1–7 duration · . dot · 0 rest · ←/→ move cursor · Alt+↑/↓ changes voice, then staff · Ctrl+wheel zooms · click a chord tone to target it · ↑/↓ moves target tone or chord · Ctrl+↑/↓ moves an octave · Shift+click adds to chord · Esc leaves</span>
     {:else}

@@ -1,12 +1,15 @@
 use std::path::PathBuf;
 
 use notula_model::Document;
+use notula_model::clipboard::Clip;
 use notula_model::edit::Cursor;
 use serde::Serialize;
 
 /// The open document together with where it lives on disk.
 pub struct Session {
     pub doc: Document,
+    /// The last copied selection; it stays when another score is opened.
+    pub clipboard: Option<Clip>,
     path: Option<PathBuf>,
     saved_revision: u64,
 }
@@ -25,6 +28,7 @@ impl Session {
         let saved_revision = doc.revision();
         Self {
             doc,
+            clipboard: None,
             path: None,
             saved_revision,
         }

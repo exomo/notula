@@ -1,5 +1,6 @@
 //! Score data model and edit commands.
 
+pub mod clipboard;
 mod command;
 mod duration;
 pub mod edit;
@@ -8,6 +9,7 @@ mod history;
 mod ids;
 mod markings;
 mod pitch;
+mod rewrite;
 mod score;
 pub mod selection;
 pub mod shift;

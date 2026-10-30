@@ -1,6 +1,6 @@
 # Project Status
 
-Last verified against commit `ce0886b` (`Add tempo changes and MusicXML tempo round trip`, branch `tempo-changes`) plus uncommitted dynamics and hairpin work on branch `dynamics`. Update this handoff when a feature is completed or priorities change.
+Last verified against commit `7c808d2` (`Shift selections in time and fix clicks, Space, and dev styles`) on `main`, plus uncommitted copy and paste work. Update this handoff when a feature is completed or priorities change.
 
 ## Product Snapshot
 
@@ -10,6 +10,7 @@ Implemented capabilities include score setup and properties, instruments and mul
 
 ## Recent Completed Work
 
+- Multi-selection, step 4: copy, cut, and paste (`notula_model::clipboard`, Tauri `copy_selection`, `cut_selection`, `paste`), as planned in [Planned: copy and paste](#planned-copy-and-paste). Ctrl+C/X/V or the Selection section's Copy, Cut, and Paste buttons; with only a single note selected, it becomes a selection first. The clipboard lives in the Rust `Session` and survives opening another score. Paste overwrites from the cursor or the selection's start, splits notes at barlines into tied notes, appends measures past the end, and selects what was pasted. The per-measure voice rewriting is shared with shift in `crates/notula-model/src/rewrite.rs`. A missing target voice is added only to the measures pasted into, with the new single-measure `Command::PushVoice`/`PopVoice`, matching how entered voices usually exist in single measures.
 - Multi-selection, step 3: shifting a selection in time (`notula_model::shift::shift_selection`, Tauri `shift_selection`). Ctrl+←/→ or the Selection section's "◀ Earlier" / "Later ▶" buttons move the selected notes by the input bar's note value (shown as "by 1/8"); with only a single note selected, it becomes a selection first. Per selected staff and voice the selected events move as one block, only through unmarked rests; the time left behind becomes rest; notes may move into a neighbouring measure but not straddle a barline; ties at the block's edges are removed; if any voice is blocked, nothing moves and the footer says why (footer messages now take priority over key hints). One undo step; the selection and cursor move with the notes. The model rewrites only the affected measures in one batch and keeps a measure that was empty empty when it holds only rests again.
 - Selections work like text selections. `Selection` stores two score positions (anchor and focus, in ticks from the start) rather than notes; equal positions mean a cursor that selects nothing. The cursor follows the moving edge (after growing to whole notes): Shift+←/→ from the cursor selects the next or previous note and moves the cursor to the selection's end, Shift+Ctrl+←/→ stops at barlines, and a dragged box, Shift+click, and Ctrl+A put the cursor at their end. Plain ←/→ first collapses a selection to its start or end. Selecting notes turns note input off; turning note input on collapses a selection to its end.
 - Shift+↑/↓ without a horizontal selection spans the cursor over several staves without selecting notes. Note input then enters each note or rest into every spanned staff (same letter, octave per staff as usual) as one undo step, via `Document::transaction` and `edit::enter_in_staves`; the entry commands take an `also` list of staves. Moving in time keeps the staves; Alt+↑/↓, Esc, or a click returns to one staff. While several staves are spanned, the cursor's staff is not coloured, and the cursor and input highlight reach across all of them.
@@ -31,14 +32,24 @@ Implemented capabilities include score setup and properties, instruments and mul
 
 ## Suggested Next Work
 
-1. **Next: copy and paste** for selections, building on the selection model and the shift's measure rewriting (paste overwrites from the cursor, per staff, with whole notes; decide how pasting more staves than are selected or available behaves). Shifting single notes alone was judged too limited; shifting a selection is the first time operation to build on it. See [Planned: multi-selection](#planned-multi-selection) and [Planned: horizontal note shifting](#planned-horizontal-note-shifting).
-2. Copy and paste, transpose, and other operations on selections, building on the selection model.
-3. Repeats and other barline types, for later (repeat barlines, possibly endings and double barlines). They affect playback order as well as notation and MusicXML; MusicXML import currently reports barline styles and repeats as unsupported.
-4. Polish volume marks: between the staves of a grand staff (5 spaces apart) the dynamics line can come close to ledger-line notes above it, and up-stems of the lower staff reach into it; consider local collision avoidance or more room between staves. Also consider text dynamics and hairpin variants ("cresc.", "dim.", niente circles), dynamics shared by both staves of one instrument, and keyboard shortcuts.
-5. Make rit./accel./rall. affect playback; see [Planned: tempo transitions](#planned-tempo-transitions).
-6. Playback, to be designed as one larger topic later: dynamics and hairpins (velocity and gradual volume), tempo transitions, and an option to start playback at the current cursor position instead of the beginning of the score. None of this is implemented yet; the first dynamics change is notation, editing, and MusicXML only.
-7. Consider tempo text such as "Allegro" (with an optional metronome) as a score-wide mark; MusicXML import currently drops it.
-8. PNG/PDF export loads only Bravura into usvg, so plain text items (part names, tempo text) likely fall back to an unavailable font there. Verify and load or embed a text font if needed.
+1. **Next: extended annotations** that are still missing: instrument-specific marks such as accordion registration symbols and piano sustain pedal marks (Ped. and release, or pedal lines), and free text annotations such as "div." or playing and character directions ("vivace", "dolce"). This includes tempo text such as "Allegro" (with an optional metronome) as a score-wide mark, which MusicXML import currently drops. Decide per kind whether it belongs to an event, a staff, or the score (see `AGENTS.md`), and which ones playback should honour (pedal likely, text not).
+2. Repeats and other barline types (repeat barlines, possibly endings and double barlines). They affect playback order as well as notation and MusicXML; MusicXML import currently reports barline styles and repeats as unsupported.
+3. Polish volume marks: between the staves of a grand staff (5 spaces apart) the dynamics line can come close to ledger-line notes above it, and up-stems of the lower staff reach into it; consider local collision avoidance or more room between staves. Also consider text dynamics and hairpin variants ("cresc.", "dim.", niente circles), dynamics shared by both staves of one instrument, and keyboard shortcuts.
+4. Make rit./accel./rall. affect playback; see [Planned: tempo transitions](#planned-tempo-transitions).
+5. Playback, to be designed as one larger topic later: dynamics and hairpins (velocity and gradual volume), tempo transitions, and an option to start playback at the current cursor position instead of the beginning of the score. None of this is implemented yet; the first dynamics change is notation, editing, and MusicXML only.
+6. PNG/PDF export loads only Bravura into usvg, so plain text items (part names, tempo text) likely fall back to an unavailable font there. Verify and load or embed a text font if needed.
+
+## Future Topics
+
+Larger features the user wants eventually, roughly in order of interest. None is designed yet; each needs its own design pass before implementation.
+
+- **Page layout**, especially for PDF export: additional freely positioned text, staff and system layout hints (system and page breaks, spacing), and whatever else comes up when the feature is designed.
+- **Single-instrument parts:** print a sheet for just one instrument of a multi-instrument score. Whether this is a filter or layout option on the same score or an export to a new score is open.
+- **More import and export formats**, mainly as interchange to bring music in from other sources: LilyPond and MIDI.
+- **Drum and percussion notation:** percussion staves, notehead shapes, and the mapping from staff positions to instruments (and to playback sounds).
+- **Accordion bass notation:** enter bass patterns so that one key press is one chord, written as letters (as is common for accordion) rather than full chord notes. The input idea may help other instruments too.
+- **Guitar tablature** (possible idea, not certain): tab staves, possibly linked to a normal staff. How this fits meaningfully into a notation editor still needs thought.
+- **Score scanning (optical music recognition):** import scores from printed paper or images. By far the most complex topic and likely needs external tools or libraries; a large usability gain if it works.
 
 These are recommendations based on current code, not committed feature promises. Follow the user's latest request if priorities differ.
 
@@ -80,7 +91,23 @@ Agreed model, informed by MuseScore's range and list selections, Sibelius's pass
   - Time operations use the grown extent with whole notes: shift, and later copy and paste.
   - A list selection of scattered notes (Ctrl+click) may come later, for per-note operations only.
 - **Display:** a translucent box over the selected staves and time span, with selected notes highlighted as the single selection is today.
-- **Status:** step 1 (model, display, keyboard and mouse controls, voice filter), step 2 (delete, transpose, articulations on selections), and step 3 (shift) are done. Remaining: copy and paste.
+- **Status:** step 1 (model, display, keyboard and mouse controls, voice filter), step 2 (delete, transpose, articulations on selections), and step 3 (shift) are done. Step 4 (copy and paste) is done too; a list selection of scattered notes and mouse dragging remain possible later additions.
+
+## Planned: Copy and Paste
+
+Agreed behaviour, completing multi-selection (the time operations use the grown span with whole notes). Implemented; see Recent Completed Work.
+
+- **Copy (Ctrl+C):** the clipboard takes the selection's grown span: the selected staves in score order, the voices the voice filter allows, and in each the events that start inside, with their marks and their offsets from the span start. Slurs, phrase slurs, and hairpins with only one end inside the span lose that end in the copy, and a tie leaving the span is removed. Score-wide marks (tempo) are not copied.
+- **Cut (Ctrl+X):** copy, then the existing selection delete (notes become rests), as one undo step.
+- **Clipboard:** kept in the Rust `Session` for the app run, so it can be pasted into another opened score. The system clipboard (for example as MusicXML) may come later.
+- **Paste target (Ctrl+V):** the cursor, or the start of a range selection; the clipboard's length decides how far the paste reaches, not the selection's. The number of target staves must match: a clipboard with several staves pastes only when the cursor or selection spans exactly as many staves (Shift+↑/↓), otherwise nothing happens and the footer says why. A single-staff clipboard pastes into the cursor's staff, or into every staff of a spanned cursor or selection, as note entry does.
+- **Voices:** clipboard voice n goes into voice n; a clipboard holding one voice (voice filter) goes into the cursor's voice. Voices the clipboard lacks stay unchanged in the target; a missing target voice is added in the pasted measures only.
+- **Overwriting:** in each target staff and voice, the paste range is replaced. A note cut at the start of the range keeps its beginning, shortened; what sticks out at its end becomes rest. Slurs, phrase slurs, hairpins, and ties left with one end by the overwrite are removed.
+- **Barlines:** pasted notes that would cross a barline (other beat position or time signature) are split there into tied notes; rests are split plainly. Remaining time is written with the largest rest values that fit, as when entering notes.
+- **Score end:** a paste that runs past the last measure appends measures with the last measure's time and key signature, in the same undo step.
+- **Result:** one undoable step; afterwards the pasted range is selected, so it can be transposed or shifted right away (→ continues after it).
+- **Controls:** Ctrl+C/X/V, and Copy/Cut/Paste buttons in the side panel's Selection section.
+- **Implementation sketch:** a `notula_model::clipboard` module with a `Clip` (staff count, length, per staff and voice the placed events) and `copy`/`paste` functions; extract the per-measure voice rewriting of `shift.rs` (placed events → measure contents with rest filling, keeping empty measures empty) into a shared helper used by both, extended with splitting into tied notes at barlines. Tauri commands `copy_selection`, `cut_selection`, `paste`, with model tests for each rule above.
 
 ## Planned: Horizontal Note Shifting
 
@@ -105,6 +132,7 @@ Agreed behaviour for moving the selected note or chord earlier or later in time.
 
 - Score model, initial tempo, and score-wide tempo directions and changes: `crates/notula-model/src/score.rs`
 - Reversible score mutations and measure position maintenance: `crates/notula-model/src/command.rs`
+- Range selections: `crates/notula-model/src/selection.rs`; time operations: `shift.rs` and `clipboard.rs`, sharing the voice rewriting in `rewrite.rs`
 - Event-local dynamics, hairpins, and other markings: `crates/notula-model/src/markings.rs`; edit helpers and hairpin pairing: `crates/notula-model/src/edit.rs`
 - Dynamics and hairpin engraving: `crates/notula-layout/src/volume.rs`
 - Shared staff layout, measure columns, and tempo-direction engraving: `crates/notula-layout/src/measure.rs`, `crates/notula-layout/src/lib.rs`

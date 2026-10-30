@@ -115,6 +115,8 @@ class Editor {
   /** Incremented whenever the score changed, to trigger a new layout. */
   revision = $state(0);
   message = $state<string | null>(null);
+  /** Staves in the clipboard; 0 while nothing has been copied. */
+  clipStaves = $state(0);
   newScoreOpen = $state(false);
   scorePropertiesOpen = $state(false);
   timeSignatureOpen = $state(false);
@@ -292,6 +294,45 @@ class Editor {
     if (!result) return;
     this.apply(result.edited);
     // The moved selection replaces the re-resolved old one.
+    this.selectionRequest++;
+    this.showSelection(result.selection);
+  }
+
+  /** Copies the selection, or the selected note, to the clipboard; `cut` also turns its notes into rests. */
+  async copySelection(cut = false) {
+    if (!this.hasRangeSelection && this.selected !== null) {
+      await this.applySelection({ kind: "event", event: this.selected });
+    }
+    const range = this.rangeSelection;
+    if (!range || !this.hasRangeSelection) {
+      this.message = cut ? "Select notes to cut them." : "Select notes to copy them.";
+      return;
+    }
+    if (cut) {
+      const result = await this.run(() => api.cutSelection(range.selection));
+      if (!result) return;
+      this.apply(result.edited);
+      this.clipStaves = result.clip.staves;
+    } else {
+      const clip = await this.run(() => api.copySelection(range.selection));
+      if (clip) this.clipStaves = clip.staves;
+    }
+  }
+
+  /**
+   * Pastes at the cursor, which sits at a selected note's start, or at the start of the
+   * selection, overwriting what is there, and selects what was pasted. A refused paste leaves
+   * the cursor and selection as they were.
+   */
+  async paste() {
+    const base = await this.selectionBase();
+    if (!base) {
+      this.message = "Click in the score where to paste.";
+      return;
+    }
+    const result = await this.run(() => api.paste(base));
+    if (!result) return;
+    this.apply(result.edited);
     this.selectionRequest++;
     this.showSelection(result.selection);
   }
@@ -1105,6 +1146,15 @@ class Editor {
           return true;
         case "a":
           void this.selectAll();
+          return true;
+        case "c":
+          void this.copySelection();
+          return true;
+        case "x":
+          void this.copySelection(true);
+          return true;
+        case "v":
+          void this.paste();
           return true;
         case "arrowleft":
         case "arrowright":

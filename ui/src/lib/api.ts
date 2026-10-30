@@ -107,6 +107,11 @@ export type SelectionEdit =
   | { kind: "transpose_octaves"; octaves: number }
   | { kind: "toggle_articulation"; articulation: Articulation };
 
+/** What the clipboard holds after copying or cutting. */
+export interface ClipInfo {
+  staves: number;
+}
+
 export type SelectionRequest =
   | { kind: "caret"; cursor: Cursor }
   | { kind: "collapse"; selection: Selection; cursor: Cursor }
@@ -290,6 +295,11 @@ export const api = {
       forward,
       duration,
     }),
+  copySelection: (selection: Selection) => invoke<ClipInfo>("copy_selection", { selection }),
+  cutSelection: (selection: Selection) =>
+    invoke<{ edited: Edited; clip: ClipInfo }>("cut_selection", { selection }),
+  paste: (selection: Selection) =>
+    invoke<{ edited: Edited; selection: SelectionInfo | null }>("paste", { selection }),
   editSelection: (selection: Selection, edit: SelectionEdit) =>
     invoke<Edited>("edit_selection", { selection, edit }),
   removeSlur: (event: number, phrase: boolean) => invoke<Edited>("remove_slur", { event, phrase }),

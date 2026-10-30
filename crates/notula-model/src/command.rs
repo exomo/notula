@@ -35,6 +35,17 @@ pub enum Command {
         measure: usize,
         index: usize,
     },
+    /// Adds a voice after the last one of a single measure, leaving other measures alone.
+    PushVoice {
+        staff: StaffId,
+        measure: usize,
+        voice: Voice,
+    },
+    /// Removes the last voice of a single measure; the original voice stays.
+    PopVoice {
+        staff: StaffId,
+        measure: usize,
+    },
     SetVoiceEnd {
         at: VoiceLocation,
         end_tick: Option<u32>,
@@ -254,6 +265,34 @@ impl Command {
                     measure,
                     index,
                     voices,
+                })
+            }
+            Command::PushVoice {
+                staff,
+                measure,
+                voice,
+            } => {
+                check_measure_index(score, measure)?;
+                if voice.used_ticks() > score.measures[measure].capacity() {
+                    return Err(ModelError::MeasureOverfull);
+                }
+                for event in &voice.events {
+                    event.validate()?;
+                }
+                score.staff_mut(staff)?.measures[measure].voices.push(voice);
+                Ok(Command::PopVoice { staff, measure })
+            }
+            Command::PopVoice { staff, measure } => {
+                check_measure_index(score, measure)?;
+                let content = &mut score.staff_mut(staff)?.measures[measure];
+                if content.voices.len() < 2 {
+                    return Err(ModelError::Invalid("the original voice cannot be removed"));
+                }
+                let voice = content.voices.pop().expect("a measure has voices");
+                Ok(Command::PushVoice {
+                    staff,
+                    measure,
+                    voice,
                 })
             }
             Command::SetVoiceEnd { at, end_tick } => {

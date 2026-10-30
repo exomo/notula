@@ -152,6 +152,17 @@
         </div>
       {/if}
       <div class="row">
+        {#if editor.hasRangeSelection}
+          <button onclick={() => editor.copySelection()} title="Copy the selected notes (Ctrl+C)">Copy</button>
+          <button onclick={() => editor.copySelection(true)} title="Copy the selected notes and turn them into rests (Ctrl+X)">Cut</button>
+        {/if}
+        <button
+          onclick={() => editor.paste()}
+          disabled={editor.clipStaves === 0}
+          title="Paste at the start of the selection, overwriting what is there (Ctrl+V)"
+        >Paste</button>
+      </div>
+      <div class="row">
         <button onclick={() => editor.clearSelection()} title="Clear the selection (Esc)">Clear</button>
       </div>
     </section>

@@ -8,35 +8,14 @@
 use std::collections::BTreeSet;
 
 use crate::command::Command;
-use crate::edit::rest_durations;
 use crate::error::ModelError;
 use crate::history::Document;
 use crate::ids::StaffId;
-use crate::score::{Event, EventKind, Score, VoiceLocation};
+use crate::rewrite::{
+    Placed, assign_ids, measure_of, measure_starts, rewrite_measures, voice_events, voice_limit,
+};
+use crate::score::{EventKind, Score};
 use crate::selection::Selection;
-
-fn measure_starts(score: &Score) -> Vec<u64> {
-    let mut starts = Vec::with_capacity(score.measures.len() + 1);
-    let mut tick = 0;
-    for info in &score.measures {
-        starts.push(tick);
-        tick += u64::from(info.capacity());
-    }
-    starts.push(tick);
-    starts
-}
-
-/// An event of one voice with its start in ticks from the start of the score.
-struct Placed {
-    start: u64,
-    event: Event,
-}
-
-impl Placed {
-    fn end(&self) -> u64 {
-        self.start + u64::from(self.event.duration.ticks())
-    }
-}
 
 /// Moves the selected events by `step` ticks, later when `forward`, and returns the selection
 /// at its new place. Fails, changing nothing, when any selected voice cannot move.
@@ -88,13 +67,7 @@ pub fn shift_selection(
         return Err(ModelError::Invalid("select notes to move them"));
     }
     // Rests filling the left-behind time get their ids now that the score is no longer read.
-    for command in &mut commands {
-        if let Command::InsertEvent { event, .. } = command
-            && event.id == NEW_REST
-        {
-            event.id = doc.new_event_id();
-        }
-    }
+    assign_ids(doc, &mut commands);
     doc.execute(Command::Batch { commands })?;
 
     let moved = |tick: u64| if forward { tick + step } else { tick - step };
@@ -104,10 +77,6 @@ pub fn shift_selection(
         ..*selection
     })
 }
-
-/// Placeholder id for rests created while planning a shift; real ids are assigned before the
-/// commands run. Ids start at 1, so 0 never names an event.
-const NEW_REST: crate::ids::EventId = crate::ids::EventId(0);
 
 /// One shift of a selection's grown span.
 struct Shift<'a> {
@@ -123,7 +92,7 @@ struct Shift<'a> {
 
 impl Shift<'_> {
     fn measure_of(&self, tick: u64) -> usize {
-        self.starts.partition_point(|start| *start <= tick) - 1
+        measure_of(&self.starts, tick)
     }
 
     /// Commands that move one voice's selected block, or none when it has nothing selected.
@@ -138,22 +107,7 @@ impl Shift<'_> {
         let (span_start, span_end) = (self.span_start, self.span_end);
         let measure_of = |tick: u64| self.measure_of(tick);
         let staff = score.staff(staff_id)?;
-        // Every event of this voice, in time order.
-        let mut placed = Vec::new();
-        for (measure, content) in staff.measures.iter().enumerate() {
-            let mut tick = starts[measure];
-            for event in content
-                .voices
-                .get(voice)
-                .map_or(&[][..], |voice| &voice.events)
-            {
-                placed.push(Placed {
-                    start: tick,
-                    event: event.clone(),
-                });
-                tick += u64::from(event.duration.ticks());
-            }
-        }
+        let placed = voice_events(staff, starts, voice);
         let block: Vec<usize> = (0..placed.len())
             .filter(|&index| span_start <= placed[index].start && placed[index].start < span_end)
             .collect();
@@ -181,15 +135,7 @@ impl Shift<'_> {
             let Some(voice_content) = content.voices.get(voice) else {
                 return Err(ModelError::Invalid("the voice does not continue there"));
             };
-            // Time after an explicit voice end, or after the events of a voice that stops early,
-            // belongs to no rest.
-            let limit = if voice_content.events.is_empty() {
-                voice_content
-                    .end_tick
-                    .map_or(starts[measure + 1], |end| starts[measure] + u64::from(end))
-            } else {
-                starts[measure] + u64::from(voice_content.used_ticks())
-            };
+            let limit = voice_limit(voice_content, starts[measure], starts[measure + 1]);
             if target_start.max(starts[measure]) < starts[measure + 1].min(target_end)
                 && limit < starts[measure + 1].min(target_end)
             {
@@ -256,65 +202,14 @@ impl Shift<'_> {
             first_measure = first_measure.min(measure_of(before.start));
         }
 
-        let mut commands = Vec::new();
-        for measure in first_measure..=measure_of(affected_end - 1) {
-            let (measure_start, measure_end) = (starts[measure], starts[measure + 1]);
-            let content = &staff.measures[measure];
-            let Some(original) = content.voices.get(voice) else {
-                continue;
-            };
-            let at = VoiceLocation {
-                staff: staff_id,
-                measure,
-                voice,
-            };
-            let mut items: Vec<&Placed> = kept
-                .iter()
-                .chain(moved.iter())
-                .filter(|item| measure_start <= item.start && item.start < measure_end)
-                .collect();
-            items.sort_by_key(|item| item.start);
-            let limit = if original.events.is_empty() {
-                original
-                    .end_tick
-                    .map_or(measure_end, |end| measure_start + u64::from(end))
-            } else {
-                measure_start + u64::from(original.used_ticks())
-            }
-            .max(items.last().map_or(measure_start, |item| item.end()));
-
-            let mut events = Vec::new();
-            let mut tick = measure_start;
-            for item in items.iter().copied().map(Some).chain([None]) {
-                let until = item.map_or(limit, |item| item.start);
-                if until > tick {
-                    for duration in rest_durations((until - tick) as u32)? {
-                        events.push(Event::new(NEW_REST, duration, EventKind::Rest));
-                    }
-                }
-                if let Some(item) = item {
-                    events.push(item.event.clone());
-                    tick = item.end();
-                }
-            }
-            // A measure that was empty and holds only rests again stays empty.
-            if original.events.is_empty()
-                && events
-                    .iter()
-                    .all(|event| matches!(event.kind, EventKind::Rest) && event.markings.is_empty())
-            {
-                events.clear();
-            }
-            if events == original.events {
-                continue;
-            }
-            for index in (0..original.events.len()).rev() {
-                commands.push(Command::RemoveEvent { at, index });
-            }
-            for (index, event) in events.into_iter().enumerate() {
-                commands.push(Command::InsertEvent { at, index, event });
-            }
-        }
-        Ok(commands)
+        let mut items: Vec<Placed> = kept.into_iter().chain(moved).collect();
+        items.sort_by_key(|item| item.start);
+        rewrite_measures(
+            staff,
+            starts,
+            voice,
+            first_measure..=measure_of(affected_end - 1),
+            &items,
+        )
     }
 }
