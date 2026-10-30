@@ -17,7 +17,7 @@ export type Articulation =
   | "Accent"
   | "Marcato"
   | "Fermata";
-export type SlurPlacement = "auto" | "above" | "below";
+export type SlurPlacement = "auto" | "above" | "below" | "double";
 export type Dynamic =
   | "Ppp"
   | "Pp"

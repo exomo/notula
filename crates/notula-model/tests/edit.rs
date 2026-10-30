@@ -1407,6 +1407,20 @@ fn slurs_report_positions_replace_from_their_start_and_remove_from_any_note() {
     );
     assert_eq!(edit::slurs(doc.score(), false).len(), 2);
 
+    // The same slur with another placement replaces it, as a hairpin of another kind does;
+    // the same slur again removes it.
+    edit::toggle_slur(&mut doc, ids[0], ids[1], SlurPlacement::Double).unwrap();
+    assert_eq!(
+        event_at(&doc, cursor, 0).markings.slur_placement,
+        SlurPlacement::Double
+    );
+    assert!(event_at(&doc, cursor, 1).markings.slur_stop);
+    edit::toggle_slur(&mut doc, ids[0], ids[1], SlurPlacement::Double).unwrap();
+    assert!(!event_at(&doc, cursor, 0).markings.slur_start);
+    assert!(!event_at(&doc, cursor, 1).markings.slur_stop);
+    edit::toggle_slur(&mut doc, ids[0], ids[1], SlurPlacement::Below).unwrap();
+    assert_eq!(edit::slurs(doc.score(), false).len(), 2);
+
     edit::remove_slur(&mut doc, ids[3], false).unwrap();
     assert_eq!(edit::slurs(doc.score(), false).len(), 1);
     assert!(!event_at(&doc, cursor, 2).markings.slur_start);

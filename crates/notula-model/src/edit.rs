@@ -1303,8 +1303,15 @@ fn toggle_slur_span(
         score: doc.score(),
         events: Vec::new(),
     };
+    let current_placement = if phrase {
+        start_event.markings.phrase_slur_placement
+    } else {
+        start_event.markings.slur_placement
+    };
+    // Placing the same slur again removes it; a different end or placement replaces it, as
+    // with hairpins.
     match existing {
-        Some(old) if old.end == end => {
+        Some(old) if old.end == end && current_placement == placement => {
             edits.edit(start, |markings| {
                 set_start(markings, false, SlurPlacement::Auto)
             })?;

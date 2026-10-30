@@ -1767,3 +1767,88 @@ fn a_metronome_mark_goes_above_a_register_and_registers_above_articulations() {
         "tempo {tempo_text}, register top {register_top}"
     );
 }
+
+fn chord(b: &mut Builder, steps: &[(Step, i8)], value: NoteValue) -> EventId {
+    let kind = EventKind::Chord {
+        pitches: steps
+            .iter()
+            .map(|&(step, octave)| Pitch::new(step, 0, octave))
+            .collect(),
+        tied: false,
+    };
+    b.append(0, 0, kind, value)
+}
+
+#[test]
+fn a_double_slur_runs_above_the_upper_and_below_the_lower_notes() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let start = chord(&mut b, &[(Step::E, 4), (Step::C, 5)], NoteValue::Half);
+    let end = chord(&mut b, &[(Step::F, 4), (Step::D, 5)], NoteValue::Half);
+    edit::toggle_slur(&mut b.doc, start, end, SlurPlacement::Double).unwrap();
+    let list = b.layout(100.0);
+    let slurs: Vec<_> = list
+        .items
+        .iter()
+        .filter_map(|item| match &item.shape {
+            Shape::Slur { points } if item.event == Some(start) => Some(points.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(slurs.len(), 2);
+    let heads: Vec<f32> = list
+        .items
+        .iter()
+        .filter_map(|item| match item.shape {
+            Shape::Glyph { y, glyph, .. } if item.event == Some(start) && glyph == HALF_HEAD => {
+                Some(y)
+            }
+            _ => None,
+        })
+        .collect();
+    let (top_head, bottom_head) = (
+        heads.iter().copied().fold(f32::INFINITY, f32::min),
+        heads.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+    );
+    let extent = |points: &Vec<[f32; 2]>| {
+        points
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), point| {
+                (low.min(point[1]), high.max(point[1]))
+            })
+    };
+    // One bows above the upper notes, the other below the lower ones.
+    let mut extents: Vec<_> = slurs.iter().map(extent).collect();
+    extents.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert!(extents[0].0 < top_head - 0.5, "{heads:?} {extents:?}");
+    assert!(extents[0].1 < bottom_head, "{heads:?} {extents:?}");
+    assert!(extents[1].1 > bottom_head + 0.5, "{heads:?} {extents:?}");
+    assert!(extents[1].0 > top_head, "{heads:?} {extents:?}");
+}
+
+#[test]
+fn ties_of_a_chord_bend_apart() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let notes = [(Step::E, 4), (Step::G, 4), (Step::C, 5)];
+    let first = chord(&mut b, &notes, NoteValue::Half);
+    chord(&mut b, &notes, NoteValue::Half);
+    edit::toggle_tie(&mut b.doc, first).unwrap();
+    let list = b.layout(100.0);
+    // Each tie's middle point against the ends: negative bends up, positive down.
+    let mut bends: Vec<(f32, f32)> = list
+        .items
+        .iter()
+        .filter_map(|item| match &item.shape {
+            Shape::Tie { points } if item.event == Some(first) => {
+                let middle = points[points.len() / 4][1];
+                Some((points[0][1], middle - points[0][1]))
+            }
+            _ => None,
+        })
+        .collect();
+    bends.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert_eq!(bends.len(), 3);
+    // The top note's tie bends up, the bottom note's down; C5 has the stem down, so the
+    // middle G4 follows the usual side, above.
+    assert!(bends[0].1 < 0.0, "{bends:?}");
+    assert!(bends[2].1 > 0.0, "{bends:?}");
+}

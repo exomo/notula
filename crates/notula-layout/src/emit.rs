@@ -1,6 +1,6 @@
 //! Turns planned events into drawing primitives once their horizontal positions are known.
 
-use notula_model::{Articulation, EventId, NoteValue, Tempo};
+use notula_model::{Articulation, EventId, NoteValue, SlurPlacement, Tempo};
 
 use crate::engrave::{Body, EventPlan, NotePlan, VoicePlan, dot_advance};
 use crate::render::{Anchor, Canvas};
@@ -725,17 +725,25 @@ pub(crate) fn staff_reach(voices: &[VoicePlan]) -> (f32, f32) {
                     above -= room;
                 }
             }
-            let slurred = event.slur_start
-                || event.slur_stop
-                || event.phrase_slur_start
-                || event.phrase_slur_stop;
-            if slurred {
-                // As drawn: slurs follow the stem side unless placed explicitly.
-                if event.stem_up {
-                    above -= SLUR_ROOM;
-                } else {
-                    below += SLUR_ROOM;
-                }
+            // As drawn: slurs follow the stem side unless placed explicitly; a double slur
+            // takes room on both sides.
+            let side = |slurred: bool, placement: SlurPlacement| match (slurred, placement) {
+                (false, _) => (false, false),
+                (true, SlurPlacement::Auto) => (event.stem_up, !event.stem_up),
+                (true, SlurPlacement::Above) => (true, false),
+                (true, SlurPlacement::Below) => (false, true),
+                (true, SlurPlacement::Double) => (true, true),
+            };
+            let slur = side(event.slur_start || event.slur_stop, event.slur_placement);
+            let phrase = side(
+                event.phrase_slur_start || event.phrase_slur_stop,
+                event.phrase_slur_placement,
+            );
+            if slur.0 || phrase.0 {
+                above -= SLUR_ROOM;
+            }
+            if slur.1 || phrase.1 {
+                below += SLUR_ROOM;
             }
             top = top.min(above);
             bottom = bottom.max(below);

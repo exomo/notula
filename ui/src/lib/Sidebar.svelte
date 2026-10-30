@@ -251,6 +251,7 @@
         <option value="auto">Auto</option>
         <option value="above">Above</option>
         <option value="below">Below</option>
+        <option value="double" title="One slur above the upper notes and one below the lower notes">Double</option>
       </select>
     </div>
     <div class="row">

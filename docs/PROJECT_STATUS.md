@@ -1,6 +1,6 @@
 # Project Status
 
-Last verified against commit `4f44295` (`Add a hide-name checkbox to Score Properties`) on `main`, plus uncommitted accordion registers. Update this handoff when a feature is completed or priorities change.
+Last verified against commit `009d1bf` (`Add accordion registers`) on `main`, plus uncommitted double slurs and chord ties. Update this handoff when a feature is completed or priorities change.
 
 ## Product Snapshot
 
@@ -10,6 +10,12 @@ Implemented capabilities include score setup and properties, instruments and mul
 
 ## Recent Completed Work
 
+- Double slurs and chord ties:
+  - `SlurPlacement::Double` draws one slur above the chords' upper notes and one below their lower notes (`slur_sides` in layout; both halves are fitted like single slurs and count for staff spacing). It is an explicit choice in the side panel's slur placement menu ("Double"); Auto stays a single slur. It applies to phrase slurs too.
+  - MusicXML: a double slur exports as two numbered slurs, ordinary slurs as numbers 1 and 3, phrase slurs as 2 and 4, each with `placement` above and below; both are stopped at the end. On import, two slurs starting at one note, one above and one below, become a double slur (the first stop closes it); other combinations keep the first slur and report the rest.
+  - Ties of a chord in one voice bend apart: the upper notes' ties up, the lower notes' down, and the middle note of an odd chord to the usual side (`tie_below`). With another voice on the staff, ties keep bending away from it.
+  - Ties are entered with the input bar's Tie button or the T key.
+  - Placing a slur or phrase slur from a note where one starts replaces it when the end or the placement differs (so a slur can be switched to Double), and removes it only when both match, as hairpins do with their kind.
 - Accordion registers, the first of the extended annotations:
   - Model: `Markings::register: Option<Register>` (Serde default), on the event where the register takes effect, so it stays with its staff and moves with copy, paste, and shift; a note entered over another keeps its register like its dynamic, and a rest keeps it. `Register::Treble { high, lower_tremolo, middle, upper_tremolo, low }` is the 3-rank treble symbol (4′ top, 16′ bottom, 8′ in the middle with tremolo reeds right and left); `Register::Bass { upper, lower, master }` the 2-rank bass symbol. Dots are a set, so presets and custom combinations are alike. `edit::set_register`; playback ignores registers.
   - Engraving: built from Bravura's empty symbols (U+E8C6, U+E8C8) and the combining dot (U+E8CA) at the dot positions of the font's preset symbols (`smufl::register`), drawn at font size 3.75 (about three spaces). One line per staff and system above all note markup: the staff, notes, stems, beams, articulations, fermatas (`emit::register_line` uses `emit::staff_reach`), and the slurs, phrase slurs, and ties under a register (drawn after them). Metronome marks go above registers and slurs. Horizontal room like dynamics; staff spacing allows for them, with a fixed allowance for slurs.

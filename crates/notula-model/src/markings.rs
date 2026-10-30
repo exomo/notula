@@ -78,7 +78,8 @@ pub enum Register {
     },
 }
 
-/// Preferred side for a slur. `Auto` follows the stem direction.
+/// Preferred side for a slur. `Auto` follows the stem direction; `Double` draws one slur
+/// above the chords' upper notes and one below their lower notes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SlurPlacement {
@@ -86,6 +87,7 @@ pub enum SlurPlacement {
     Auto,
     Above,
     Below,
+    Double,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

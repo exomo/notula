@@ -48,6 +48,35 @@ pub fn export(score: &Score) -> MusicXmlExport {
         );
     }
     let wedges = wedge_marks(&hairpins);
+    // Events where a double slur or double phrase slur ends, which close both halves.
+    let placements: std::collections::HashMap<_, _> = score
+        .staves()
+        .flat_map(|staff| &staff.measures)
+        .flat_map(|measure| &measure.voices)
+        .flat_map(|voice| &voice.events)
+        .map(|event| {
+            (
+                event.id,
+                (
+                    event.markings.slur_placement,
+                    event.markings.phrase_slur_placement,
+                ),
+            )
+        })
+        .collect();
+    let double_ends = |phrase: bool| -> std::collections::HashSet<_> {
+        notula_model::edit::slurs(score, phrase)
+            .into_iter()
+            .filter(|span| {
+                placements.get(&span.start).is_some_and(|placement| {
+                    let placement = if phrase { placement.1 } else { placement.0 };
+                    placement == SlurPlacement::Double
+                })
+            })
+            .map(|span| span.end)
+            .collect()
+    };
+    let (double_slur_ends, double_phrase_ends) = (double_ends(false), double_ends(true));
     let bass_registers = score
         .staves()
         .flat_map(|staff| &staff.measures)
@@ -181,6 +210,10 @@ pub fn export(score: &Score) -> MusicXmlExport {
                             staff_index + 1,
                             info.key_signature.fifths,
                             ties.get(&event.id).unwrap_or(&TieMarks::default()),
+                            (
+                                double_slur_ends.contains(&event.id),
+                                double_phrase_ends.contains(&event.id),
+                            ),
                         );
                         // A hairpin ends where its last event does.
                         if let Some(number) = wedge.stop {
@@ -420,6 +453,39 @@ fn step(value: notula_model::Step) -> char {
     }
 }
 
+/// Slur marks of an event, written on its first note. `double_ends` tells whether a slur
+/// and a phrase slur ending at the event are double slurs.
+fn slur_marks(
+    event: &Event,
+    pitch_index: usize,
+    phrase: bool,
+    double_ends: (bool, bool),
+) -> SlurMarks {
+    let markings = &event.markings;
+    let (start, stop, placement, double) = if phrase {
+        (
+            markings.phrase_slur_start,
+            markings.phrase_slur_stop,
+            markings.phrase_slur_placement,
+            double_ends.1,
+        )
+    } else {
+        (
+            markings.slur_start,
+            markings.slur_stop,
+            markings.slur_placement,
+            double_ends.0,
+        )
+    };
+    if pitch_index > 0 {
+        return SlurMarks::default();
+    }
+    SlurMarks {
+        start: start.then_some(placement),
+        stop: stop.then_some(double),
+    }
+}
+
 fn write_event(
     xml: &mut String,
     event: &Event,
@@ -427,6 +493,7 @@ fn write_event(
     staff: usize,
     fifths: i8,
     ties: &TieMarks,
+    double_ends: (bool, bool),
 ) {
     let pitches = match &event.kind {
         EventKind::Rest => vec![None],
@@ -473,12 +540,8 @@ fn write_event(
             pitch_index == 0,
             pitch.is_some_and(|pitch| ties.starts.contains(&pitch)),
             pitch.is_some_and(|pitch| ties.stops.contains(&pitch)),
-            pitch_index == 0 && event.markings.slur_start,
-            pitch_index == 0 && event.markings.slur_stop,
-            event.markings.slur_placement,
-            pitch_index == 0 && event.markings.phrase_slur_start,
-            pitch_index == 0 && event.markings.phrase_slur_stop,
-            event.markings.phrase_slur_placement,
+            slur_marks(event, pitch_index, false, double_ends),
+            slur_marks(event, pitch_index, true, double_ends),
         );
         if let Some(pitch) = pitch {
             if pitch.alter != (notula_model::KeySignature { fifths }).alter(pitch.step) {
@@ -497,18 +560,64 @@ fn write_event(
     }
 }
 
+/// One kind of slur at a note: where a slur starting here is placed, and whether one ending
+/// here is a double slur (`Some(true)`) or a single one.
+#[derive(Clone, Copy, Default)]
+struct SlurMarks {
+    start: Option<SlurPlacement>,
+    stop: Option<bool>,
+}
+
+impl SlurMarks {
+    /// Writes the marks with `number` for the slur, and `number + 2` for a double slur's lower
+    /// half.
+    fn write(self, xml: &mut String, number: u32) {
+        if let Some(double) = self.stop {
+            let _ = write!(xml, "<slur type=\"stop\" number=\"{number}\"/>");
+            if double {
+                let _ = write!(xml, "<slur type=\"stop\" number=\"{}\"/>", number + 2);
+            }
+        }
+        match self.start {
+            None => {}
+            Some(SlurPlacement::Auto) => {
+                let _ = write!(xml, "<slur type=\"start\" number=\"{number}\"/>");
+            }
+            Some(SlurPlacement::Above) => {
+                let _ = write!(
+                    xml,
+                    "<slur type=\"start\" number=\"{number}\" placement=\"above\"/>"
+                );
+            }
+            Some(SlurPlacement::Below) => {
+                let _ = write!(
+                    xml,
+                    "<slur type=\"start\" number=\"{number}\" placement=\"below\"/>"
+                );
+            }
+            Some(SlurPlacement::Double) => {
+                let _ = write!(
+                    xml,
+                    "<slur type=\"start\" number=\"{number}\" placement=\"above\"/><slur type=\"start\" number=\"{}\" placement=\"below\"/>",
+                    number + 2
+                );
+            }
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        self.start.is_none() && self.stop.is_none()
+    }
+}
+
 fn write_markings(
     xml: &mut String,
     event: &Event,
     include_articulations: bool,
     tie_start: bool,
     tie_stop: bool,
-    slur_start: bool,
-    slur_stop: bool,
-    slur_placement: SlurPlacement,
-    phrase_slur_start: bool,
-    phrase_slur_stop: bool,
-    phrase_slur_placement: SlurPlacement,
+    slur: SlurMarks,
+    phrase_slur: SlurMarks,
 ) {
     let articulations = &event.markings.articulations;
     let fermata = articulations.contains(&Articulation::Fermata);
@@ -526,10 +635,8 @@ fn write_markings(
     if (include_articulations && (!ordinary.is_empty() || fermata))
         || tie_start
         || tie_stop
-        || slur_start
-        || slur_stop
-        || phrase_slur_start
-        || phrase_slur_stop
+        || !slur.is_empty()
+        || !phrase_slur.is_empty()
     {
         xml.push_str("<notations>");
         if tie_stop {
@@ -538,34 +645,9 @@ fn write_markings(
         if tie_start {
             xml.push_str("<tied type=\"start\"/>");
         }
-        if slur_stop {
-            xml.push_str("<slur type=\"stop\"/>");
-        }
-        if slur_start {
-            match slur_placement {
-                SlurPlacement::Auto => xml.push_str("<slur type=\"start\" number=\"1\"/>"),
-                SlurPlacement::Above => {
-                    xml.push_str("<slur type=\"start\" number=\"1\" placement=\"above\"/>")
-                }
-                SlurPlacement::Below => {
-                    xml.push_str("<slur type=\"start\" number=\"1\" placement=\"below\"/>")
-                }
-            }
-        }
-        if phrase_slur_stop {
-            xml.push_str("<slur type=\"stop\" number=\"2\"/>");
-        }
-        if phrase_slur_start {
-            match phrase_slur_placement {
-                SlurPlacement::Auto => xml.push_str("<slur type=\"start\" number=\"2\"/>"),
-                SlurPlacement::Above => {
-                    xml.push_str("<slur type=\"start\" number=\"2\" placement=\"above\"/>")
-                }
-                SlurPlacement::Below => {
-                    xml.push_str("<slur type=\"start\" number=\"2\" placement=\"below\"/>")
-                }
-            }
-        }
+        // Ordinary slurs use numbers 1 and 3, phrase slurs 2 and 4.
+        slur.write(xml, 1);
+        phrase_slur.write(xml, 2);
         if include_articulations && fermata {
             xml.push_str("<fermata type=\"upright\"/>");
         }
@@ -1177,7 +1259,11 @@ fn parse_markings(node: roxmltree::Node<'_, '_>, unsupported: &mut BTreeSet<Stri
                 // Ties are stored on the note that starts the tie.
             }
         }
+        // Numbers 2 and 4 are phrase slurs, as Notula writes them; others ordinary slurs. Two
+        // slurs starting at one note, one above and one below, are a double slur.
+        let mut starts: [Vec<SlurPlacement>; 2] = [Vec::new(), Vec::new()];
         for slur in elements(notation, "slur") {
+            let phrase = matches!(slur.attribute("number"), Some("2" | "4"));
             match slur.attribute("type") {
                 Some("start") => {
                     let placement = match slur.attribute("placement") {
@@ -1189,22 +1275,37 @@ fn parse_markings(node: roxmltree::Node<'_, '_>, unsupported: &mut BTreeSet<Stri
                             SlurPlacement::Auto
                         }
                     };
-                    if slur.attribute("number") == Some("2") {
-                        markings.phrase_slur_start = true;
-                        markings.phrase_slur_placement = placement;
-                    } else {
-                        markings.slur_start = true;
-                        markings.slur_placement = placement;
-                    }
+                    starts[usize::from(phrase)].push(placement);
                 }
                 Some("stop") => {
-                    if slur.attribute("number") == Some("2") {
+                    if phrase {
                         markings.phrase_slur_stop = true;
                     } else {
                         markings.slur_stop = true;
                     }
                 }
                 _ => remember(unsupported, "slur type"),
+            }
+        }
+        for (phrase, placements) in starts.into_iter().enumerate() {
+            let Some(&first) = placements.first() else {
+                continue;
+            };
+            let placement = match placements[..] {
+                [SlurPlacement::Above, SlurPlacement::Below]
+                | [SlurPlacement::Below, SlurPlacement::Above] => SlurPlacement::Double,
+                [_] => first,
+                _ => {
+                    remember(unsupported, "more than one slur starting at a note");
+                    first
+                }
+            };
+            if phrase == 1 {
+                markings.phrase_slur_start = true;
+                markings.phrase_slur_placement = placement;
+            } else {
+                markings.slur_start = true;
+                markings.slur_placement = placement;
             }
         }
         for child in notation.children().filter(|child| child.is_element()) {
@@ -2703,5 +2804,54 @@ mod tests {
             .map(|event| event.markings.register)
             .collect();
         assert_eq!(read, registers.map(Some).to_vec());
+    }
+
+    #[test]
+    fn double_slurs_round_trip_as_two_numbered_slurs() {
+        let mut doc = Document::new();
+        let part = doc.new_part("Accordion", &[Clef::Treble]);
+        let staff = part.staves[0].id;
+        doc.execute(Command::AddPart { index: 0, part }).unwrap();
+        let at = VoiceLocation {
+            staff,
+            measure: 0,
+            voice: 0,
+        };
+        let chord = |doc: &mut Document, steps: [Step; 2]| {
+            Event::new(
+                doc.new_event_id(),
+                Duration::new(NoteValue::Half, 0),
+                EventKind::Chord {
+                    pitches: steps.iter().map(|step| Pitch::new(*step, 0, 4)).collect(),
+                    tied: false,
+                },
+            )
+        };
+        let mut start = chord(&mut doc, [Step::C, Step::E]);
+        start.markings.slur_start = true;
+        start.markings.slur_placement = SlurPlacement::Double;
+        let mut end = chord(&mut doc, [Step::D, Step::F]);
+        end.markings.slur_stop = true;
+        for (index, event) in [start, end].into_iter().enumerate() {
+            doc.execute(Command::InsertEvent { at, index, event })
+                .unwrap();
+        }
+
+        let xml = export(doc.score()).xml;
+        assert!(xml.contains(
+            r#"<slur type="start" number="1" placement="above"/><slur type="start" number="3" placement="below"/>"#
+        ));
+        assert!(xml.contains(r#"<slur type="stop" number="1"/><slur type="stop" number="3"/>"#));
+
+        let imported = import(&xml).unwrap();
+        let events = &imported.score.parts[0].staves[0].measures[0].voices[0].events;
+        assert_eq!(events[0].markings.slur_placement, SlurPlacement::Double);
+        assert!(events[1].markings.slur_stop);
+        assert!(
+            imported
+                .unsupported
+                .iter()
+                .all(|item| !item.contains("slur"))
+        );
     }
 }
