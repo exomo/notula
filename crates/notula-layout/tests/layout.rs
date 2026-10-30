@@ -999,12 +999,13 @@ fn metronome_marks_clear_high_notes_beneath_them() {
                 hidden: false,
             })
             .unwrap();
-        builder
-            .layout(100.0)
-            .items
+        let list = builder.layout(100.0);
+        // Relative to the staff, which moves down to make room for the mark.
+        let staff_top = list.areas[0].y_top;
+        list.items
             .into_iter()
             .find_map(|item| match item.shape {
-                Shape::Text { y, text, .. } if text == "= 120" => Some(y),
+                Shape::Text { y, text, .. } if text == "= 120" => Some(y - staff_top),
                 _ => None,
             })
             .unwrap()
@@ -1314,4 +1315,83 @@ fn clicks_between_events_put_the_cursor_before_the_event_to_the_right() {
     // Past the last notehead is the end of the measure.
     let end = hit_test(score, &list, upper.x_end - 0.5, upper.y_top + 2.0).unwrap();
     assert_eq!(end.tick, None);
+}
+
+/// A staff with `upper` in its first voice and `lower` in a second voice, both quarters.
+fn two_voices(upper: Pitch, lower: Pitch) -> (Builder, EventId, EventId) {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let first = b.note(0, 0, upper, NoteValue::Quarter);
+    let staff = b.staves[0];
+    let voice = edit::add_voice(&mut b.doc, staff, 0).unwrap();
+    let second = edit::enter_note(
+        &mut b.doc,
+        Cursor {
+            staff,
+            measure: 0,
+            voice,
+            tick: 0,
+        },
+        lower,
+        Duration::new(NoteValue::Quarter, 0),
+    )
+    .unwrap()
+    .event;
+    (b, first, second)
+}
+
+fn glyph_y(list: &RenderList, event: EventId, glyph: char) -> Option<f32> {
+    list.items.iter().find_map(|item| match item.shape {
+        Shape::Glyph { y, glyph: g, .. } if item.event == Some(event) && g == glyph => Some(y),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_lower_voice_fermata_is_inverted_below_the_staff() {
+    let (mut b, _, lower) = two_voices(Pitch::new(Step::C, 0, 5), Pitch::new(Step::E, 0, 4));
+    edit::toggle_articulation(&mut b.doc, lower, Articulation::Fermata).unwrap();
+    let list = b.layout(100.0);
+    let staff_bottom = list.areas[0].y_top + STAFF_HEIGHT;
+    let fermata = glyph_y(&list, lower, '\u{E4C1}').expect("inverted fermata");
+    assert!(
+        fermata > staff_bottom,
+        "{fermata} should be below {staff_bottom}"
+    );
+    assert!(glyph_y(&list, lower, '\u{E4C0}').is_none());
+}
+
+#[test]
+fn articulations_go_on_the_stem_side_with_two_voices() {
+    let (mut b, upper, lower) = two_voices(Pitch::new(Step::E, 0, 5), Pitch::new(Step::G, 0, 4));
+    edit::toggle_articulation(&mut b.doc, upper, Articulation::Staccato).unwrap();
+    edit::toggle_articulation(&mut b.doc, lower, Articulation::Staccato).unwrap();
+    let list = b.layout(100.0);
+    let head = |event| glyph_y(&list, event, BLACK_HEAD).unwrap();
+    let upper_mark = glyph_y(&list, upper, '\u{E4A2}').expect("staccato above the upper voice");
+    let lower_mark = glyph_y(&list, lower, '\u{E4A3}').expect("staccato below the lower voice");
+    // Beyond the stems, not between the voices.
+    assert!(upper_mark < head(upper) - 3.0);
+    assert!(lower_mark > head(lower) + 3.0);
+}
+
+#[test]
+fn staves_move_apart_only_where_content_would_collide() {
+    let distance = |pitch: Pitch| {
+        let mut b = Builder::new(&[("", &[Clef::Treble]), ("", &[Clef::Treble])]);
+        b.note(1, 0, pitch, NoteValue::Whole);
+        let list = b.layout(100.0);
+        let top = |staff: StaffId| {
+            list.areas
+                .iter()
+                .find(|area| area.staff == staff)
+                .unwrap()
+                .y_top
+        };
+        top(b.staves[1]) - top(b.staves[0])
+    };
+    // Notes inside the staff keep the default distance between parts.
+    assert_eq!(distance(Pitch::new(Step::G, 0, 4)), 10.0);
+    // C7 sits five and a half spaces above the staff; with its notehead and the clearance
+    // below the staff above, the staves end 11.5 spaces apart.
+    assert_eq!(distance(Pitch::new(Step::C, 0, 7)), 11.5);
 }

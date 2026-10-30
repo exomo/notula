@@ -30,6 +30,10 @@ const STAFF_HEIGHT: f32 = 4.0;
 const STAFF_PITCH_IN_PART: f32 = 9.0;
 const STAFF_PITCH_BETWEEN_PARTS: f32 = 10.0;
 const SYSTEM_GAP: f32 = 8.0;
+/// Least room between what reaches out of neighbouring staves or systems.
+const STAFF_CLEARANCE: f32 = 1.5;
+/// How far tempo text below a part reaches under the line it hangs from.
+const TEMPO_TEXT_DEPTH: f32 = 2.4;
 const NAME_SIZE: f32 = 2.0;
 const NAME_CHAR_WIDTH: f32 = 1.1;
 const NAME_GAP: f32 = 0.6;
@@ -58,6 +62,9 @@ struct Rows {
     /// Rows belonging to each part.
     parts: Vec<Range<usize>>,
     height: f32,
+    /// How far content reaches above the first staff and below the last one.
+    above: f32,
+    below: f32,
 }
 
 impl Rows {
@@ -80,7 +87,41 @@ impl Rows {
             parts.push(start..y.len());
         }
         let height = y.last().map_or(0.0, |last| last + STAFF_HEIGHT);
-        Self { y, parts, height }
+        Self {
+            y,
+            parts,
+            height,
+            above: 0.0,
+            below: 0.0,
+        }
+    }
+
+    /// The rows of one system, moved apart where content reaching out of a staff, given as
+    /// (top, bottom) relative to its top line, would come closer to the next staff than
+    /// `STAFF_CLEARANCE`. Staves never come closer than the default distances.
+    fn spaced(&self, reaches: &[(f32, f32)]) -> Self {
+        let mut y: Vec<f32> = Vec::with_capacity(self.y.len());
+        for (index, reach) in reaches.iter().enumerate() {
+            let row = match index.checked_sub(1) {
+                None => 0.0,
+                Some(previous) => {
+                    let pitch = self.y[index] - self.y[previous];
+                    let needed = reaches[previous].1 - reach.0 + STAFF_CLEARANCE;
+                    y[previous] + pitch.max(needed)
+                }
+            };
+            y.push(row);
+        }
+        let height = y.last().map_or(0.0, |last| last + STAFF_HEIGHT);
+        Self {
+            above: reaches.first().map_or(0.0, |reach| -reach.0.min(0.0)),
+            below: reaches
+                .last()
+                .map_or(0.0, |reach| (reach.1 - STAFF_HEIGHT).max(0.0)),
+            y,
+            parts: self.parts.clone(),
+            height,
+        }
     }
 
     fn has_braces(&self) -> bool {
@@ -458,8 +499,16 @@ impl Layouter<'_> {
         let systems = break_systems(score, &self.metrics, right - first_x, right - other_x);
 
         let mut canvas = Canvas::default();
-        let mut y = VERTICAL_MARGIN;
+        let mut y = 0.0;
+        let mut previous: Option<Rows> = None;
         for (index, system) in systems.iter().enumerate() {
+            let rows = self.rows.spaced(&self.reaches(system));
+            y += match &previous {
+                None => VERTICAL_MARGIN.max(rows.above + STAFF_CLEARANCE),
+                Some(previous) => {
+                    previous.height + SYSTEM_GAP.max(previous.below + rows.above + STAFF_CLEARANCE)
+                }
+            };
             let x_start = if index == 0 { first_x } else { other_x };
             let is_last = index + 1 == systems.len();
             let body: f32 = system
@@ -479,13 +528,17 @@ impl Layouter<'_> {
             self.emit_system(
                 &mut canvas,
                 system,
+                &rows,
                 (x_start, x_end),
                 y,
                 stretch,
                 index == 0,
             );
-            y += self.rows.height + SYSTEM_GAP;
+            previous = Some(rows);
         }
+        let height = previous.map_or(2.0 * VERTICAL_MARGIN, |last| {
+            y + last.height + VERTICAL_MARGIN.max(last.below + STAFF_CLEARANCE)
+        });
 
         let event_voices: std::collections::HashMap<_, _> = self
             .staves
@@ -514,7 +567,7 @@ impl Layouter<'_> {
 
         RenderList {
             width,
-            height: y - SYSTEM_GAP + VERTICAL_MARGIN,
+            height,
             items: canvas.items,
             areas: canvas.areas,
         }
@@ -528,16 +581,81 @@ impl Layouter<'_> {
         }
     }
 
+    /// How far each staff's content reaches above and below its top line in a system,
+    /// including the dynamics line and tempo marks of its part.
+    fn reaches(&self, system: &System) -> Vec<(f32, f32)> {
+        let mut reaches = vec![(0.0_f32, STAFF_HEIGHT); self.staves.len()];
+        for measure in system.measures.clone() {
+            for (reach, plan) in reaches.iter_mut().zip(&self.metrics[measure].plans) {
+                let (top, bottom) = emit::staff_reach(&plan.voices);
+                *reach = (reach.0.min(top), reach.1.max(bottom));
+            }
+        }
+
+        let first_tick: u64 = self.score.measures[..system.measures.start]
+            .iter()
+            .map(|measure| u64::from(measure.capacity()))
+            .sum();
+        let last_tick = first_tick
+            + self.score.measures[system.measures.clone()]
+                .iter()
+                .map(|measure| u64::from(measure.capacity()))
+                .sum::<u64>();
+        for (reach, staff) in reaches.iter_mut().zip(&self.staves) {
+            let marked = staff.measures[system.measures.clone()]
+                .iter()
+                .flat_map(|measure| &measure.voices)
+                .flat_map(|voice| &voice.events)
+                .any(|event| {
+                    let markings = &event.markings;
+                    markings.dynamic.is_some()
+                        || markings.hairpin_start.is_some()
+                        || markings.hairpin_stop
+                })
+                || self.hairpins.iter().any(|span| {
+                    span.staff == staff.id
+                        && span.start_tick < last_tick
+                        && span.end_tick > first_tick
+                });
+            if marked {
+                reach.1 = reach.1.max(volume::line_bottom(reach.1));
+            }
+        }
+
+        let in_system = |measure: usize| system.measures.contains(&measure);
+        let tempo_marks = self
+            .score
+            .tempo_changes
+            .iter()
+            .any(|mark| !mark.hidden && in_system(mark.measure));
+        let tempo_texts = self
+            .score
+            .tempo_directions
+            .iter()
+            .any(|mark| in_system(mark.measure));
+        for part in self.rows.parts.iter().filter(|part| !part.is_empty()) {
+            if tempo_marks {
+                let top = &mut reaches[part.start].0;
+                *top = emit::metronome_top(*top);
+            }
+            if tempo_texts {
+                reaches[part.end - 1].1 += TEMPO_TEXT_DEPTH;
+            }
+        }
+        reaches
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn emit_system(
         &self,
         canvas: &mut Canvas,
         system: &System,
+        rows: &Rows,
         (x_start, x_end): (f32, f32),
         y_top: f32,
         stretch: f32,
         first_system: bool,
     ) {
-        let rows = &self.rows;
         for &row in &rows.y {
             for line in 0..5 {
                 let y = y_top + row + line as f32;
@@ -766,9 +884,14 @@ impl Layouter<'_> {
             }
         }
 
-        for (event, x, y) in foreground_fermatas {
-            canvas.knockout(x - 1.1, y - 1.5, 2.2, 1.6);
-            canvas.centered_glyph(Some(event), x, y, smufl::FERMATA_ABOVE, 4.0);
+        for (event, x, y, below) in foreground_fermatas {
+            if below {
+                canvas.knockout(x - 1.1, y - 0.1, 2.2, 1.6);
+                canvas.centered_glyph(Some(event), x, y, smufl::FERMATA_BELOW, 4.0);
+            } else {
+                canvas.knockout(x - 1.1, y - 1.5, 2.2, 1.6);
+                canvas.centered_glyph(Some(event), x, y, smufl::FERMATA_ABOVE, 4.0);
+            }
         }
         for source in placed_events.iter().filter(|event| event.tied) {
             let Some(next_id) = notula_model::edit::adjacent_event(self.score, source.id, true)

@@ -52,6 +52,9 @@ pub(crate) struct EventPlan {
     pub phrase_slur_stop: bool,
     pub phrase_slur_placement: SlurPlacement,
     pub stem_up: bool,
+    /// Another voice sounds at the same time, so the stem points away from it and marks go on
+    /// the stem side.
+    pub shares_staff: bool,
     pub body: Body,
     /// Space needed left of the column.
     pub left: f32,
@@ -321,13 +324,14 @@ fn plan_voice(
         events: drafts
             .iter()
             .zip(stem_up)
-            .map(|(draft, up)| finish_event(draft, up))
+            .zip(forced_up)
+            .map(|((draft, up), forced)| finish_event(draft, up, forced.is_some()))
             .collect(),
         beams: groups,
     }
 }
 
-fn finish_event(draft: &Draft, stem_up: bool) -> EventPlan {
+fn finish_event(draft: &Draft, stem_up: bool, shares_staff: bool) -> EventPlan {
     if draft.notes.is_empty() {
         let (_, width, y) = smufl::rest(draft.value);
         return EventPlan {
@@ -344,6 +348,7 @@ fn finish_event(draft: &Draft, stem_up: bool) -> EventPlan {
             phrase_slur_stop: draft.phrase_slur_stop,
             phrase_slur_placement: draft.phrase_slur_placement,
             stem_up,
+            shares_staff,
             body: Body::Rest { y },
             left: 0.0,
             right: width + dots_extent(draft.dots),
@@ -447,6 +452,7 @@ fn finish_event(draft: &Draft, stem_up: bool) -> EventPlan {
         phrase_slur_stop: draft.phrase_slur_stop,
         phrase_slur_placement: draft.phrase_slur_placement,
         stem_up,
+        shares_staff,
         body: Body::Chord { notes },
         left,
         right: heads_right + dots_extent(draft.dots),
@@ -574,7 +580,7 @@ mod tests {
         assert_eq!(
             fermatas
                 .iter()
-                .map(|(event, _, _)| *event)
+                .map(|(event, _, _, _)| *event)
                 .collect::<Vec<_>>(),
             vec![EventId(1), EventId(2)]
         );

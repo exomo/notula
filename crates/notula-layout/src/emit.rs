@@ -13,6 +13,7 @@ const BEAM_STUB: f32 = 1.0;
 const MAX_BEAM_DROP: f32 = 1.0;
 const MIDDLE_LINE: f32 = 2.0;
 const ARTICULATION_GAP: f32 = 1.0;
+const NOTEHEAD_HALF: f32 = 0.5;
 const METRONOME_SIZE: f32 = 2.6;
 const METRONOME_TEXT_SIZE: f32 = 2.0;
 const METRONOME_DOT_GAP: f32 = 0.15;
@@ -199,13 +200,18 @@ fn draw_dots(canvas: &mut Canvas, ev: &EventPlan, x: f32, ys: &[f32]) {
     }
 }
 
+/// Whether an event's marks go below it: on the notehead side, or with another voice in the
+/// staff on the stem side, away from that voice.
+pub(crate) fn marks_below(ev: &EventPlan) -> bool {
+    ev.stem_up != ev.shares_staff
+}
+
 fn draw_articulations(
     canvas: &mut Canvas,
     ev: &EventPlan,
     y0: f32,
     center_x: f32,
-    top: f32,
-    bottom: f32,
+    (top, bottom): (f32, f32),
 ) {
     let mut above_index = 0;
     let mut below_index = 0;
@@ -213,7 +219,7 @@ fn draw_articulations(
         if articulation == Articulation::Fermata {
             continue;
         }
-        let below = ev.stem_up;
+        let below = marks_below(ev);
         let y = if below {
             let y = articulation_y(bottom + 0.75 + below_index as f32 * ARTICULATION_GAP, true);
             below_index += 1;
@@ -233,27 +239,35 @@ fn draw_articulations(
     }
 }
 
+/// Fermatas of a staff's events as (event, centre x, baseline y, below). They clear every
+/// voice at their onset, so they are drawn after the other marks; a fermata below uses the
+/// inverted glyph.
 pub(crate) fn fermatas(
     voices: &[VoicePlan],
     y0: f32,
     x_of: &dyn Fn(u32) -> f32,
-) -> Vec<(EventId, f32, f32)> {
+) -> Vec<(EventId, f32, f32, bool)> {
     voices
         .iter()
         .flat_map(|voice| &voice.events)
         .filter(|event| event.articulations.contains(&Articulation::Fermata))
         .map(|event| {
-            let top = voices
-                .iter()
-                .flat_map(|voice| {
-                    voice
-                        .events
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, other)| other.onset == event.onset)
-                        .map(|(index, _)| upper_extent(voice, index))
-                })
-                .fold(f32::INFINITY, f32::min);
+            let below = event.shares_staff && !event.stem_up;
+            let reaches = voices.iter().flat_map(|voice| {
+                voice
+                    .events
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, other)| other.onset == event.onset)
+                    .map(move |(index, _)| extent(voice, index, !below))
+            });
+            let y = if below {
+                let bottom = reaches.fold(f32::NEG_INFINITY, f32::max);
+                articulation_y(bottom + ARTICULATION_GAP, true)
+            } else {
+                let top = reaches.fold(f32::INFINITY, f32::min);
+                articulation_y(top - ARTICULATION_GAP, false)
+            };
             let x = x_of(event.onset);
             let center_x = match &event.body {
                 Body::Rest { .. } => x + smufl::rest(event.value).1 / 2.0,
@@ -270,11 +284,7 @@ pub(crate) fn fermatas(
                     (left + right) / 2.0
                 }
             };
-            (
-                event.id,
-                center_x,
-                y0 + articulation_y(top - ARTICULATION_GAP, false),
-            )
+            (event.id, center_x, y0 + y, below)
         })
         .collect()
 }
@@ -293,22 +303,33 @@ fn articulation_y(target: f32, below: bool) -> f32 {
 }
 
 fn upper_extent(voice: &VoicePlan, event_index: usize) -> f32 {
-    let event = &voice.events[event_index];
-    let Body::Chord { notes } = &event.body else {
-        return match &event.body {
-            Body::Rest { y } => *y,
-            Body::Chord { .. } => unreachable!(),
-        };
-    };
-    let top = notes
-        .iter()
-        .map(|note| note.y)
-        .fold(f32::INFINITY, f32::min);
-    if !event.stem_up {
-        return top;
-    }
+    extent(voice, event_index, true)
+}
 
-    if let Some(group) = voice
+fn lower_extent(voice: &VoicePlan, event_index: usize) -> f32 {
+    extent(voice, event_index, false)
+}
+
+/// How far an event reaches above (`above`) or below its staff position, including a stem or
+/// beam on that side; staff coordinates grow downwards.
+fn extent(voice: &VoicePlan, event_index: usize, above: bool) -> f32 {
+    let event = &voice.events[event_index];
+    let notes = match &event.body {
+        Body::Rest { y } => return *y,
+        Body::Chord { notes } => notes,
+    };
+    let ys = notes.iter().map(|note| note.y);
+    let (edge, sign) = if above {
+        (ys.fold(f32::INFINITY, f32::min), -1.0)
+    } else {
+        (ys.fold(f32::NEG_INFINITY, f32::max), 1.0)
+    };
+    if event.stem_up != above {
+        return edge;
+    }
+    let outer = |a: f32, b: f32| if above { a.min(b) } else { a.max(b) };
+
+    let reach = if let Some(group) = voice
         .beams
         .iter()
         .find(|group| group.contains(&event_index))
@@ -318,16 +339,13 @@ fn upper_extent(voice: &VoicePlan, event_index: usize) -> f32 {
             .map(|&index| smufl::flag_count(voice.events[index].value))
             .max()
             .unwrap_or(1);
-        top.min(
-            top - MIN_BEAMED_STEM
-                - (levels.saturating_sub(1) as f32 * EXTRA_BEAM_STEM)
-                - MAX_BEAM_DROP,
-        )
+        MIN_BEAMED_STEM + levels.saturating_sub(1) as f32 * EXTRA_BEAM_STEM + MAX_BEAM_DROP
     } else {
         let length =
             STEM_LENGTH + smufl::flag_count(event.value).saturating_sub(1) as f32 * EXTRA_BEAM_STEM;
-        top.min((top - length).min(MIDDLE_LINE))
-    }
+        return outer(edge, outer(edge + sign * length, MIDDLE_LINE));
+    };
+    outer(edge, edge + sign * reach)
 }
 
 pub(crate) fn emit_voice(
@@ -340,21 +358,31 @@ pub(crate) fn emit_voice(
     for &i in voice.beams.iter().flatten() {
         beamed[i] = true;
     }
-    for (ev, &beamed) in voice.events.iter().zip(&beamed) {
-        emit_event(canvas, ev, x_of(ev.onset), y0, !beamed);
+    for (index, (ev, &beamed)) in voice.events.iter().zip(&beamed).enumerate() {
+        let reach = (upper_extent(voice, index), lower_extent(voice, index));
+        emit_event(canvas, ev, x_of(ev.onset), y0, !beamed, reach);
     }
     for group in &voice.beams {
         emit_beam(canvas, voice, group, y0, x_of);
     }
 }
 
-fn emit_event(canvas: &mut Canvas, ev: &EventPlan, x: f32, y0: f32, own_stem: bool) {
+/// `reach` is how far the event extends above and below, stems included; articulations go
+/// beyond it.
+fn emit_event(
+    canvas: &mut Canvas,
+    ev: &EventPlan,
+    x: f32,
+    y0: f32,
+    own_stem: bool,
+    reach: (f32, f32),
+) {
     match &ev.body {
         Body::Rest { y } => {
             let (glyph, width, _) = smufl::rest(ev.value);
             canvas.glyph(Some(ev.id), x, y0 + y, glyph, 4.0);
             draw_dots(canvas, ev, x, &[y0 + 1.5]);
-            draw_articulations(canvas, ev, y0, x + width / 2.0, *y, *y);
+            draw_articulations(canvas, ev, y0, x + width / 2.0, reach);
         }
         Body::Chord { notes } => {
             let (head, head_width) = smufl::notehead(ev.value);
@@ -424,21 +452,12 @@ fn emit_event(canvas: &mut Canvas, ev: &EventPlan, x: f32, y0: f32, own_stem: bo
             }
             draw_dots(canvas, ev, x, &dot_ys);
 
-            let top = notes
-                .iter()
-                .map(|note| note.y)
-                .fold(f32::INFINITY, f32::min);
-            let bottom = notes
-                .iter()
-                .map(|note| note.y)
-                .fold(f32::NEG_INFINITY, f32::max);
             draw_articulations(
                 canvas,
                 ev,
                 y0,
                 (notehead_left + notehead_right) / 2.0,
-                top,
-                bottom,
+                reach,
             );
 
             if own_stem && ev.value != NoteValue::Whole {
@@ -617,6 +636,65 @@ pub(crate) fn metronome_baseline(
         .map(|(voice, index)| upper_extent(voice, index))
         .fold(0.0, f32::min);
     y0 + top - METRONOME_CLEARANCE
+}
+
+/// Height of a fermata glyph from its baseline.
+const FERMATA_HEIGHT: f32 = 1.5;
+/// Room a slur needs beyond the notes it starts or ends on.
+const SLUR_ROOM: f32 = 1.5;
+/// Height of a metronome mark above its baseline.
+const METRONOME_HEIGHT: f32 = 3.0;
+
+/// How far a staff's events reach above and below its top line in one measure: notes, stems,
+/// beams, articulations, fermatas, and slur ends; staff coordinates grow downwards.
+pub(crate) fn staff_reach(voices: &[VoicePlan]) -> (f32, f32) {
+    let (mut top, mut bottom) = (0.0_f32, 4.0_f32);
+    for voice in voices {
+        for (index, event) in voice.events.iter().enumerate() {
+            let mut above = upper_extent(voice, index) - NOTEHEAD_HALF;
+            let mut below = lower_extent(voice, index) + NOTEHEAD_HALF;
+            let marks = event
+                .articulations
+                .iter()
+                .filter(|articulation| **articulation != Articulation::Fermata)
+                .count() as f32;
+            if marks > 0.0 {
+                let room = 0.75 + marks * ARTICULATION_GAP;
+                if marks_below(event) {
+                    below += room;
+                } else {
+                    above -= room;
+                }
+            }
+            let slurred = event.slur_start
+                || event.slur_stop
+                || event.phrase_slur_start
+                || event.phrase_slur_stop;
+            if slurred {
+                // As drawn: slurs follow the stem side unless placed explicitly.
+                if event.stem_up {
+                    above -= SLUR_ROOM;
+                } else {
+                    below += SLUR_ROOM;
+                }
+            }
+            top = top.min(above);
+            bottom = bottom.max(below);
+        }
+    }
+    for (_, _, y, below) in fermatas(voices, 0.0, &|_| 0.0) {
+        if below {
+            bottom = bottom.max(y + FERMATA_HEIGHT);
+        } else {
+            top = top.min(y - FERMATA_HEIGHT);
+        }
+    }
+    (top, bottom)
+}
+
+/// Where the top of a metronome mark lies above a staff whose content reaches up to `top`.
+pub(crate) fn metronome_top(top: f32) -> f32 {
+    top.min(0.0) - METRONOME_CLEARANCE - METRONOME_HEIGHT
 }
 
 /// Draws a metronome mark starting at `x`, with `baseline` under the notehead and text.

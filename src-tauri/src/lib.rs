@@ -1,5 +1,5 @@
 mod commands;
-mod export;
+pub mod export;
 mod playback;
 mod session;
 mod setup;

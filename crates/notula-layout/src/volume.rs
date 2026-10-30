@@ -31,6 +31,12 @@ const MIN_HAIRPIN_LENGTH: f32 = 1.0;
 /// How far below the dynamics baseline its lowest glyph reaches.
 pub(crate) const LINE_DEPTH: f32 = 0.7;
 
+/// How far below a staff's top line its dynamics line reaches, when the staff's notes reach
+/// down to `notes_bottom`.
+pub(crate) fn line_bottom(notes_bottom: f32) -> f32 {
+    (4.0 + LINE_BELOW_STAFF).max(notes_bottom + LINE_BELOW_NOTES) + LINE_DEPTH
+}
+
 /// Horizontal room a dynamic needs around its column: (left, right).
 pub(crate) fn dynamic_extent(dynamic: Dynamic) -> (f32, f32) {
     let width = smufl::dynamic(dynamic).1;
