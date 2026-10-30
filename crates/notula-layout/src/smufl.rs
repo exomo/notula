@@ -146,6 +146,9 @@ pub fn flag_count(value: NoteValue) -> usize {
 }
 
 /// Flag glyph and the y offset that aligns its stem anchor with the stem end.
+/// How far an up-stem flag reaches right of its stem.
+pub const FLAG_UP_WIDTH: f32 = 1.1;
+
 pub fn flag(value: NoteValue, stem_up: bool) -> Option<(char, f32)> {
     let flag = match (value, stem_up) {
         (NoteValue::Eighth, true) => ('\u{E240}', -0.04),

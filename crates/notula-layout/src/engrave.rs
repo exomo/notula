@@ -55,6 +55,8 @@ pub(crate) struct EventPlan {
     /// Another voice sounds at the same time, so the stem points away from it and marks go on
     /// the stem side.
     pub shares_staff: bool,
+    /// A rest that is its voice's only event and fills the measure; drawn centred in it.
+    pub fills_measure: bool,
     pub body: Body,
     /// Space needed left of the column.
     pub left: f32,
@@ -200,7 +202,14 @@ pub(crate) fn plan_staff(
                     })
                 })
                 .collect();
-            plan_voice(voice_drafts, info.time_signature, metric_offset, &forced)
+            let mut voice = plan_voice(voice_drafts, info.time_signature, metric_offset, &forced);
+            if let [event] = &mut voice.events[..]
+                && matches!(event.body, Body::Rest { .. })
+                && notula_model::Duration::new(event.value, event.dots).ticks() == info.capacity()
+            {
+                event.fills_measure = true;
+            }
+            voice
         })
         .collect();
 
@@ -320,18 +329,24 @@ fn plan_voice(
         }
     }
 
+    let beamed: Vec<bool> = (0..drafts.len())
+        .map(|index| groups.iter().any(|group| group.contains(&index)))
+        .collect();
     VoicePlan {
         events: drafts
             .iter()
             .zip(stem_up)
             .zip(forced_up)
-            .map(|((draft, up), forced)| finish_event(draft, up, forced.is_some()))
+            .zip(beamed)
+            .map(|(((draft, up), forced), beamed)| {
+                finish_event(draft, up, forced.is_some(), beamed)
+            })
             .collect(),
         beams: groups,
     }
 }
 
-fn finish_event(draft: &Draft, stem_up: bool, shares_staff: bool) -> EventPlan {
+fn finish_event(draft: &Draft, stem_up: bool, shares_staff: bool, beamed: bool) -> EventPlan {
     if draft.notes.is_empty() {
         let (_, width, y) = smufl::rest(draft.value);
         return EventPlan {
@@ -349,6 +364,7 @@ fn finish_event(draft: &Draft, stem_up: bool, shares_staff: bool) -> EventPlan {
             phrase_slur_placement: draft.phrase_slur_placement,
             stem_up,
             shares_staff,
+            fills_measure: false,
             body: Body::Rest { y },
             left: 0.0,
             right: width + dots_extent(draft.dots),
@@ -380,6 +396,13 @@ fn finish_event(draft: &Draft, stem_up: bool, shares_staff: bool) -> EventPlan {
         2.0 * head_width
     } else {
         head_width
+    };
+
+    // A flag on an up-stem hangs to the right of the stem, which sits at the notehead's edge.
+    let flag_right = if stem_up && !beamed && smufl::flag(draft.value, true).is_some() {
+        head_width + smufl::FLAG_UP_WIDTH
+    } else {
+        0.0
     };
 
     // Highest note first, each in the first column where it clears the previous one.
@@ -453,9 +476,10 @@ fn finish_event(draft: &Draft, stem_up: bool, shares_staff: bool) -> EventPlan {
         phrase_slur_placement: draft.phrase_slur_placement,
         stem_up,
         shares_staff,
+        fills_measure: false,
         body: Body::Chord { notes },
         left,
-        right: heads_right + dots_extent(draft.dots),
+        right: (heads_right + dots_extent(draft.dots)).max(flag_right),
         dot_x: heads_right + DOT_GAP,
     }
 }
@@ -576,7 +600,7 @@ mod tests {
             assert!(glyphs.contains(&(Some(EventId(1)), glyph)));
         }
         assert!(!glyphs.iter().any(|(_, glyph)| *glyph == '\u{E4C0}'));
-        let fermatas = crate::emit::fermatas(&plan.voices, 0.0, &|onset| onset as f32);
+        let fermatas = crate::emit::fermatas(&plan.voices, 0.0, &|event| event.onset as f32);
         assert_eq!(
             fermatas
                 .iter()

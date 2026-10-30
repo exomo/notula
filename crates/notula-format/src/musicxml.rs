@@ -68,15 +68,20 @@ pub fn export(score: &Score) -> MusicXmlExport {
     xml.push_str("  <part-list>\n");
     for (part_index, part) in score.parts.iter().enumerate() {
         let id = part_id(part_index);
+        let hidden = if part.hide_name {
+            " print-object=\"no\""
+        } else {
+            ""
+        };
         let _ = write!(
             xml,
-            "    <score-part id=\"{id}\"><part-name>{}</part-name>",
+            "    <score-part id=\"{id}\"><part-name{hidden}>{}</part-name>",
             escape(&part.name)
         );
         if !part.short_name.is_empty() {
             let _ = write!(
                 xml,
-                "<part-abbreviation>{}</part-abbreviation>",
+                "<part-abbreviation{hidden}>{}</part-abbreviation>",
                 escape(&part.short_name)
             );
         }
@@ -760,6 +765,7 @@ struct ParsedMeasure {
 struct ParsedPart {
     name: String,
     short_name: String,
+    hide_name: bool,
     clefs: Vec<Clef>,
     measures: Vec<ParsedMeasure>,
 }
@@ -1489,6 +1495,7 @@ fn parse_partwise_part(
     ParsedPart {
         name,
         short_name,
+        hide_name: false,
         clefs,
         measures,
     }
@@ -1648,7 +1655,7 @@ pub fn import(xml: &str) -> Result<MusicXmlImport, MusicXmlError> {
         ));
     }
     let mut unsupported = BTreeSet::new();
-    let names: HashMap<String, (String, String)> = element(root, "part-list")
+    let names: HashMap<String, (String, String, bool)> = element(root, "part-list")
         .into_iter()
         .flat_map(|list| elements(list, "score-part"))
         .map(|part| {
@@ -1657,17 +1664,22 @@ pub fn import(xml: &str) -> Result<MusicXmlImport, MusicXmlError> {
             let short = child_text(part, "part-abbreviation")
                 .unwrap_or("")
                 .to_owned();
-            (id, (name, short))
+            let hidden = element(part, "part-name")
+                .is_some_and(|name| name.attribute("print-object") == Some("no"));
+            (id, (name, short, hidden))
         })
         .collect();
     let parsed_parts: Vec<_> = elements(root, "part")
         .map(|part| {
             let id = part.attribute("id").unwrap_or("");
-            let (name, short) = names
+            let (name, short, hide_name) = names
                 .get(id)
                 .cloned()
-                .unwrap_or_else(|| (format!("Part {}", id), String::new()));
-            parse_partwise_part(part, name, short, &mut unsupported)
+                .unwrap_or_else(|| (format!("Part {}", id), String::new(), false));
+            ParsedPart {
+                hide_name,
+                ..parse_partwise_part(part, name, short, &mut unsupported)
+            }
         })
         .collect();
     if parsed_parts.is_empty() {
@@ -1734,6 +1746,7 @@ pub fn import(xml: &str) -> Result<MusicXmlImport, MusicXmlError> {
     for (index, part) in parsed_parts.iter().enumerate() {
         let mut model_part = doc.new_part(&part.name, &part.clefs);
         model_part.short_name = part.short_name.clone();
+        model_part.hide_name = part.hide_name;
         doc.execute(Command::AddPart {
             index,
             part: model_part,
@@ -2519,5 +2532,25 @@ mod tests {
         let imported = import_mxl(archive_bytes).unwrap();
         assert_eq!(imported.score.parts.len(), 1);
         assert_eq!(imported.score.parts[0].name, "Test");
+    }
+
+    #[test]
+    fn hidden_part_names_round_trip() {
+        let xml = r#"<score-partwise version="4.0"><part-list><score-part id="P1"><part-name print-object="no">Cantus</part-name><part-abbreviation print-object="no">C.</part-abbreviation></score-part><score-part id="P2"><part-name>Tenor</part-name></score-part></part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes><note><rest/><duration>4</duration><voice>1</voice></note></measure></part>
+<part id="P2"><measure number="1"><note><rest/><duration>4</duration><voice>1</voice></note></measure></part></score-partwise>"#;
+        let score = import(xml).unwrap().score;
+        // The name is kept for the instrument list, only not printed.
+        assert_eq!(score.parts[0].name, "Cantus");
+        assert!(score.parts[0].hide_name);
+        assert!(!score.parts[1].hide_name);
+
+        let exported = export(&score).xml;
+        assert!(exported.contains(r#"<part-name print-object="no">Cantus</part-name>"#));
+        assert!(
+            exported.contains(r#"<part-abbreviation print-object="no">C.</part-abbreviation>"#)
+        );
+        assert!(exported.contains("<part-name>Tenor</part-name>"));
+        assert!(import(&exported).unwrap().score.parts[0].hide_name);
     }
 }

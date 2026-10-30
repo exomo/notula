@@ -245,7 +245,7 @@ fn draw_articulations(
 pub(crate) fn fermatas(
     voices: &[VoicePlan],
     y0: f32,
-    x_of: &dyn Fn(u32) -> f32,
+    x_of: &dyn Fn(&EventPlan) -> f32,
 ) -> Vec<(EventId, f32, f32, bool)> {
     voices
         .iter()
@@ -268,7 +268,7 @@ pub(crate) fn fermatas(
                 let top = reaches.fold(f32::INFINITY, f32::min);
                 articulation_y(top - ARTICULATION_GAP, false)
             };
-            let x = x_of(event.onset);
+            let x = x_of(event);
             let center_x = match &event.body {
                 Body::Rest { .. } => x + smufl::rest(event.value).1 / 2.0,
                 Body::Chord { notes } => {

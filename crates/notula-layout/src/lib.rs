@@ -32,6 +32,8 @@ const STAFF_PITCH_BETWEEN_PARTS: f32 = 10.0;
 const SYSTEM_GAP: f32 = 8.0;
 /// Least room between what reaches out of neighbouring staves or systems.
 const STAFF_CLEARANCE: f32 = 1.5;
+/// Shortest tie leaving or entering a system.
+const MIN_OPEN_TIE: f32 = 1.5;
 /// How far tempo text below a part reaches under the line it hangs from.
 const TEMPO_TEXT_DEPTH: f32 = 2.4;
 const NAME_SIZE: f32 = 2.0;
@@ -222,6 +224,8 @@ struct PlacedEvent {
     staff_top: f32,
     voice: usize,
     stem_up: bool,
+    /// Ties curve below: on the notehead side, or with another voice, away from it.
+    ties_below: bool,
     notes: Vec<PlacedNote>,
 }
 
@@ -473,12 +477,14 @@ impl Layouter<'_> {
         let first_name_chars = score
             .parts
             .iter()
+            .filter(|part| !part.hide_name)
             .map(|p| p.name.chars().count())
             .max()
             .unwrap_or(0);
         let short_name_chars = score
             .parts
             .iter()
+            .filter(|part| !part.hide_name)
             .map(|part| short_name(part).chars().count())
             .max()
             .unwrap_or(0);
@@ -689,7 +695,9 @@ impl Layouter<'_> {
                     height,
                 );
             }
-            let label = if first_system {
+            let label = if part.hide_name {
+                ""
+            } else if first_system {
                 &part.name
             } else {
                 short_name(part)
@@ -762,8 +770,21 @@ impl Layouter<'_> {
                     let x = (body_start + body_end - width) / 2.0;
                     canvas.glyph(None, x, y0 + rest_y, glyph, 4.0);
                 }
+                // A rest filling the measure sits in its middle, like the placeholder rest.
+                let event_x = |event: &engrave::EventPlan| {
+                    if event.fills_measure {
+                        (body_start + body_end - event.right) / 2.0
+                    } else {
+                        x_of(event.onset)
+                    }
+                };
                 for (voice_index, voice) in plan.voices.iter().enumerate() {
-                    emit::emit_voice(canvas, voice, y0, &x_of);
+                    let centered = voice.events.first().filter(|event| event.fills_measure);
+                    let voice_x = |onset: u32| match centered {
+                        Some(rest) => event_x(rest),
+                        None => x_of(onset),
+                    };
+                    emit::emit_voice(canvas, voice, y0, &voice_x);
                     for event in &voice.events {
                         let (tied, stem_up) = (event.tied, event.stem_up);
                         let notes = match &event.body {
@@ -801,11 +822,12 @@ impl Layouter<'_> {
                             staff_top: y0,
                             voice: voice_index,
                             stem_up,
+                            ties_below: emit::marks_below(event),
                             notes,
                         });
                     }
                 }
-                foreground_fermatas.extend(emit::fermatas(&plan.voices, y0, &x_of));
+                foreground_fermatas.extend(emit::fermatas(&plan.voices, y0, &event_x));
             }
 
             for mark in self
@@ -915,7 +937,7 @@ impl Layouter<'_> {
                             note.x + note.width - 0.05,
                             next_note.x + 0.05,
                             (note.y + next_note.y) / 2.0,
-                            source.stem_up,
+                            source.ties_below,
                         );
                     }
                 }
@@ -934,13 +956,16 @@ impl Layouter<'_> {
             };
             for note in &source.notes {
                 if pitches.contains(&note.pitch) {
+                    // A tie leaving the system runs to its end, but stays long enough to
+                    // read as a tie when the note is close to the barline.
+                    let start = note.x + note.width - 0.05;
                     emit::emit_tie(
                         canvas,
                         source.id,
-                        (note.x + note.width - 0.05).min(cursor - 0.9),
-                        cursor - 0.3,
+                        start,
+                        (cursor - 0.3).max(start + MIN_OPEN_TIE),
                         note.y,
-                        source.stem_up,
+                        source.ties_below,
                     );
                 }
             }
@@ -980,7 +1005,7 @@ impl Layouter<'_> {
                         first_body_start + 0.1,
                         note.x + 0.05,
                         note.y,
-                        target.stem_up,
+                        target.ties_below,
                     );
                 }
             }

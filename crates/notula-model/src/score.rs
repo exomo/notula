@@ -221,6 +221,9 @@ pub struct Part {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub short_name: String,
+    /// The name and short name are kept but not printed beside the staves.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_name: bool,
     pub staves: Vec<Staff>,
 }
 
@@ -421,6 +424,7 @@ impl Score {
             id,
             name: name.to_owned(),
             short_name: String::new(),
+            hide_name: false,
             staves,
         }
     }

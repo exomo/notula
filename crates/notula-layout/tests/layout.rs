@@ -1395,3 +1395,124 @@ fn staves_move_apart_only_where_content_would_collide() {
     // below the staff above, the staves end 11.5 spaces apart.
     assert_eq!(distance(Pitch::new(Step::C, 0, 7)), 11.5);
 }
+
+fn head_xs(list: &RenderList, glyph: char) -> Vec<f32> {
+    let mut xs: Vec<f32> = list
+        .items
+        .iter()
+        .filter_map(|item| match item.shape {
+            Shape::Glyph { x, glyph: g, .. } if g == glyph => Some(x),
+            _ => None,
+        })
+        .collect();
+    xs.sort_by(f32::total_cmp);
+    xs
+}
+
+#[test]
+fn an_up_stem_flag_gets_room_before_the_next_note() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    // A lone eighth below the middle line has its stem up and an unbeamed flag.
+    b.note(0, 0, Pitch::new(Step::A, 0, 4), NoteValue::Eighth);
+    b.note(0, 0, Pitch::new(Step::C, 0, 5), NoteValue::Quarter);
+    let list = b.layout(200.0);
+    let heads = head_xs(&list, BLACK_HEAD);
+    // Notehead (1.18) plus flag (1.1) plus the usual clearance; positions are rounded.
+    assert!(heads[1] - heads[0] >= 1.18 + 1.1 + 1.0 - 0.01, "{heads:?}");
+}
+
+#[test]
+fn ties_of_two_voices_curve_away_from_each_other() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let upper = b.note(0, 0, Pitch::new(Step::E, 0, 5), NoteValue::Half);
+    b.note(0, 0, Pitch::new(Step::E, 0, 5), NoteValue::Half);
+    let staff = b.staves[0];
+    let voice = edit::add_voice(&mut b.doc, staff, 0).unwrap();
+    let mut cursor = Cursor {
+        staff,
+        measure: 0,
+        voice,
+        tick: 0,
+    };
+    let mut lower = None;
+    for _ in 0..2 {
+        let entry = edit::enter_note(
+            &mut b.doc,
+            cursor,
+            Pitch::new(Step::G, 0, 4),
+            Duration::new(NoteValue::Half, 0),
+        )
+        .unwrap();
+        lower.get_or_insert(entry.event);
+        cursor = entry.next;
+    }
+    let lower = lower.unwrap();
+    edit::toggle_tie(&mut b.doc, upper).unwrap();
+    edit::toggle_tie(&mut b.doc, lower).unwrap();
+
+    let list = b.layout(100.0);
+    let tie_ys = |event| -> Vec<f32> {
+        list.items
+            .iter()
+            .filter(|item| item.event == Some(event))
+            .find_map(|item| match &item.shape {
+                Shape::Tie { points } => Some(points.iter().map(|point| point[1]).collect()),
+                _ => None,
+            })
+            .expect("tie")
+    };
+    let head = |event| glyph_y(&list, event, HALF_HEAD).unwrap();
+    // The upper voice's tie bends above its notes, the lower voice's below.
+    let upper_ties = tie_ys(upper);
+    let lower_ties = tie_ys(lower);
+    assert!(upper_ties.iter().copied().fold(f32::INFINITY, f32::min) < head(upper));
+    assert!(lower_ties.iter().copied().fold(f32::NEG_INFINITY, f32::max) > head(lower));
+}
+
+#[test]
+fn hidden_part_names_are_not_printed_and_take_no_room() {
+    let start = |hidden: bool| {
+        let mut b = Builder::new(&[("Cantus", &[Clef::Treble])]);
+        b.note(0, 0, c4(), NoteValue::Whole);
+        if hidden {
+            let mut score = b.doc.score().clone();
+            score.parts[0].hide_name = true;
+            b.doc = Document::from_score(score);
+        }
+        let list = b.layout(100.0);
+        let printed = list
+            .items
+            .iter()
+            .any(|item| matches!(&item.shape, Shape::Text { text, .. } if text == "Cantus"));
+        (printed, list.areas[0].x_start)
+    };
+    let (shown, shown_start) = start(false);
+    let (hidden, hidden_start) = start(true);
+    assert!(shown && !hidden);
+    assert!(hidden_start < shown_start);
+}
+
+#[test]
+fn a_rest_filling_the_measure_is_centred_like_an_empty_measure() {
+    let mut b = Builder::new(&[("", &[Clef::Treble]), ("", &[Clef::Treble])]);
+    b.measures(2);
+    b.append(0, 0, EventKind::Rest, NoteValue::Whole);
+    for _ in 0..4 {
+        b.note(1, 0, c4(), NoteValue::Quarter);
+    }
+    let list = b.layout(100.0);
+    let area = &list.areas[0];
+    let rest_x = list
+        .items
+        .iter()
+        .find_map(|item| match item.shape {
+            Shape::Glyph { x, glyph, .. } if glyph == '\u{E4E3}' && item.event.is_some() => Some(x),
+            _ => None,
+        })
+        .expect("whole rest");
+    let middle = (area.x_start + area.x_end) / 2.0;
+    assert!(
+        (rest_x - middle).abs() < 1.5,
+        "rest at {rest_x}, middle {middle}"
+    );
+}
