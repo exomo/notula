@@ -5,6 +5,7 @@ import {
   type Articulation,
   type Dynamic,
   type Hairpin,
+  type Register,
   type Edited,
   type EventArticulations,
   type NoteValue,
@@ -681,6 +682,15 @@ class Editor {
     const event = this.selected;
     if (event === null) return;
     const edited = await this.run(() => api.setDynamic(event, dynamic));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshArticulations(event);
+  }
+
+  async setRegister(register: Register | null) {
+    const event = this.selected;
+    if (event === null) return;
+    const edited = await this.run(() => api.setRegister(event, register));
     if (!edited) return;
     this.apply(edited);
     await this.refreshArticulations(event);

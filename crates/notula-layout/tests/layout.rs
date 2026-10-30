@@ -1,7 +1,7 @@
 use notula_layout::{Item, LayoutOptions, RenderList, Shape, hit_test, layout};
 use notula_model::{
     Articulation, Clef, Command, Document, Duration, Event, EventId, EventKind, KeySignature,
-    NoteValue, Pitch, SlurPlacement, StaffId, Step, TimeSignature, TimeSignatureDisplay,
+    NoteValue, Pitch, Register, SlurPlacement, StaffId, Step, TimeSignature, TimeSignatureDisplay,
     VoiceLocation,
     edit::{self, Cursor},
 };
@@ -1680,4 +1680,90 @@ fn a_tie_on_a_single_note_lies_outside_its_notehead() {
         .expect("tie");
     // Even its ends stay above the middle of the notehead.
     assert!(lowest < head - 0.3, "tie reaches {lowest}, head at {head}");
+}
+
+#[test]
+fn registers_are_drawn_above_the_staff_with_their_dots() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let low = b.note(0, 0, c4(), NoteValue::Quarter);
+    let high = b.note(0, 0, Pitch::new(Step::A, 0, 6), NoteValue::Quarter);
+    let oboe = Register::Treble {
+        high: true,
+        lower_tremolo: false,
+        middle: true,
+        upper_tremolo: false,
+        low: false,
+    };
+    let bass = Register::Bass {
+        upper: true,
+        lower: true,
+        master: false,
+    };
+    edit::set_register(&mut b.doc, low, Some(oboe)).unwrap();
+    edit::set_register(&mut b.doc, high, Some(bass)).unwrap();
+    let list = b.layout(100.0);
+    let staff_top = list.areas[0].y_top;
+    let glyphs = |event, glyph| {
+        list.items
+            .iter()
+            .filter_map(|item| match item.shape {
+                Shape::Glyph { y, glyph: g, .. } if item.event == Some(event) && g == glyph => {
+                    Some(y)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    // Both symbols sit on one line, above the staff and above the A6 with its ledger lines.
+    let treble = glyphs(low, '\u{E8C6}');
+    assert_eq!(treble.len(), 1);
+    assert_eq!(treble, glyphs(high, '\u{E8C8}'));
+    let a6 = glyph_y(&list, high, BLACK_HEAD).unwrap();
+    assert!(treble[0] < staff_top && treble[0] < a6 - 0.5);
+    assert_eq!(glyphs(low, '\u{E8CA}').len(), 2);
+    assert_eq!(glyphs(high, '\u{E8CA}').len(), 2);
+}
+
+#[test]
+fn a_metronome_mark_goes_above_a_register_and_registers_above_articulations() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let note = b.note(0, 0, Pitch::new(Step::G, 0, 5), NoteValue::Quarter);
+    edit::toggle_articulation(&mut b.doc, note, Articulation::Accent).unwrap();
+    let register = Register::Treble {
+        high: false,
+        lower_tremolo: false,
+        middle: true,
+        upper_tremolo: false,
+        low: false,
+    };
+    edit::set_register(&mut b.doc, note, Some(register)).unwrap();
+    b.doc
+        .execute(Command::SetTempoChange {
+            measure: 0,
+            tick: 0,
+            tempo: Some(notula_model::Tempo::default()),
+            hidden: false,
+        })
+        .unwrap();
+    let list = b.layout(100.0);
+    // The register symbol's bottom is its glyph origin; it is drawn at 3.75 of 4 units.
+    let register_bottom = glyph_y(&list, note, '\u{E8C6}').unwrap();
+    let register_top = register_bottom - 3.128 * 3.75 / 4.0;
+    let accent = glyph_y(&list, note, '\u{E4A0}').unwrap();
+    assert!(
+        register_bottom < accent - 0.5,
+        "register {register_bottom}, accent {accent}"
+    );
+    let tempo_text = list
+        .items
+        .iter()
+        .find_map(|item| match &item.shape {
+            Shape::Text { y, text, .. } if text == "= 120" => Some(*y),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        tempo_text < register_top,
+        "tempo {tempo_text}, register top {register_top}"
+    );
 }

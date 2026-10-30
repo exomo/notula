@@ -75,6 +75,18 @@ impl Arc {
         }
     }
 
+    /// The arc's outer edge at `x`, if `x` lies between its ends.
+    pub fn top_at(&self, x: f32) -> Option<f32> {
+        let width = self.end.0 - self.start.0;
+        if width <= 0.0 || x < self.start.0 || x > self.end.0 {
+            return None;
+        }
+        let t = (x - self.start.0) / width;
+        let line = self.start.1 + (self.end.1 - self.start.1) * t;
+        let out = if self.above { -1.0 } else { 1.0 };
+        Some(line + out * self.depth * (std::f32::consts::PI * t).sin())
+    }
+
     /// Bows the arc out to pass `obstacles` (points on the outer edge of noteheads, stems, and
     /// beams under it) with some room, up to `max_depth`; beyond that, both ends move out too.
     pub fn clear(&mut self, obstacles: &[(f32, f32)], max_depth: f32) {
@@ -111,13 +123,14 @@ impl Arc {
     }
 }
 
+/// Draws a tie and returns its shape, so marks above it can keep clear.
 pub(crate) fn emit_tie(
     canvas: &mut Canvas,
     event: EventId,
     start: (f32, f32),
     end: (f32, f32),
     below: bool,
-) {
+) -> Arc {
     let depth = ((end.0 - start.0) * 0.24).clamp(0.5, 1.0);
     let arc = Arc {
         start,
@@ -126,6 +139,7 @@ pub(crate) fn emit_tie(
         depth,
     };
     emit_curve(canvas, event, &arc, false);
+    arc
 }
 
 pub(crate) fn emit_slur(canvas: &mut Canvas, event: EventId, arc: &Arc) {
@@ -735,6 +749,65 @@ pub(crate) fn staff_reach(voices: &[VoicePlan]) -> (f32, f32) {
         }
     }
     (top, bottom)
+}
+
+/// Font size of accordion register symbols; at the standard size they would be over three
+/// spaces tall.
+const REGISTER_SIZE: f32 = 3.75;
+/// Room between register symbols and the staff or the notes below them.
+const REGISTER_GAP: f32 = 0.8;
+
+/// Height of a register symbol as drawn.
+pub(crate) fn register_height() -> f32 {
+    smufl::REGISTER_DIAMETER * REGISTER_SIZE / 4.0
+}
+
+/// Horizontal room a register symbol needs around its column: (left, right).
+pub(crate) fn register_extent() -> (f32, f32) {
+    let half = register_height() / 2.0;
+    let center = smufl::notehead(notula_model::NoteValue::Quarter).1 / 2.0;
+    (half - center, half + center)
+}
+
+/// Where the bottom of a staff's register symbols lies in a system, relative to its top
+/// line: one line for the whole system, above the staff and everything its notes carry
+/// (stems, beams, articulations, fermatas, slur ends). `None` when no event in `measures`
+/// has a register.
+pub(crate) fn register_line<'a>(measures: impl Iterator<Item = &'a [VoicePlan]>) -> Option<f32> {
+    let mut any = false;
+    let mut top = 0.0_f32;
+    for voices in measures {
+        any |= voices
+            .iter()
+            .flat_map(|voice| &voice.events)
+            .any(|event| event.register.is_some());
+        top = top.min(staff_reach(voices).0);
+    }
+    any.then_some(top - REGISTER_GAP)
+}
+
+/// Draws a register symbol centred on `center_x` with its bottom on `bottom`.
+pub(crate) fn register_mark(
+    canvas: &mut Canvas,
+    event: EventId,
+    center_x: f32,
+    bottom: f32,
+    register: notula_model::Register,
+) {
+    let scale = REGISTER_SIZE / 4.0;
+    let (body, dots) = smufl::register(register);
+    let left = center_x - smufl::REGISTER_DIAMETER * scale / 2.0;
+    canvas.glyph(Some(event), left, bottom, body, REGISTER_SIZE);
+    let half_dot = smufl::REGISTER_DOT_SIZE / 2.0;
+    for (x, y) in dots {
+        canvas.glyph(
+            Some(event),
+            left + (x - half_dot) * scale,
+            bottom - (y - half_dot) * scale,
+            smufl::REGISTER_DOT,
+            REGISTER_SIZE,
+        );
+    }
 }
 
 /// Where the top of a metronome mark lies above a staff whose content reaches up to `top`.

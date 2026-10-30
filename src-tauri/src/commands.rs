@@ -7,7 +7,8 @@ use notula_model::edit::{self, Cursor};
 use notula_model::selection::{ResolvedSelection, Selection, Step as SelectionStep};
 use notula_model::{
     Articulation, Document, Duration, Dynamic, EventId, EventKind, Hairpin, KeySignature, Pitch,
-    StaffId, Step, Tempo, TempoChangeMark, TempoDirection, TimeSignature, TimeSignatureDisplay,
+    Register, StaffId, Step, Tempo, TempoChangeMark, TempoDirection, TimeSignature,
+    TimeSignatureDisplay,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -56,6 +57,7 @@ pub struct EventArticulations {
     tied: bool,
     tie_possible: bool,
     dynamic: Option<Dynamic>,
+    register: Option<Register>,
     /// Where the event lies in a hairpin, slur, and phrase slur, if it belongs to one.
     hairpin: Option<edit::SpanPosition>,
     slur: Option<edit::SpanPosition>,
@@ -679,6 +681,20 @@ pub fn set_dynamic(
     Ok(finish(&app, &session, cursor, Some(event)))
 }
 
+/// Sets or, with `None`, removes the accordion register at an event.
+#[tauri::command]
+pub fn set_register(
+    app: AppHandle,
+    state: State<AppState>,
+    event: EventId,
+    register: Option<Register>,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::set_register(&mut session.doc, event, register).map_err(text)?;
+    let cursor = cursor_of(&session, event);
+    Ok(finish(&app, &session, cursor, Some(event)))
+}
+
 #[tauri::command]
 pub fn toggle_hairpin(
     app: AppHandle,
@@ -821,6 +837,7 @@ pub fn event_articulations(state: State<AppState>, event: EventId) -> Option<Eve
         tied,
         tie_possible,
         dynamic: event.markings.dynamic,
+        register: event.markings.register,
         hairpin: edit::hairpin_at(session.doc.score(), event.id)
             .map(|span| span.position_of(event.id)),
         slur: edit::slur_at(session.doc.score(), event.id, false)

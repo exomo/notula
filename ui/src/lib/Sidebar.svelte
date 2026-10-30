@@ -3,6 +3,7 @@
   import { TEMPO_BEATS, editor, tempoBeatKey, tempoFromBeatKey } from "./editor.svelte";
   import { returnFocusAfterChoice, returnFocusAfterClick } from "./focus";
   import Icon from "./Icon.svelte";
+  import RegisterControl from "./RegisterControl.svelte";
 
   const DYNAMICS: { dynamic: Dynamic; label: string }[] = [
     { dynamic: "Ppp", label: "ppp" },
@@ -167,6 +168,17 @@
       </div>
     </section>
   {/if}
+
+  <section>
+    <h2>Accordion register</h2>
+    {#if selectedNote}
+      <RegisterControl value={selectedNote.register} onchange={(register) => editor.setRegister(register)} />
+    {:else if editor.hasRangeSelection}
+      <p class="hint">Registers are set on one note; click a note to edit its register.</p>
+    {:else}
+      <p class="hint">Select a note or rest to set an accordion register.</p>
+    {/if}
+  </section>
 
   <section>
     <h2>Dynamic</h2>

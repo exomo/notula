@@ -1,6 +1,6 @@
 //! Codepoints and metrics from the SMuFL Bravura font, in staff spaces at the standard size.
 
-use notula_model::{Articulation, Clef, Dynamic, NoteValue};
+use notula_model::{Articulation, Clef, Dynamic, NoteValue, Register};
 
 pub const STAFF_LINE_THICKNESS: f32 = 0.13;
 pub const STEM_THICKNESS: f32 = 0.12;
@@ -179,4 +179,56 @@ pub fn accidental(alter: i8) -> (char, f32) {
 
 pub fn time_digit(digit: u32) -> char {
     char::from_u32(0xE080 + digit).unwrap_or('\u{E080}')
+}
+
+/// Empty accordion register symbols and the dot that fills them (accdnCombRH3RanksEmpty,
+/// accdnCombLH2RanksEmpty, accdnCombDot).
+pub const REGISTER_TREBLE: char = '\u{E8C6}';
+pub const REGISTER_BASS: char = '\u{E8C8}';
+pub const REGISTER_DOT: char = '\u{E8CA}';
+/// Width and height of a register symbol, and of its dot, at the standard size.
+pub const REGISTER_DIAMETER: f32 = 3.128;
+pub const REGISTER_DOT_SIZE: f32 = 0.496;
+
+/// The empty symbol for a register and the centres of its dots at the standard size, measured
+/// from the symbol's bottom left with y up, as Bravura places them in its preset symbols.
+pub fn register(register: Register) -> (char, Vec<(f32, f32)>) {
+    const CENTRE: f32 = 1.564;
+    match register {
+        Register::Treble {
+            high,
+            lower_tremolo,
+            middle,
+            upper_tremolo,
+            low,
+        } => {
+            let dots = [
+                (high, (CENTRE, 2.564)),
+                (lower_tremolo, (0.764, CENTRE)),
+                (middle, (CENTRE, CENTRE)),
+                (upper_tremolo, (2.364, CENTRE)),
+                (low, (CENTRE, 0.564)),
+            ];
+            (REGISTER_TREBLE, set_dots(&dots))
+        }
+        Register::Bass {
+            upper,
+            lower,
+            master,
+        } => {
+            let dots = [
+                (upper, (CENTRE, 2.316)),
+                (lower, (CENTRE, 0.88)),
+                (master, (2.27, CENTRE)),
+            ];
+            (REGISTER_BASS, set_dots(&dots))
+        }
+    }
+}
+
+fn set_dots(dots: &[(bool, (f32, f32))]) -> Vec<(f32, f32)> {
+    dots.iter()
+        .filter(|(set, _)| *set)
+        .map(|(_, centre)| *centre)
+        .collect()
 }

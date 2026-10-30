@@ -64,6 +64,12 @@ pub(crate) fn measure_metrics(score: &Score, staves: &[&Staff], measure: usize) 
         for voice in &staff.measures[measure].voices {
             let mut onset = 0;
             for event in &voice.events {
+                if event.markings.register.is_some() {
+                    let (left, right) = emit::register_extent();
+                    let entry = extents.entry(onset).or_insert((0.0, 0.0));
+                    entry.0 = entry.0.max(left);
+                    entry.1 = entry.1.max(right);
+                }
                 if let Some(dynamic) = event.markings.dynamic {
                     let (left, right) = volume::dynamic_extent(dynamic);
                     let entry = extents.entry(onset).or_insert((0.0, 0.0));

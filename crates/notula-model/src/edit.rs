@@ -7,7 +7,7 @@ use crate::duration::{Duration, NoteValue, TimeSignature, TimeSignatureDisplay};
 use crate::error::ModelError;
 use crate::history::Document;
 use crate::ids::{EventId, StaffId};
-use crate::markings::{Articulation, Dynamic, Hairpin, Markings, SlurPlacement};
+use crate::markings::{Articulation, Dynamic, Hairpin, Markings, Register, SlurPlacement};
 use crate::pitch::{Pitch, Step};
 use crate::score::{Clef, Event, EventKind, Score, Voice, VoiceLocation};
 
@@ -225,7 +225,8 @@ fn enter_event(
         }
         let fillers = rest_durations(covered.saturating_sub(length))?;
 
-        // A new note keeps the volume marks of what it replaces, but not its articulations.
+        // A new note keeps the volume marks and register of what it replaces, but not its
+        // articulations.
         let inherited = voice
             .events
             .get(index)
@@ -234,6 +235,7 @@ fn enter_event(
                 dynamic: replaced.markings.dynamic,
                 hairpin_start: replaced.markings.hairpin_start,
                 hairpin_stop: replaced.markings.hairpin_stop,
+                register: replaced.markings.register,
                 articulations: Vec::new(),
                 slur_start: false,
                 slur_stop: false,
@@ -852,6 +854,15 @@ pub fn set_dynamic(
     dynamic: Option<Dynamic>,
 ) -> Result<(), ModelError> {
     edit_markings(doc, id, |markings| markings.dynamic = dynamic)
+}
+
+/// Sets or, with `None`, removes the accordion register at an event.
+pub fn set_register(
+    doc: &mut Document,
+    id: EventId,
+    register: Option<Register>,
+) -> Result<(), ModelError> {
+    edit_markings(doc, id, |markings| markings.register = register)
 }
 
 /// Where an event lies within a hairpin, slur, or phrase slur.

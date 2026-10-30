@@ -133,12 +133,25 @@ export interface Duration {
   dots: number;
 }
 
+/** An accordion register symbol; unset dots are omitted. */
+export type Register =
+  | {
+      side: "treble";
+      high?: boolean;
+      lower_tremolo?: boolean;
+      middle?: boolean;
+      upper_tremolo?: boolean;
+      low?: boolean;
+    }
+  | { side: "bass"; upper?: boolean; lower?: boolean; master?: boolean };
+
 export interface EventArticulations {
   articulations: Articulation[];
   is_rest: boolean;
   tied: boolean;
   tie_possible: boolean;
   dynamic: Dynamic | null;
+  register: Register | null;
   hairpin: SpanPosition | null;
   slur: SpanPosition | null;
   phrase_slur: SpanPosition | null;
@@ -294,6 +307,8 @@ export const api = {
     invoke<Edited>("toggle_phrase_slur", { start, end, placement }),
   setDynamic: (event: number, dynamic: Dynamic | null) =>
     invoke<Edited>("set_dynamic", { event, dynamic }),
+  setRegister: (event: number, register: Register | null) =>
+    invoke<Edited>("set_register", { event, register }),
   toggleHairpin: (start: number, end: number, kind: Hairpin) =>
     invoke<Edited>("toggle_hairpin", { start, end, kind }),
   removeHairpin: (event: number) => invoke<Edited>("remove_hairpin", { event }),

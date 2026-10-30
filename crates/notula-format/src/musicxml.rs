@@ -9,7 +9,7 @@ use std::path::Path;
 
 use notula_model::{
     Articulation, Clef, Command, Document, Duration, Dynamic, Event, EventKind, Hairpin,
-    KeySignature, Markings, MeasureInfo, NoteValue, Pitch, Score, SlurPlacement, Step,
+    KeySignature, Markings, MeasureInfo, NoteValue, Pitch, Register, Score, SlurPlacement, Step,
     TICKS_PER_QUARTER, Tempo, TempoDirection, TimeSignature, TimeSignatureDisplay, Voice,
     VoiceLocation,
 };
@@ -48,6 +48,18 @@ pub fn export(score: &Score) -> MusicXmlExport {
         );
     }
     let wedges = wedge_marks(&hairpins);
+    let bass_registers = score
+        .staves()
+        .flat_map(|staff| &staff.measures)
+        .flat_map(|measure| &measure.voices)
+        .flat_map(|voice| &voice.events)
+        .any(|event| matches!(event.markings.register, Some(Register::Bass { .. })));
+    if bass_registers {
+        remember(
+            &mut unsupported,
+            "bass accordion registers (MusicXML has no symbol for them; omitted)",
+        );
+    }
     let mut xml = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n<score-partwise version=\"4.0\">\n",
     );
@@ -708,6 +720,34 @@ fn write_directions(
             "      <direction placement=\"below\"><direction-type><dynamics><{name}/></dynamics></direction-type><staff>{staff}</staff></direction>\n"
         );
     }
+    if let Some(Register::Treble {
+        high,
+        lower_tremolo,
+        middle,
+        upper_tremolo,
+        low,
+    }) = event.markings.register
+    {
+        // MusicXML counts the middle reeds rather than naming them.
+        let count = [lower_tremolo, middle, upper_tremolo]
+            .into_iter()
+            .filter(|set| *set)
+            .count();
+        let mut reeds = String::new();
+        if high {
+            reeds.push_str("<accordion-high/>");
+        }
+        if count > 0 {
+            let _ = write!(reeds, "<accordion-middle>{count}</accordion-middle>");
+        }
+        if low {
+            reeds.push_str("<accordion-low/>");
+        }
+        let _ = writeln!(
+            xml,
+            "      <direction placement=\"above\"><direction-type><accordion-registration>{reeds}</accordion-registration></direction-type><staff>{staff}</staff></direction>"
+        );
+    }
     if let Some((hairpin, number)) = wedge.start {
         let kind = match hairpin {
             Hairpin::Crescendo => "crescendo",
@@ -775,6 +815,7 @@ struct ParsedDirection {
     staff: usize,
     onset: u32,
     dynamic: Option<Dynamic>,
+    register: Option<Register>,
 }
 
 /// A wedge start (`kind`) or stop (`None`), paired with others by staff and number.
@@ -1354,6 +1395,7 @@ fn parse_measure(
                     staff,
                     onset,
                     dynamic: None,
+                    register: None,
                 };
                 let wedge_voice =
                     child_text(child, "voice").map(|name| voice_index(name, voice_names));
@@ -1396,6 +1438,9 @@ fn parse_measure(
                     for item in direction_type.children().filter(|n| n.is_element()) {
                         match item.tag_name().name() {
                             "dynamics" | "wedge" => {}
+                            "accordion-registration" => {
+                                direction.register = Some(parse_accordion_registration(item));
+                            }
                             "metronome" => match parse_metronome(item) {
                                 Some(tempo) => {
                                     let hidden = item.attribute("print-object") == Some("no");
@@ -1423,7 +1468,7 @@ fn parse_measure(
                         hidden,
                     });
                 }
-                if direction.dynamic.is_some() {
+                if direction.dynamic.is_some() || direction.register.is_some() {
                     directions.push(direction);
                 }
             }
@@ -1457,12 +1502,36 @@ fn parse_measure(
             .filter(|event| event.staff == direction.staff && event.onset >= direction.onset)
             .min_by_key(|event| event.onset)
         {
-            event.markings.dynamic = direction.dynamic;
+            if direction.dynamic.is_some() {
+                event.markings.dynamic = direction.dynamic;
+            }
+            if direction.register.is_some() {
+                event.markings.register = direction.register;
+            }
         } else {
             remember(unsupported, "direction with no following note");
         }
     }
     result
+}
+
+/// A treble register from `<accordion-registration>`: high and low reeds, and a count of 1–3
+/// middle reeds, read as the 8′ reed, then the tremolo above it, then the one below.
+fn parse_accordion_registration(node: roxmltree::Node<'_, '_>) -> Register {
+    let count = child_text(node, "accordion-middle")
+        .and_then(|text| text.trim().parse::<u8>().ok())
+        .unwrap_or(if element(node, "accordion-middle").is_some() {
+            1
+        } else {
+            0
+        });
+    Register::Treble {
+        high: element(node, "accordion-high").is_some(),
+        lower_tremolo: count >= 3,
+        middle: count >= 1,
+        upper_tremolo: count >= 2,
+        low: element(node, "accordion-low").is_some(),
+    }
 }
 
 fn parse_partwise_part(
@@ -2040,6 +2109,7 @@ mod tests {
                 phrase_slur_start: false,
                 phrase_slur_stop: false,
                 phrase_slur_placement: SlurPlacement::Auto,
+                register: None,
             },
         };
         let at = VoiceLocation {
@@ -2552,5 +2622,86 @@ mod tests {
         );
         assert!(exported.contains("<part-name>Tenor</part-name>"));
         assert!(import(&exported).unwrap().score.parts[0].hide_name);
+    }
+
+    #[test]
+    fn treble_registers_round_trip_and_bass_registers_are_reported() {
+        let mut doc = Document::new();
+        let part = doc.new_part("Accordion", &[Clef::Treble, Clef::Bass]);
+        let (treble, bass) = (part.staves[0].id, part.staves[1].id);
+        doc.execute(Command::AddPart { index: 0, part }).unwrap();
+        let registers = [
+            Register::Treble {
+                high: false,
+                lower_tremolo: false,
+                middle: true,
+                upper_tremolo: false,
+                low: false,
+            },
+            Register::Treble {
+                high: true,
+                lower_tremolo: false,
+                middle: true,
+                upper_tremolo: true,
+                low: true,
+            },
+        ];
+        for (index, register) in registers.into_iter().enumerate() {
+            let mut event = Event::new(
+                doc.new_event_id(),
+                Duration::new(NoteValue::Half, 0),
+                EventKind::Chord {
+                    pitches: vec![Pitch::new(Step::C, 0, 5)],
+                    tied: false,
+                },
+            );
+            event.markings.register = Some(register);
+            let at = VoiceLocation {
+                staff: treble,
+                measure: 0,
+                voice: 0,
+            };
+            doc.execute(Command::InsertEvent { at, index, event })
+                .unwrap();
+        }
+        let mut bass_rest = Event::new(
+            doc.new_event_id(),
+            Duration::new(NoteValue::Whole, 0),
+            EventKind::Rest,
+        );
+        bass_rest.markings.register = Some(Register::Bass {
+            upper: true,
+            lower: true,
+            master: false,
+        });
+        let at = VoiceLocation {
+            staff: bass,
+            measure: 0,
+            voice: 0,
+        };
+        doc.execute(Command::InsertEvent {
+            at,
+            index: 0,
+            event: bass_rest,
+        })
+        .unwrap();
+
+        let exported = export(doc.score());
+        assert!(exported.xml.contains("<accordion-registration><accordion-middle>1</accordion-middle></accordion-registration>"));
+        assert!(exported.xml.contains("<accordion-registration><accordion-high/><accordion-middle>2</accordion-middle><accordion-low/></accordion-registration>"));
+        assert!(
+            exported
+                .unsupported
+                .iter()
+                .any(|item| item.contains("bass accordion registers"))
+        );
+
+        let imported = import(&exported.xml).unwrap().score;
+        let read: Vec<_> = imported.parts[0].staves[0].measures[0].voices[0]
+            .events
+            .iter()
+            .map(|event| event.markings.register)
+            .collect();
+        assert_eq!(read, registers.map(Some).to_vec());
     }
 }

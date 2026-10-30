@@ -32,6 +32,7 @@ pub fn run() {
             commands::toggle_slur,
             commands::toggle_phrase_slur,
             commands::set_dynamic,
+            commands::set_register,
             commands::toggle_hairpin,
             commands::remove_hairpin,
             commands::remove_slur,

@@ -41,6 +41,12 @@ const MAX_SLUR_DEPTH: f32 = 3.0;
 const MAX_PHRASE_DEPTH: f32 = 4.0;
 /// How far inside a stem's end a slur on the stem side starts.
 const STEM_SIDE_SLUR_INSET: f32 = 0.8;
+/// Room between a register symbol and a slur below it.
+const REGISTER_ABOVE_SLUR: f32 = 0.4;
+/// Room between a metronome mark and registers or slurs below it.
+const METRONOME_ABOVE_MARKS: f32 = 0.6;
+/// How far above the notes' estimated reach a slur may bow, for placing registers above it.
+const SLUR_ALLOWANCE: f32 = 2.0;
 /// Room between a phrase slur's end and the outer edge of its end note.
 const ARC_END_CLEARANCE: f32 = 0.6;
 /// How far tempo text below a part reaches under the line it hangs from.
@@ -672,6 +678,32 @@ impl Layouter<'_> {
             }
         }
 
+        for (index, reach) in reaches.iter_mut().enumerate() {
+            let Some(line) = self.register_line(system, index) else {
+                continue;
+            };
+            // Registers go above slurs too, which bow further than the estimate in
+            // `staff_reach` covers; allow for the deepest common phrase.
+            let slurred = system.measures.clone().any(|measure| {
+                self.metrics[measure].plans[index]
+                    .voices
+                    .iter()
+                    .flat_map(|voice| &voice.events)
+                    .any(|event| {
+                        event.slur_start
+                            || event.slur_stop
+                            || event.phrase_slur_start
+                            || event.phrase_slur_stop
+                    })
+            });
+            let bottom = if slurred {
+                line.min(reach.0 - SLUR_ALLOWANCE - REGISTER_ABOVE_SLUR)
+            } else {
+                line
+            };
+            reach.0 = reach.0.min(bottom - emit::register_height());
+        }
+
         let first_tick: u64 = self.score.measures[..system.measures.start]
             .iter()
             .map(|measure| u64::from(measure.capacity()))
@@ -723,6 +755,16 @@ impl Layouter<'_> {
             }
         }
         reaches
+    }
+
+    /// Bottom of the register symbols above a staff in a system, relative to its top line.
+    fn register_line(&self, system: &System, staff: usize) -> Option<f32> {
+        emit::register_line(
+            system
+                .measures
+                .clone()
+                .map(|measure| &self.metrics[measure].plans[staff].voices[..]),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -787,6 +829,12 @@ impl Layouter<'_> {
             }
         }
 
+        // Registers are drawn last, above the slurs: (staff index, event, centre, register).
+        let mut registers = Vec::new();
+        // Metronome marks go above everything, registers included: (staff index, x,
+        // baseline over the notes, tempo).
+        let mut metronomes = Vec::new();
+        let mut arcs: Vec<(StaffId, emit::Arc)> = Vec::new();
         let mut cursor = x_start;
         let mut timeline = volume::Timeline::default();
         let mut tempo_texts = Vec::new();
@@ -859,6 +907,17 @@ impl Layouter<'_> {
                         None => x_of(onset),
                     };
                     emit::emit_voice(canvas, voice, y0, &voice_x);
+                    for event in voice.events.iter() {
+                        let Some(register) = event.register else {
+                            continue;
+                        };
+                        let width = match event.body {
+                            engrave::Body::Rest { .. } => smufl::rest(event.value).1,
+                            engrave::Body::Chord { .. } => notehead(event.value).1,
+                        };
+                        let center = voice_x(event.onset) + event.shift + width / 2.0;
+                        registers.push((staff_index, event.id, center, register));
+                    }
                     for (event_index, event) in voice.events.iter().enumerate() {
                         let (tied, stem_up) = (event.tied, event.stem_up);
                         let (left, x) = (event.left, event_x(event));
@@ -947,7 +1006,7 @@ impl Layouter<'_> {
                         mark.tempo,
                         &x_of,
                     );
-                    emit::metronome_mark(canvas, x, baseline, mark.tempo);
+                    metronomes.push((part.start, x, baseline, mark.tempo));
                 }
             }
 
@@ -1023,7 +1082,8 @@ impl Layouter<'_> {
                         };
                         let start = tie_anchor(source, note, true, below);
                         let end = tie_anchor(target, next_note, false, below);
-                        emit::emit_tie(canvas, source.id, start, end, below);
+                        let arc = emit::emit_tie(canvas, source.id, start, end, below);
+                        arcs.push((source.staff, arc));
                     }
                 }
                 continue;
@@ -1045,7 +1105,8 @@ impl Layouter<'_> {
                     // read as a tie when the note is close to the barline.
                     let start = tie_anchor(source, note, true, below);
                     let end = ((cursor - 0.3).max(start.0 + MIN_OPEN_TIE), start.1);
-                    emit::emit_tie(canvas, source.id, start, end, below);
+                    let arc = emit::emit_tie(canvas, source.id, start, end, below);
+                    arcs.push((source.staff, arc));
                 }
             }
         }
@@ -1080,7 +1141,8 @@ impl Layouter<'_> {
                 if pitches.contains(&note.pitch) {
                     let end = tie_anchor(target, note, false, target.ties_below);
                     let start = ((first_body_start + 0.1).min(end.0 - MIN_OPEN_TIE), end.1);
-                    emit::emit_tie(canvas, previous_id, start, end, target.ties_below);
+                    let arc = emit::emit_tie(canvas, previous_id, start, end, target.ties_below);
+                    arcs.push((target.staff, arc));
                 }
             }
         }
@@ -1147,6 +1209,7 @@ impl Layouter<'_> {
             );
             arc.clear(&obstacles, MAX_SLUR_DEPTH);
             emit::emit_slur(canvas, source.id, &arc);
+            arcs.push((source.staff, arc));
         }
 
         for target in placed_events.iter().filter(|event| event.slur_stop) {
@@ -1178,6 +1241,7 @@ impl Layouter<'_> {
             );
             arc.clear(&obstacles, MAX_SLUR_DEPTH);
             emit::emit_slur(canvas, start_id, &arc);
+            arcs.push((target.staff, arc));
         }
 
         // Phrase slurs start just outside the staff, or outside a higher end note.
@@ -1235,6 +1299,7 @@ impl Layouter<'_> {
             );
             arc.clear(&obstacles, MAX_PHRASE_DEPTH);
             emit::emit_phrase_slur(canvas, source.id, &arc);
+            arcs.push((source.staff, arc));
         }
 
         for target in placed_events.iter().filter(|event| event.phrase_slur_stop) {
@@ -1266,6 +1331,60 @@ impl Layouter<'_> {
             );
             arc.clear(&obstacles, MAX_PHRASE_DEPTH);
             emit::emit_phrase_slur(canvas, start_id, &arc);
+            arcs.push((target.staff, arc));
+        }
+
+        // One line of register symbols per staff, above the notes and any slur beneath them.
+        let mut register_tops = vec![None; self.staves.len()];
+        for (staff_index, staff) in self.staves.iter().enumerate() {
+            let Some(line) = self.register_line(system, staff_index) else {
+                continue;
+            };
+            let half = emit::register_height() / 2.0;
+            let staff_arcs: Vec<_> = arcs
+                .iter()
+                .filter(|(arc_staff, arc)| *arc_staff == staff.id && arc.above)
+                .map(|(_, arc)| arc)
+                .collect();
+            let bottom = registers
+                .iter()
+                .filter(|register| register.0 == staff_index)
+                .flat_map(|&(_, _, center, _)| {
+                    staff_arcs.iter().filter_map(move |arc| {
+                        [center - half, center, center + half]
+                            .into_iter()
+                            .filter_map(|x| arc.top_at(x))
+                            .reduce(f32::min)
+                    })
+                })
+                .map(|top| top - REGISTER_ABOVE_SLUR)
+                .fold(y_top + rows.y[staff_index] + line, f32::min);
+            for &(_, event, center, register) in registers
+                .iter()
+                .filter(|register| register.0 == staff_index)
+            {
+                emit::register_mark(canvas, event, center, bottom, register);
+            }
+            register_tops[staff_index] = Some(bottom - emit::register_height());
+        }
+
+        for (staff_index, x, baseline, tempo) in metronomes {
+            let right = x + emit::metronome_width(tempo);
+            let staff = self.staves[staff_index].id;
+            let over_arcs = arcs
+                .iter()
+                .filter(|(arc_staff, arc)| *arc_staff == staff && arc.above)
+                .flat_map(|(_, arc)| {
+                    [x, (x + right) / 2.0, right]
+                        .into_iter()
+                        .filter_map(|x| arc.top_at(x))
+                })
+                .map(|top| top - METRONOME_ABOVE_MARKS);
+            let over_registers = register_tops[staff_index]
+                .map(|top| top - METRONOME_ABOVE_MARKS)
+                .into_iter();
+            let baseline = over_arcs.chain(over_registers).fold(baseline, f32::min);
+            emit::metronome_mark(canvas, x, baseline, tempo);
         }
     }
 }

@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use notula_model::{
-    Articulation, Clef, EventId, EventKind, MeasureInfo, NoteValue, Pitch, SlurPlacement,
+    Articulation, Clef, EventId, EventKind, MeasureInfo, NoteValue, Pitch, Register, SlurPlacement,
     StaffMeasure, Step, TICKS_PER_QUARTER, TimeSignature,
 };
 
@@ -46,6 +46,7 @@ pub(crate) struct EventPlan {
     pub value: NoteValue,
     pub dots: u8,
     pub articulations: Vec<Articulation>,
+    pub register: Option<Register>,
     pub tied: bool,
     pub slur_start: bool,
     pub slur_stop: bool,
@@ -101,6 +102,7 @@ struct Draft {
     value: NoteValue,
     dots: u8,
     articulations: Vec<Articulation>,
+    register: Option<Register>,
     tied: bool,
     slur_start: bool,
     slur_stop: bool,
@@ -162,6 +164,7 @@ pub(crate) fn plan_staff(
                         value: event.duration.value,
                         dots: event.duration.dots,
                         articulations: event.markings.articulations.clone(),
+                        register: event.markings.register,
                         tied: matches!(event.kind, EventKind::Chord { tied: true, .. }),
                         slur_start: event.markings.slur_start,
                         slur_stop: event.markings.slur_stop,
@@ -431,6 +434,7 @@ fn finish_event(draft: &Draft, stem_up: bool, shares_staff: bool, beamed: bool) 
             value: draft.value,
             dots: draft.dots,
             articulations: draft.articulations.clone(),
+            register: draft.register,
             tied: draft.tied,
             slur_start: draft.slur_start,
             slur_stop: draft.slur_stop,
@@ -544,6 +548,7 @@ fn finish_event(draft: &Draft, stem_up: bool, shares_staff: bool, beamed: bool) 
         value: draft.value,
         dots: draft.dots,
         articulations: draft.articulations.clone(),
+        register: draft.register,
         tied: draft.tied,
         slur_start: draft.slur_start,
         slur_stop: draft.slur_stop,

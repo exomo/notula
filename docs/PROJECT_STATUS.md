@@ -1,6 +1,6 @@
 # Project Status
 
-Last verified against commit `2f0c826` (`Fit slurs, phrase slurs, and ties around their notes`) on `main`, plus an uncommitted hide-name checkbox in Score Properties. Update this handoff when a feature is completed or priorities change.
+Last verified against commit `4f44295` (`Add a hide-name checkbox to Score Properties`) on `main`, plus uncommitted accordion registers. Update this handoff when a feature is completed or priorities change.
 
 ## Product Snapshot
 
@@ -10,6 +10,11 @@ Implemented capabilities include score setup and properties, instruments and mul
 
 ## Recent Completed Work
 
+- Accordion registers, the first of the extended annotations:
+  - Model: `Markings::register: Option<Register>` (Serde default), on the event where the register takes effect, so it stays with its staff and moves with copy, paste, and shift; a note entered over another keeps its register like its dynamic, and a rest keeps it. `Register::Treble { high, lower_tremolo, middle, upper_tremolo, low }` is the 3-rank treble symbol (4′ top, 16′ bottom, 8′ in the middle with tremolo reeds right and left); `Register::Bass { upper, lower, master }` the 2-rank bass symbol. Dots are a set, so presets and custom combinations are alike. `edit::set_register`; playback ignores registers.
+  - Engraving: built from Bravura's empty symbols (U+E8C6, U+E8C8) and the combining dot (U+E8CA) at the dot positions of the font's preset symbols (`smufl::register`), drawn at font size 3.75 (about three spaces). One line per staff and system above all note markup: the staff, notes, stems, beams, articulations, fermatas (`emit::register_line` uses `emit::staff_reach`), and the slurs, phrase slurs, and ties under a register (drawn after them). Metronome marks go above registers and slurs. Horizontal room like dynamics; staff spacing allows for them, with a fixed allowance for slurs.
+  - MusicXML: treble registers round-trip as `<accordion-registration>` with high, low, and a count of middle reeds (1 = 8′, 2 = 8′ and the upper tremolo, 3 = all three), so combinations that differ only in which middle reeds are set are approximated. Bass registers have no MusicXML symbol; export omits and reports them.
+  - UI: an "Accordion register" section in the side panel for the selected note or rest (`RegisterControl.svelte`): side (treble or bass), a preset list with the standard names, and a clickable symbol whose dots switch reeds on and off. Tauri `set_register`; `event_articulations` reports the register.
 - Slurs, phrase slurs, and ties fit their notes (checked with `files/Deutsche Messe.notula`, Akk. 2 m. 5 and Akk. 1 mm. 21–23):
   - `emit::Arc::clear` bows a slur or phrase slur out until it passes the outer edges (noteheads, stems, beams, rests; `PlacedEvent::{left, right, top, bottom}`) of the events between its ends with `ARC_CLEARANCE`; beyond a maximum depth (3 spaces for slurs, 4 for phrase slurs) both ends move out instead. Slurs avoid their own voice's events, phrase slurs every voice of the staff.
   - Phrase slur ends stay outside the staff or outside a higher (lower) end note.
@@ -48,7 +53,7 @@ Implemented capabilities include score setup and properties, instruments and mul
 
 ## Suggested Next Work
 
-1. **Next: extended annotations** that are still missing: instrument-specific marks such as accordion registration symbols and piano sustain pedal marks (Ped. and release, or pedal lines), and free text annotations such as "div." or playing and character directions ("vivace", "dolce"). Also horizontal brackets over or under a group of notes, as MusicXML `<bracket>` directions (start/stop, `line-end` hooks, solid or dashed, numbered for overlaps); early-music editions such as the Binchois sample use them to mark ligatures of the original source, and import currently reports "direction: bracket" as unsupported. This includes tempo text such as "Allegro" (with an optional metronome) as a score-wide mark, which MusicXML import currently drops. Decide per kind whether it belongs to an event, a staff, or the score (see `AGENTS.md`), and which ones playback should honour (pedal likely, text not).
+1. **Next: more extended annotations** (accordion registers are done): instrument-specific marks such as piano sustain pedal marks (Ped. and release, or pedal lines), and free text annotations such as "div." or playing and character directions ("vivace", "dolce"). Also horizontal brackets over or under a group of notes, as MusicXML `<bracket>` directions (start/stop, `line-end` hooks, solid or dashed, numbered for overlaps); early-music editions such as the Binchois sample use them to mark ligatures of the original source, and import currently reports "direction: bracket" as unsupported. This includes tempo text such as "Allegro" (with an optional metronome) as a score-wide mark, which MusicXML import currently drops. Decide per kind whether it belongs to an event, a staff, or the score (see `AGENTS.md`), and which ones playback should honour (pedal likely, text not).
 2. Repeats and other barline types (repeat barlines, possibly endings and double barlines). They affect playback order as well as notation and MusicXML; MusicXML import currently reports barline styles and repeats as unsupported.
 3. Polish volume marks: automatic staff spacing now leaves room for the dynamics line between staves; check grand staves for remaining near-collisions. Also consider text dynamics and hairpin variants ("cresc.", "dim.", niente circles), dynamics shared by both staves of one instrument, and keyboard shortcuts.
 4. Make rit./accel./rall. affect playback; see [Planned: tempo transitions](#planned-tempo-transitions).

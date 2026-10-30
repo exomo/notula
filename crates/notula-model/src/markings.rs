@@ -47,6 +47,37 @@ pub enum Articulation {
     Fermata,
 }
 
+/// An accordion register symbol: which reeds sound from this event on. The dots of the
+/// standard symbols are kept as a set, so presets and custom combinations are alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "side", rename_all = "snake_case")]
+pub enum Register {
+    /// Treble side with three reed ranks: high (4′) at the top, low (16′) at the bottom,
+    /// and in the middle row the 8′ reed with a tremolo reed tuned above (right) or below
+    /// (left) it.
+    Treble {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        high: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        lower_tremolo: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        middle: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        upper_tremolo: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        low: bool,
+    },
+    /// Bass side with two reed ranks: upper and lower half, and the master dot on the line.
+    Bass {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        upper: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        lower: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        master: bool,
+    },
+}
+
 /// Preferred side for a slur. `Auto` follows the stem direction.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -85,6 +116,9 @@ pub struct Markings {
     pub phrase_slur_stop: bool,
     #[serde(default, skip_serializing_if = "SlurPlacement::is_auto")]
     pub phrase_slur_placement: SlurPlacement,
+    /// Takes effect at this event and stays until the next register on the staff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub register: Option<Register>,
 }
 
 /// Markings as stored in files, including the older single `hairpin` field.
@@ -112,6 +146,8 @@ struct StoredMarkings {
     phrase_slur_stop: bool,
     #[serde(default)]
     phrase_slur_placement: SlurPlacement,
+    #[serde(default)]
+    register: Option<Register>,
 }
 
 impl From<StoredMarkings> for Markings {
@@ -133,6 +169,7 @@ impl From<StoredMarkings> for Markings {
             phrase_slur_start: stored.phrase_slur_start,
             phrase_slur_stop: stored.phrase_slur_stop,
             phrase_slur_placement: stored.phrase_slur_placement,
+            register: stored.register,
         }
     }
 }
@@ -155,6 +192,7 @@ impl Markings {
             && !self.phrase_slur_start
             && !self.phrase_slur_stop
             && self.phrase_slur_placement == SlurPlacement::Auto
+            && self.register.is_none()
     }
 
     pub fn validate(&self, on_rest: bool) -> Result<(), ModelError> {
@@ -209,9 +247,15 @@ mod tests {
             phrase_slur_start: false,
             phrase_slur_stop: false,
             phrase_slur_placement: SlurPlacement::Auto,
+            register: Some(Register::Bass {
+                upper: true,
+                lower: false,
+                master: false,
+            }),
         };
         let rest = markings.for_rest();
         assert_eq!(rest.dynamic, Some(Dynamic::F));
+        assert!(rest.register.is_some(), "a rest keeps the register");
         assert_eq!(rest.articulations, vec![Articulation::Fermata]);
         assert!(rest.validate(true).is_ok());
     }
@@ -248,5 +292,23 @@ mod tests {
         };
         assert!(accent.validate(false).is_ok());
         assert!(accent.validate(true).is_err());
+    }
+
+    #[test]
+    fn registers_store_only_their_dots() {
+        let clarinet = Markings {
+            register: Some(Register::Treble {
+                high: false,
+                lower_tremolo: false,
+                middle: true,
+                upper_tremolo: false,
+                low: false,
+            }),
+            ..Markings::default()
+        };
+        let json = serde_json::to_string(&clarinet).unwrap();
+        assert_eq!(json, r#"{"register":{"side":"treble","middle":true}}"#);
+        assert_eq!(serde_json::from_str::<Markings>(&json).unwrap(), clarinet);
+        assert!(!clarinet.is_empty());
     }
 }
