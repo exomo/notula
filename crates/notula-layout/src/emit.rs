@@ -40,44 +40,106 @@ pub(crate) fn head_x(note: &NotePlan, ev: &EventPlan, x: f32, head_width: f32) -
     }
 }
 
+/// A slur, phrase slur, or tie: its ends, which side it bows to, and how far its middle bows
+/// out from the line between the ends.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Arc {
+    pub start: (f32, f32),
+    pub end: (f32, f32),
+    pub above: bool,
+    pub depth: f32,
+}
+
+/// Least room between a slur and the notes it passes over.
+const ARC_CLEARANCE: f32 = 0.4;
+
+impl Arc {
+    /// A slur between two points, bowing as far as its length suggests.
+    pub fn slur(start: (f32, f32), end: (f32, f32), above: bool) -> Self {
+        let depth = ((end.0 - start.0) * 0.12).clamp(0.5, 2.0);
+        Self {
+            start,
+            end,
+            above,
+            depth,
+        }
+    }
+
+    pub fn phrase(start: (f32, f32), end: (f32, f32), above: bool) -> Self {
+        let depth = ((end.0 - start.0) * 0.12).clamp(0.8, 3.0);
+        Self {
+            start,
+            end,
+            above,
+            depth,
+        }
+    }
+
+    /// Bows the arc out to pass `obstacles` (points on the outer edge of noteheads, stems, and
+    /// beams under it) with some room, up to `max_depth`; beyond that, both ends move out too.
+    pub fn clear(&mut self, obstacles: &[(f32, f32)], max_depth: f32) {
+        let width = self.end.0 - self.start.0;
+        if width <= 0.0 {
+            return;
+        }
+        // Distances measured outwards, away from the notes.
+        let out = if self.above { -1.0 } else { 1.0 };
+        let needs: Vec<(f32, f32)> = obstacles
+            .iter()
+            .filter(|(x, _)| self.start.0 < *x && *x < self.end.0)
+            .map(|&(x, y)| {
+                let t = (x - self.start.0) / width;
+                let line = self.start.1 + (self.end.1 - self.start.1) * t;
+                (
+                    (std::f32::consts::PI * t).sin(),
+                    out * (y - line) + ARC_CLEARANCE,
+                )
+            })
+            .filter(|(_, need)| *need > 0.0)
+            .collect();
+        let wanted = needs
+            .iter()
+            .map(|(bow, need)| need / bow.max(0.05))
+            .fold(self.depth, f32::max);
+        self.depth = wanted.min(max_depth.max(self.depth));
+        let lift = needs
+            .iter()
+            .map(|(bow, need)| need - self.depth * bow)
+            .fold(0.0, f32::max);
+        self.start.1 += out * lift;
+        self.end.1 += out * lift;
+    }
+}
+
 pub(crate) fn emit_tie(
     canvas: &mut Canvas,
     event: EventId,
-    start_x: f32,
-    end_x: f32,
-    y: f32,
-    stem_up: bool,
+    start: (f32, f32),
+    end: (f32, f32),
+    below: bool,
 ) {
-    emit_curve(canvas, event, start_x, end_x, y, y, stem_up, false);
+    let depth = ((end.0 - start.0) * 0.24).clamp(0.5, 1.0);
+    let arc = Arc {
+        start,
+        end,
+        above: !below,
+        depth,
+    };
+    emit_curve(canvas, event, &arc, false);
 }
 
-pub(crate) fn emit_slur(
-    canvas: &mut Canvas,
-    event: EventId,
-    start_x: f32,
-    end_x: f32,
-    start_y: f32,
-    end_y: f32,
-    above: bool,
-) {
-    emit_curve(canvas, event, start_x, end_x, start_y, end_y, above, true);
+pub(crate) fn emit_slur(canvas: &mut Canvas, event: EventId, arc: &Arc) {
+    emit_curve(canvas, event, arc, true);
 }
 
-pub(crate) fn emit_phrase_slur(
-    canvas: &mut Canvas,
-    event: EventId,
-    start_x: f32,
-    end_x: f32,
-    start_y: f32,
-    end_y: f32,
-    above: bool,
-) {
-    let width = end_x - start_x;
+pub(crate) fn emit_phrase_slur(canvas: &mut Canvas, event: EventId, arc: &Arc) {
+    let width = arc.end.0 - arc.start.0;
     if width <= 0.4 {
         return;
     }
-    let direction = if above { -1.0 } else { 1.0 };
-    let depth = (width * 0.12).clamp(0.8, 3.0);
+    let (start_x, start_y, end_y) = (arc.start.0, arc.start.1, arc.end.1);
+    let direction = if arc.above { -1.0 } else { 1.0 };
+    let depth = arc.depth;
     let thickness = 0.23;
     let segments = 16;
     let band = |outer_depth: f32, inner_depth: f32| {
@@ -104,34 +166,15 @@ pub(crate) fn emit_phrase_slur(
     canvas.phrase_slur(event, &band(depth, depth - thickness));
 }
 
-fn emit_curve(
-    canvas: &mut Canvas,
-    event: EventId,
-    start_x: f32,
-    end_x: f32,
-    start_y: f32,
-    end_y: f32,
-    direction_hint: bool,
-    slur: bool,
-) {
-    let width = end_x - start_x;
+fn emit_curve(canvas: &mut Canvas, event: EventId, arc: &Arc, slur: bool) {
+    let (start_x, start_y, end_y) = (arc.start.0, arc.start.1, arc.end.1);
+    let width = arc.end.0 - start_x;
     if width <= 0.4 {
         return;
     }
-    let direction = if slur {
-        if direction_hint { -1.0 } else { 1.0 }
-    } else if direction_hint {
-        1.0
-    } else {
-        -1.0
-    };
-    let depth = if slur {
-        (width * 0.12).clamp(0.5, 2.0)
-    } else {
-        (width * 0.24).clamp(0.5, 1.0)
-    };
+    let direction = if arc.above { -1.0 } else { 1.0 };
+    let depth = arc.depth;
     let thickness = if slur { 0.18 } else { 0.12 };
-    let base_offset = if slur { 0.0 } else { direction * 0.12 };
     let segments = 12;
     let band = |outer_depth: f32, inner_depth: f32| {
         let mut points = Vec::with_capacity((segments + 1) * 2);
@@ -140,7 +183,7 @@ fn emit_curve(
             let curve = (std::f32::consts::PI * t).sin();
             points.push((
                 start_x + width * t,
-                start_y + (end_y - start_y) * t + base_offset + direction * outer_depth * curve,
+                start_y + (end_y - start_y) * t + direction * outer_depth * curve,
             ));
         }
         for segment in (0..=segments).rev() {
@@ -148,7 +191,7 @@ fn emit_curve(
             let curve = (std::f32::consts::PI * t).sin();
             points.push((
                 start_x + width * t,
-                start_y + (end_y - start_y) * t + base_offset + direction * inner_depth * curve,
+                start_y + (end_y - start_y) * t + direction * inner_depth * curve,
             ));
         }
         points
@@ -302,11 +345,11 @@ fn articulation_y(target: f32, below: bool) -> f32 {
     }
 }
 
-fn upper_extent(voice: &VoicePlan, event_index: usize) -> f32 {
+pub(crate) fn upper_extent(voice: &VoicePlan, event_index: usize) -> f32 {
     extent(voice, event_index, true)
 }
 
-fn lower_extent(voice: &VoicePlan, event_index: usize) -> f32 {
+pub(crate) fn lower_extent(voice: &VoicePlan, event_index: usize) -> f32 {
     extent(voice, event_index, false)
 }
 

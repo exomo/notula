@@ -34,6 +34,15 @@ const SYSTEM_GAP: f32 = 8.0;
 const STAFF_CLEARANCE: f32 = 1.5;
 /// Shortest tie leaving or entering a system.
 const MIN_OPEN_TIE: f32 = 1.5;
+/// How far outside its notehead's centre a tie on the outer note of a chord lies.
+const TIE_OUTSIDE_HEAD: f32 = 0.45;
+/// Farthest a slur or phrase slur bows out before its ends move out instead.
+const MAX_SLUR_DEPTH: f32 = 3.0;
+const MAX_PHRASE_DEPTH: f32 = 4.0;
+/// How far inside a stem's end a slur on the stem side starts.
+const STEM_SIDE_SLUR_INSET: f32 = 0.8;
+/// Room between a phrase slur's end and the outer edge of its end note.
+const ARC_END_CLEARANCE: f32 = 0.6;
 /// How far tempo text below a part reaches under the line it hangs from.
 const TEMPO_TEXT_DEPTH: f32 = 2.4;
 const NAME_SIZE: f32 = 2.0;
@@ -227,6 +236,12 @@ struct PlacedEvent {
     /// Ties curve below: on the notehead side, or with another voice, away from it.
     ties_below: bool,
     notes: Vec<PlacedNote>,
+    /// Outer edges of what the event draws (noteheads, accidentals, stem, beam); slurs pass
+    /// outside them.
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
 }
 
 fn event_details(
@@ -293,6 +308,65 @@ fn slur_endpoint(
             return Some(candidate);
         }
         candidate = notula_model::edit::adjacent_event(score, candidate, forward)?;
+    }
+}
+
+/// Points on the outer edge of the events a slur passes over: those in `staff`, and in `voice`
+/// if given, that start after `after` (if given) and before `before`, on the slur's side.
+fn arc_obstacles(
+    placed: &[PlacedEvent],
+    staff: StaffId,
+    voice: Option<usize>,
+    (after, before): (Option<u64>, u64),
+    above: bool,
+) -> Vec<(f32, f32)> {
+    placed
+        .iter()
+        .filter(|event| {
+            event.staff == staff
+                && voice.is_none_or(|voice| event.voice == voice)
+                && after.is_none_or(|after| event.start_tick > after)
+                && event.start_tick < before
+        })
+        .flat_map(|event| {
+            let y = if above { event.top } else { event.bottom };
+            [
+                (event.left, y),
+                ((event.left + event.right) / 2.0, y),
+                (event.right, y),
+            ]
+        })
+        .collect()
+}
+
+/// Where a tie touches a note. On a chord's outermost note on the tie's side, and on single
+/// notes, the tie sits just outside the notehead; between the notes of a chord it starts and
+/// ends beside them.
+fn tie_anchor(event: &PlacedEvent, note: &PlacedNote, leaving: bool, below: bool) -> (f32, f32) {
+    let outer = if below {
+        event
+            .notes
+            .iter()
+            .map(|other| other.y)
+            .fold(f32::NEG_INFINITY, f32::max)
+    } else {
+        event
+            .notes
+            .iter()
+            .map(|other| other.y)
+            .fold(f32::INFINITY, f32::min)
+    };
+    let out = if below { 1.0 } else { -1.0 };
+    if note.y == outer {
+        let x = note.x + note.width * if leaving { 0.6 } else { 0.4 };
+        (x, note.y + out * TIE_OUTSIDE_HEAD)
+    } else {
+        let x = if leaving {
+            note.x + note.width - 0.05
+        } else {
+            note.x + 0.05
+        };
+        (x, note.y + out * 0.12)
     }
 }
 
@@ -785,8 +859,16 @@ impl Layouter<'_> {
                         None => x_of(onset),
                     };
                     emit::emit_voice(canvas, voice, y0, &voice_x);
-                    for event in &voice.events {
+                    for (event_index, event) in voice.events.iter().enumerate() {
                         let (tied, stem_up) = (event.tied, event.stem_up);
+                        let (left, x) = (event.left, event_x(event));
+                        // Rests reach about a space and a half around their position.
+                        let half = match event.body {
+                            engrave::Body::Rest { .. } => 1.5,
+                            engrave::Body::Chord { .. } => 0.5,
+                        };
+                        let top = y0 + emit::upper_extent(voice, event_index) - half;
+                        let bottom = y0 + emit::lower_extent(voice, event_index) + half;
                         let notes = match &event.body {
                             engrave::Body::Rest { .. } => Vec::new(),
                             engrave::Body::Chord { notes } => {
@@ -824,6 +906,10 @@ impl Layouter<'_> {
                             stem_up,
                             ties_below: emit::marks_below(event),
                             notes,
+                            left: x - left,
+                            right: x + event.right,
+                            top,
+                            bottom,
                         });
                     }
                 }
@@ -923,6 +1009,7 @@ impl Layouter<'_> {
             else {
                 continue;
             };
+            let below = source.ties_below;
             if let Some(target) = placed_events.iter().find(|event| event.id == next_id) {
                 if source.staff == target.staff
                     && source.voice == target.voice
@@ -934,14 +1021,9 @@ impl Layouter<'_> {
                         else {
                             continue;
                         };
-                        emit::emit_tie(
-                            canvas,
-                            source.id,
-                            note.x + note.width - 0.05,
-                            next_note.x + 0.05,
-                            (note.y + next_note.y) / 2.0,
-                            source.ties_below,
-                        );
+                        let start = tie_anchor(source, note, true, below);
+                        let end = tie_anchor(target, next_note, false, below);
+                        emit::emit_tie(canvas, source.id, start, end, below);
                     }
                 }
                 continue;
@@ -961,15 +1043,9 @@ impl Layouter<'_> {
                 if pitches.contains(&note.pitch) {
                     // A tie leaving the system runs to its end, but stays long enough to
                     // read as a tie when the note is close to the barline.
-                    let start = note.x + note.width - 0.05;
-                    emit::emit_tie(
-                        canvas,
-                        source.id,
-                        start,
-                        (cursor - 0.3).max(start + MIN_OPEN_TIE),
-                        note.y,
-                        source.ties_below,
-                    );
+                    let start = tie_anchor(source, note, true, below);
+                    let end = ((cursor - 0.3).max(start.0 + MIN_OPEN_TIE), start.1);
+                    emit::emit_tie(canvas, source.id, start, end, below);
                 }
             }
         }
@@ -1002,52 +1078,75 @@ impl Layouter<'_> {
             }
             for note in &target.notes {
                 if pitches.contains(&note.pitch) {
-                    emit::emit_tie(
-                        canvas,
-                        previous_id,
-                        first_body_start + 0.1,
-                        note.x + 0.05,
-                        note.y,
-                        target.ties_below,
-                    );
+                    let end = tie_anchor(target, note, false, target.ties_below);
+                    let start = ((first_body_start + 0.1).min(end.0 - MIN_OPEN_TIE), end.1);
+                    emit::emit_tie(canvas, previous_id, start, end, target.ties_below);
                 }
             }
         }
 
+        // Slurs start at the notehead, or near the stem's end when the stems of both end notes
+        // lie on the slur's side; with mixed stems both ends stay at the noteheads.
+        let slur_end = |event: &PlacedEvent,
+                        note: &PlacedNote,
+                        above: bool,
+                        leaving: bool,
+                        stem_side: bool| {
+            if stem_side {
+                let x = if event.stem_up {
+                    note.x + note.width
+                } else {
+                    note.x
+                };
+                let y = if above {
+                    event.top + STEM_SIDE_SLUR_INSET
+                } else {
+                    event.bottom - STEM_SIDE_SLUR_INSET
+                };
+                (x, y)
+            } else {
+                let x = if leaving {
+                    note.x + note.width - 0.08
+                } else {
+                    note.x + 0.08
+                };
+                (x, note.y + if above { -0.28 } else { 0.28 })
+            }
+        };
         for source in placed_events.iter().filter(|event| event.slur_start) {
             let Some(end_id) = slur_endpoint(self.score, source.id, true, false) else {
                 continue;
             };
             let above = slur_is_above(source);
-            if let Some(target) = placed_events.iter().find(|event| event.id == end_id) {
-                let (Some(start_note), Some(end_note)) =
-                    (slur_anchor(source, above), slur_anchor(target, above))
-                else {
-                    continue;
-                };
-                emit::emit_slur(
-                    canvas,
-                    source.id,
-                    start_note.x + start_note.width - 0.08,
-                    end_note.x + 0.08,
-                    start_note.y + if above { -0.28 } else { 0.28 },
-                    end_note.y + if above { -0.28 } else { 0.28 },
-                    above,
-                );
-            } else {
-                let Some(start_note) = slur_anchor(source, above) else {
-                    continue;
-                };
-                emit::emit_slur(
-                    canvas,
-                    source.id,
-                    start_note.x + start_note.width - 0.08,
-                    cursor - 0.3,
-                    start_note.y + if above { -0.28 } else { 0.28 },
-                    start_note.y + if above { -0.28 } else { 0.28 },
-                    above,
-                );
-            }
+            let Some(start_note) = slur_anchor(source, above) else {
+                continue;
+            };
+            let target = placed_events.iter().find(|event| event.id == end_id);
+            let stem_side =
+                above == source.stem_up && target.is_none_or(|target| above == target.stem_up);
+            let start = slur_end(source, start_note, above, true, stem_side);
+            let (end, before) = match target {
+                Some(target) => {
+                    let Some(end_note) = slur_anchor(target, above) else {
+                        continue;
+                    };
+                    (
+                        slur_end(target, end_note, above, false, stem_side),
+                        target.start_tick,
+                    )
+                }
+                None => ((cursor - 0.3, start.1), u64::MAX),
+            };
+            let mut arc = emit::Arc::slur(start, end, above);
+            let obstacles = arc_obstacles(
+                &placed_events,
+                source.staff,
+                Some(source.voice),
+                (Some(source.start_tick), before),
+                above,
+            );
+            arc.clear(&obstacles, MAX_SLUR_DEPTH);
+            emit::emit_slur(canvas, source.id, &arc);
         }
 
         for target in placed_events.iter().filter(|event| event.slur_stop) {
@@ -1068,72 +1167,74 @@ impl Layouter<'_> {
             let Some(end_note) = slur_anchor(target, above) else {
                 continue;
             };
-            emit::emit_slur(
-                canvas,
-                start_id,
-                first_body_start + 0.3,
-                end_note.x + 0.08,
-                end_note.y + if above { -0.28 } else { 0.28 },
-                end_note.y + if above { -0.28 } else { 0.28 },
+            let end = slur_end(target, end_note, above, false, above == target.stem_up);
+            let mut arc = emit::Arc::slur((first_body_start + 0.3, end.1), end, above);
+            let obstacles = arc_obstacles(
+                &placed_events,
+                target.staff,
+                Some(target.voice),
+                (None, target.start_tick),
                 above,
             );
+            arc.clear(&obstacles, MAX_SLUR_DEPTH);
+            emit::emit_slur(canvas, start_id, &arc);
         }
 
+        // Phrase slurs start just outside the staff, or outside a higher end note.
+        let phrase_y = |event: &PlacedEvent, above: bool| {
+            if above {
+                (event.staff_top - 0.38).min(event.top - ARC_END_CLEARANCE)
+            } else {
+                (event.staff_top + STAFF_HEIGHT + 0.38).max(event.bottom + ARC_END_CLEARANCE)
+            }
+        };
+        let phrase_left = |event: &PlacedEvent| {
+            event
+                .notes
+                .iter()
+                .map(|note| note.x)
+                .fold(f32::INFINITY, f32::min)
+                + 0.08
+        };
+        let phrase_right = |event: &PlacedEvent| {
+            event
+                .notes
+                .iter()
+                .map(|note| note.x + note.width)
+                .fold(f32::NEG_INFINITY, f32::max)
+                - 0.08
+        };
         for source in placed_events.iter().filter(|event| event.phrase_slur_start) {
             let Some(end_id) = slur_endpoint(self.score, source.id, true, true) else {
                 continue;
             };
+            if source.notes.is_empty() {
+                continue;
+            }
             let above = match source.phrase_slur_placement {
                 notula_model::SlurPlacement::Auto => source.stem_up,
                 notula_model::SlurPlacement::Above => true,
                 notula_model::SlurPlacement::Below => false,
             };
-            let boundary_y = |event: &PlacedEvent| {
-                if above {
-                    event.staff_top - 0.38
-                } else {
-                    event.staff_top + STAFF_HEIGHT + 0.38
-                }
+            let start = (phrase_right(source), phrase_y(source, above));
+            let target = placed_events.iter().find(|event| event.id == end_id);
+            let (end, before) = match target {
+                Some(target) => (
+                    (phrase_left(target), phrase_y(target, above)),
+                    target.start_tick,
+                ),
+                None => ((cursor - 0.3, start.1), u64::MAX),
             };
-            if let Some(target) = placed_events.iter().find(|event| event.id == end_id) {
-                emit::emit_phrase_slur(
-                    canvas,
-                    source.id,
-                    source
-                        .notes
-                        .iter()
-                        .map(|note| note.x + note.width)
-                        .fold(f32::NEG_INFINITY, f32::max)
-                        - 0.08,
-                    target
-                        .notes
-                        .iter()
-                        .map(|note| note.x)
-                        .fold(f32::INFINITY, f32::min)
-                        + 0.08,
-                    boundary_y(source),
-                    boundary_y(target),
-                    above,
-                );
-            } else {
-                if source.notes.is_empty() {
-                    continue;
-                }
-                emit::emit_phrase_slur(
-                    canvas,
-                    source.id,
-                    source
-                        .notes
-                        .iter()
-                        .map(|note| note.x + note.width)
-                        .fold(f32::NEG_INFINITY, f32::max)
-                        - 0.08,
-                    cursor - 0.3,
-                    boundary_y(source),
-                    boundary_y(source),
-                    above,
-                );
-            }
+            let mut arc = emit::Arc::phrase(start, end, above);
+            let obstacles = arc_obstacles(
+                &placed_events,
+                source.staff,
+                None,
+                (Some(source.start_tick), before),
+                above,
+            );
+            arc.clear(&obstacles, MAX_PHRASE_DEPTH);
+            emit::emit_phrase_slur(canvas, source.id, &arc);
         }
 
         for target in placed_events.iter().filter(|event| event.phrase_slur_stop) {
@@ -1154,26 +1255,17 @@ impl Layouter<'_> {
             if target.notes.is_empty() {
                 continue;
             }
-            let end_x = target
-                .notes
-                .iter()
-                .map(|note| note.x)
-                .fold(f32::INFINITY, f32::min)
-                + 0.08;
-            let boundary_y = if above {
-                target.staff_top - 0.38
-            } else {
-                target.staff_top + STAFF_HEIGHT + 0.38
-            };
-            emit::emit_phrase_slur(
-                canvas,
-                start_id,
-                first_body_start + 0.3,
-                end_x,
-                boundary_y,
-                boundary_y,
+            let end = (phrase_left(target), phrase_y(target, above));
+            let mut arc = emit::Arc::phrase((first_body_start + 0.3, end.1), end, above);
+            let obstacles = arc_obstacles(
+                &placed_events,
+                target.staff,
+                None,
+                (None, target.start_tick),
                 above,
             );
+            arc.clear(&obstacles, MAX_PHRASE_DEPTH);
+            emit::emit_phrase_slur(canvas, start_id, &arc);
         }
     }
 }

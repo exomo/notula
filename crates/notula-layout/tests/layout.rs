@@ -1,7 +1,8 @@
 use notula_layout::{Item, LayoutOptions, RenderList, Shape, hit_test, layout};
 use notula_model::{
     Articulation, Clef, Command, Document, Duration, Event, EventId, EventKind, KeySignature,
-    NoteValue, Pitch, StaffId, Step, TimeSignature, TimeSignatureDisplay, VoiceLocation,
+    NoteValue, Pitch, SlurPlacement, StaffId, Step, TimeSignature, TimeSignatureDisplay,
+    VoiceLocation,
     edit::{self, Cursor},
 };
 
@@ -1596,4 +1597,87 @@ fn dots_of_the_other_voice_go_after_a_moved_chord() {
         dot > moved_head + 1.18 + 0.2,
         "dot {dot}, moved head {moved_head}"
     );
+}
+
+/// The vertical extent of a curve drawn for `event`: (highest, lowest) point.
+fn curve_extent(list: &RenderList, event: EventId, phrase: bool) -> (f32, f32) {
+    let points = list
+        .items
+        .iter()
+        .filter(|item| item.event == Some(event))
+        .find_map(|item| match (&item.shape, phrase) {
+            (Shape::Slur { points }, false) | (Shape::PhraseSlur { points }, true) => {
+                Some(points.clone())
+            }
+            _ => None,
+        })
+        .expect("curve");
+    points.iter().fold(
+        (f32::INFINITY, f32::NEG_INFINITY),
+        |(top, bottom), point| (top.min(point[1]), bottom.max(point[1])),
+    )
+}
+
+#[test]
+fn a_slur_bows_around_the_notes_it_passes() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let notes: Vec<_> = [Step::G, Step::E, Step::C, Step::E]
+        .into_iter()
+        .map(|step| b.note(0, 0, Pitch::new(step, 0, 4), NoteValue::Quarter))
+        .collect();
+    b.measures(2);
+    let last = b.note(0, 1, Pitch::new(Step::G, 0, 4), NoteValue::Quarter);
+    edit::toggle_slur(&mut b.doc, notes[0], last, SlurPlacement::Below).unwrap();
+    let list = b.layout(200.0);
+    let (_, lowest) = curve_extent(&list, notes[0], false);
+    let c4_head = glyph_y(&list, notes[2], BLACK_HEAD).unwrap();
+    // Below the C4 notehead (half a space below its centre), with room to spare.
+    assert!(
+        lowest > c4_head + 0.8,
+        "slur reaches {lowest}, C4 at {c4_head}"
+    );
+}
+
+#[test]
+fn a_phrase_slur_clears_high_notes() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let first = b.note(0, 0, Pitch::new(Step::C, 0, 5), NoteValue::Quarter);
+    let high = b.note(0, 0, Pitch::new(Step::A, 0, 6), NoteValue::Quarter);
+    b.note(0, 0, Pitch::new(Step::B, 0, 6), NoteValue::Quarter);
+    let last = b.note(0, 0, Pitch::new(Step::C, 0, 5), NoteValue::Quarter);
+    edit::toggle_phrase_slur(&mut b.doc, first, last, SlurPlacement::Above).unwrap();
+    let list = b.layout(200.0);
+    let (highest, _) = curve_extent(&list, first, true);
+    let a6_head = glyph_y(&list, high, BLACK_HEAD).unwrap();
+    assert!(
+        highest < a6_head - 1.0,
+        "phrase reaches {highest}, A6 at {a6_head}"
+    );
+}
+
+#[test]
+fn a_tie_on_a_single_note_lies_outside_its_notehead() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    // C5 has its stem down, so its tie bends above.
+    let first = b.note(0, 0, Pitch::new(Step::C, 0, 5), NoteValue::Half);
+    b.note(0, 0, Pitch::new(Step::C, 0, 5), NoteValue::Half);
+    edit::toggle_tie(&mut b.doc, first).unwrap();
+    let list = b.layout(100.0);
+    let head = glyph_y(&list, first, HALF_HEAD).unwrap();
+    let lowest = list
+        .items
+        .iter()
+        .filter(|item| item.event == Some(first))
+        .find_map(|item| match &item.shape {
+            Shape::Tie { points } => Some(
+                points
+                    .iter()
+                    .map(|point| point[1])
+                    .fold(f32::NEG_INFINITY, f32::max),
+            ),
+            _ => None,
+        })
+        .expect("tie");
+    // Even its ends stay above the middle of the notehead.
+    assert!(lowest < head - 0.3, "tie reaches {lowest}, head at {head}");
 }

@@ -4,3 +4,4 @@ ui/dist
 src-tauri/gen
 .vscode/
 /files/
+/.claude/

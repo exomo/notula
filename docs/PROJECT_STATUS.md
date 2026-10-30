@@ -1,6 +1,6 @@
 # Project Status
 
-Last verified against commit `70560b6` (`Fix flag spacing, voice ties, hidden part names, and measure rests`) on `main`, plus uncommitted layout fixes (crossing voices, room before the final barline). Update this handoff when a feature is completed or priorities change.
+Last verified against commit `602771e` (`Separate crossing voices and keep room before the final barline`) on `main`, plus uncommitted slur and tie placement. Update this handoff when a feature is completed or priorities change.
 
 ## Product Snapshot
 
@@ -10,6 +10,12 @@ Implemented capabilities include score setup and properties, instruments and mul
 
 ## Recent Completed Work
 
+- Slurs, phrase slurs, and ties fit their notes (checked with `files/Deutsche Messe.notula`, Akk. 2 m. 5 and Akk. 1 mm. 21–23):
+  - `emit::Arc::clear` bows a slur or phrase slur out until it passes the outer edges (noteheads, stems, beams, rests; `PlacedEvent::{left, right, top, bottom}`) of the events between its ends with `ARC_CLEARANCE`; beyond a maximum depth (3 spaces for slurs, 4 for phrase slurs) both ends move out instead. Slurs avoid their own voice's events, phrase slurs every voice of the staff.
+  - Phrase slur ends stay outside the staff or outside a higher (lower) end note.
+  - A slur whose end notes both have their stems on its side attaches near the stem ends; with mixed stems both ends stay at the noteheads.
+  - A tie on a single note, or on a chord's outermost note on its side, lies just outside the notehead (`TIE_OUTSIDE_HEAD`); ties between inner chord notes stay beside the heads.
+  - Staff spacing still estimates slur room (`emit::staff_reach`), so a very deep slur could come close to a neighbouring staff.
 - Layout fixes found with the MusicXML samples (`files/MusicXML Samples/Binchois.mxl`):
   - Marks follow the voices: when another voice sounds at the same time (`EventPlan::shares_staff`), articulations and fermatas go on the stem side, so the upper voice's marks are above and the lower voice's below, with the inverted fermata glyph. Single-voice staves keep articulations on the notehead side and fermatas above.
   - Automatic staff spacing per system: before a system is drawn, `Layouter::reaches` measures how far each staff's content reaches (notes, stems, beams, articulations, fermatas, slur ends via `emit::staff_reach`, the dynamics line, metronome marks and tempo text), and `Rows::spaced` moves staves apart to keep `STAFF_CLEARANCE` (1.5 spaces) between them; systems likewise. Staves never come closer than the old fixed distances (9 within a part, 10 between parts). Slur bulges are estimated, not measured. Manual spacing belongs to the page layout topic.
