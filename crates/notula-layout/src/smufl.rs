@@ -6,6 +6,8 @@ pub const STAFF_LINE_THICKNESS: f32 = 0.13;
 pub const STEM_THICKNESS: f32 = 0.12;
 pub const THIN_BARLINE: f32 = 0.16;
 pub const THICK_BARLINE: f32 = 0.5;
+/// Gap between the thin and thick line of a final barline.
+pub const FINAL_BARLINE_GAP: f32 = 0.4;
 pub const LEDGER_THICKNESS: f32 = 0.16;
 pub const LEDGER_EXTENSION: f32 = 0.4;
 pub const BEAM_THICKNESS: f32 = 0.5;

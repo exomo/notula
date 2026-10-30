@@ -1516,3 +1516,84 @@ fn a_rest_filling_the_measure_is_centred_like_an_empty_measure() {
         "rest at {rest_x}, middle {middle}"
     );
 }
+
+#[test]
+fn an_up_stem_voice_below_a_down_stem_voice_moves_right() {
+    let head_x = |upper: Pitch, lower: Pitch| {
+        let (b, first, second) = two_voices(upper, lower);
+        let list = b.layout(100.0);
+        let x = |event| {
+            list.items
+                .iter()
+                .find_map(|item| match item.shape {
+                    Shape::Glyph { x, glyph, .. }
+                        if item.event == Some(event) && glyph == BLACK_HEAD =>
+                    {
+                        Some(x)
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        x(first) - x(second)
+    };
+    // Voices in their usual order share the column.
+    assert_eq!(
+        head_x(Pitch::new(Step::E, 0, 5), Pitch::new(Step::G, 0, 4)),
+        0.0
+    );
+    // The first voice a fourth below the second: its chord moves right by part of a notehead,
+    // enough to clear both stems.
+    let shift = head_x(Pitch::new(Step::G, 0, 4), Pitch::new(Step::C, 0, 5));
+    assert!((shift - 0.6 * 1.18).abs() < 0.01, "{shift}");
+    // A second apart, the heads would overlap: a whole notehead.
+    let shift = head_x(Pitch::new(Step::B, 0, 4), Pitch::new(Step::C, 0, 5));
+    assert!((shift - 1.18).abs() < 0.01, "{shift}");
+    // A unison keeps sharing one notehead.
+    assert_eq!(
+        head_x(Pitch::new(Step::G, 0, 4), Pitch::new(Step::G, 0, 4)),
+        0.0
+    );
+}
+
+#[test]
+fn the_final_barline_keeps_room_after_the_last_note() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    b.measures(2);
+    b.note(0, 0, c4(), NoteValue::Whole);
+    b.note(0, 1, c4(), NoteValue::Whole);
+    let list = b.layout(200.0);
+    let heads = head_xs(&list, '\u{E0A2}');
+    let tail = |measure: usize| list.areas[measure].x_end - heads[measure];
+    // The final measure adds the width of its double barline.
+    assert!((tail(1) - tail(0) - (0.5 + 0.4 + 0.16)).abs() < 0.01);
+}
+
+#[test]
+fn dots_of_the_other_voice_go_after_a_moved_chord() {
+    let mut b = Builder::new(&[("", &[Clef::Treble])]);
+    let up = b.note(0, 0, Pitch::new(Step::G, 0, 4), NoteValue::Half);
+    let staff = b.staves[0];
+    let voice = edit::add_voice(&mut b.doc, staff, 0).unwrap();
+    let down = edit::enter_note(
+        &mut b.doc,
+        Cursor {
+            staff,
+            measure: 0,
+            voice,
+            tick: 0,
+        },
+        Pitch::new(Step::C, 0, 5),
+        Duration::new(NoteValue::Quarter, 1),
+    )
+    .unwrap()
+    .event;
+    let list = b.layout(100.0);
+    let moved_head = glyph_x(&list, up, HALF_HEAD);
+    let dot = glyph_x(&list, down, '\u{E1E7}');
+    // Past the moved half note's head and stem.
+    assert!(
+        dot > moved_head + 1.18 + 0.2,
+        "dot {dot}, moved head {moved_head}"
+    );
+}

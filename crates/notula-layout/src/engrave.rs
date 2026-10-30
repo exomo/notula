@@ -18,6 +18,8 @@ const ACCIDENTAL_SLOT_GAP: f32 = 0.15;
 const ACCIDENTAL_STACK_DISTANCE: f32 = 3.0;
 const DOT_GAP: f32 = 0.4;
 const DOT_ADVANCE: f32 = 0.6;
+/// Share of a notehead that a crossing up-stem chord moves right when heads do not overlap.
+const PARTIAL_VOICE_SHIFT: f32 = 0.6;
 
 pub(crate) struct AccidentalPlan {
     pub glyph: char,
@@ -57,6 +59,9 @@ pub(crate) struct EventPlan {
     pub shares_staff: bool,
     /// A rest that is its voice's only event and fills the measure; drawn centred in it.
     pub fills_measure: bool,
+    /// Moves the event right of its column, where an up-stem chord would otherwise collide
+    /// with a down-stem chord of another voice at the same time.
+    pub shift: f32,
     pub body: Body,
     /// Space needed left of the column.
     pub left: f32,
@@ -211,9 +216,80 @@ pub(crate) fn plan_staff(
             }
             voice
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let mut voices = voices;
+    shift_crossing_voices(&mut voices);
 
     StaffPlan { voices }
+}
+
+/// Where an up-stem chord reaches down to a second above a down-stem chord at the same onset
+/// or lower, the stems would run through the other voice's noteheads; the up-stem chord moves
+/// right, by a whole notehead where heads would overlap and by part of one otherwise. A unison
+/// of two single notes keeps sharing its head.
+fn shift_crossing_voices(voices: &mut [VoicePlan]) {
+    fn diatonic_range(event: &EventPlan) -> Option<(i16, i16)> {
+        let Body::Chord { notes } = &event.body else {
+            return None;
+        };
+        let indices = notes.iter().map(|note| note.pitch.diatonic_index());
+        Some((indices.clone().min()?, indices.max()?))
+    }
+    let mut shifts = Vec::new();
+    for (up_voice, voice) in voices.iter().enumerate() {
+        for (up_index, up) in voice.events.iter().enumerate() {
+            if !(up.shares_staff && up.stem_up) {
+                continue;
+            }
+            let Some((up_low, up_high)) = diatonic_range(up) else {
+                continue;
+            };
+            let shift = voices
+                .iter()
+                .flat_map(|other| &other.events)
+                .filter(|down| down.shares_staff && !down.stem_up && down.onset == up.onset)
+                .filter_map(|down| {
+                    let (down_low, down_high) = diatonic_range(down)?;
+                    let unison = up_low == up_high
+                        && down_low == down_high
+                        && up_low == down_low
+                        && smufl::notehead(up.value).0 == smufl::notehead(down.value).0
+                        && up.dots == down.dots;
+                    if up_low > down_high + 1 || unison {
+                        return None;
+                    }
+                    let width = smufl::notehead(down.value)
+                        .1
+                        .max(smufl::notehead(up.value).1);
+                    // Heads a second or less apart would overlap and need a whole notehead;
+                    // farther apart, part of one keeps both stems clear while the chords
+                    // still read as one beat.
+                    Some(if up_low + 1 >= down_high {
+                        width
+                    } else {
+                        width * PARTIAL_VOICE_SHIFT
+                    })
+                })
+                .fold(0.0_f32, f32::max);
+            if shift > 0.0 {
+                shifts.push((up_voice, up_index, shift));
+            }
+        }
+    }
+    for (voice, index, shift) in shifts {
+        let event = &mut voices[voice].events[index];
+        event.shift = shift;
+        event.right += shift;
+        // Dots of the other voice's chords at this onset go after the moved chord.
+        let (onset, moved_right) = (event.onset, event.right);
+        for other in voices.iter_mut().flat_map(|voice| &mut voice.events) {
+            if other.onset == onset && !other.stem_up && other.dots > 0 {
+                let dot_x = other.dot_x.max(moved_right + DOT_GAP);
+                other.right += dot_x - other.dot_x;
+                other.dot_x = dot_x;
+            }
+        }
+    }
 }
 
 /// Accidentals follow the key signature and are remembered per pitch until the barline.
@@ -365,6 +441,7 @@ fn finish_event(draft: &Draft, stem_up: bool, shares_staff: bool, beamed: bool) 
             stem_up,
             shares_staff,
             fills_measure: false,
+            shift: 0.0,
             body: Body::Rest { y },
             left: 0.0,
             right: width + dots_extent(draft.dots),
@@ -477,6 +554,7 @@ fn finish_event(draft: &Draft, stem_up: bool, shares_staff: bool, beamed: bool) 
         stem_up,
         shares_staff,
         fills_measure: false,
+        shift: 0.0,
         body: Body::Chord { notes },
         left,
         right: (heads_right + dots_extent(draft.dots)).max(flag_right),

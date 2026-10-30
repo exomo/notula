@@ -775,7 +775,7 @@ impl Layouter<'_> {
                     if event.fills_measure {
                         (body_start + body_end - event.right) / 2.0
                     } else {
-                        x_of(event.onset)
+                        x_of(event.onset) + event.shift
                     }
                 };
                 for (voice_index, voice) in plan.voices.iter().enumerate() {
@@ -790,7 +790,7 @@ impl Layouter<'_> {
                         let notes = match &event.body {
                             engrave::Body::Rest { .. } => Vec::new(),
                             engrave::Body::Chord { notes } => {
-                                let x = x_of(event.onset);
+                                let x = event_x(event);
                                 let width = notehead(event.value).1;
                                 notes
                                     .iter()
@@ -871,7 +871,10 @@ impl Layouter<'_> {
                 let bottom = y_top + rows.y[range.end - 1] + STAFF_HEIGHT;
                 if is_final {
                     let thick = body_end - smufl::THICK_BARLINE / 2.0;
-                    let thin = thick - smufl::THICK_BARLINE / 2.0 - 0.4 - smufl::THIN_BARLINE / 2.0;
+                    let thin = thick
+                        - smufl::THICK_BARLINE / 2.0
+                        - smufl::FINAL_BARLINE_GAP
+                        - smufl::THIN_BARLINE / 2.0;
                     canvas.line(None, (thin, top), (thin, bottom), smufl::THIN_BARLINE);
                     canvas.line(None, (thick, top), (thick, bottom), smufl::THICK_BARLINE);
                 } else {

@@ -360,7 +360,7 @@ pub(crate) fn emit_voice(
     }
     for (index, (ev, &beamed)) in voice.events.iter().zip(&beamed).enumerate() {
         let reach = (upper_extent(voice, index), lower_extent(voice, index));
-        emit_event(canvas, ev, x_of(ev.onset), y0, !beamed, reach);
+        emit_event(canvas, ev, x_of(ev.onset) + ev.shift, y0, !beamed, reach);
     }
     for group in &voice.beams {
         emit_beam(canvas, voice, group, y0, x_of);
@@ -505,7 +505,9 @@ fn emit_beam(
         .filter_map(|&i| {
             let ev = &voice.events[i];
             match &ev.body {
-                Body::Chord { notes } => Some((ev, stem_geometry(ev, notes, x_of(ev.onset)))),
+                Body::Chord { notes } => {
+                    Some((ev, stem_geometry(ev, notes, x_of(ev.onset) + ev.shift)))
+                }
                 Body::Rest { .. } => None,
             }
         })
@@ -630,7 +632,7 @@ pub(crate) fn metronome_baseline(
         .flat_map(|voice| (0..voice.events.len()).map(move |index| (voice, index)))
         .filter(|&(voice, index)| {
             let event = &voice.events[index];
-            let column = x_of(event.onset);
+            let column = x_of(event.onset) + event.shift;
             column + event.right >= x && column - event.left <= right
         })
         .map(|(voice, index)| upper_extent(voice, index))
