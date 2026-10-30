@@ -102,6 +102,11 @@ pub enum Command {
         part: PartId,
         short_name: String,
     },
+    /// Whether the part's name is printed beside its staves.
+    SetPartNameHidden {
+        part: PartId,
+        hidden: bool,
+    },
     SetPartStaves {
         part: PartId,
         staves: Vec<Staff>,
@@ -584,6 +589,15 @@ impl Command {
                     part,
                     short_name: old,
                 })
+            }
+            Command::SetPartNameHidden { part, hidden } => {
+                let target = score
+                    .parts
+                    .iter_mut()
+                    .find(|candidate| candidate.id == part)
+                    .ok_or(ModelError::PartNotFound(part))?;
+                let old = mem::replace(&mut target.hide_name, hidden);
+                Ok(Command::SetPartNameHidden { part, hidden: old })
             }
             Command::SetPartStaves { part, staves } => {
                 if staves.is_empty() {

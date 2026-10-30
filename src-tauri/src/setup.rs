@@ -194,6 +194,7 @@ pub struct PartProperties {
     pub id: PartId,
     pub name: String,
     pub short_name: String,
+    pub hide_name: bool,
     pub staves: usize,
 }
 
@@ -202,6 +203,8 @@ pub struct PartInstrumentUpdate {
     pub part_id: PartId,
     pub name: String,
     pub short_name: String,
+    #[serde(default)]
+    pub hide_name: bool,
     pub preset_id: Option<String>,
     pub staves: usize,
 }
@@ -248,6 +251,7 @@ pub fn properties(score: &Score) -> ScoreProperties {
                 } else {
                     part.short_name.clone()
                 },
+                hide_name: part.hide_name,
                 staves: part.staves.len(),
             })
             .collect(),
@@ -385,6 +389,12 @@ pub fn update_properties(
             commands.push(Command::SetPartShortName {
                 part: instrument.part_id,
                 short_name: short_name.to_owned(),
+            });
+        }
+        if part.hide_name != instrument.hide_name {
+            commands.push(Command::SetPartNameHidden {
+                part: instrument.part_id,
+                hidden: instrument.hide_name,
             });
         }
     }
@@ -607,6 +617,7 @@ mod tests {
                 .into_iter()
                 .map(|part| PartInstrumentUpdate {
                     part_id: part.id,
+                    hide_name: part.hide_name,
                     name: part.name,
                     short_name: part.short_name,
                     preset_id: None,
@@ -615,6 +626,19 @@ mod tests {
                 .collect(),
             add_instruments: Vec::new(),
         }
+    }
+
+    #[test]
+    fn hiding_a_part_name_is_one_undoable_change() {
+        let mut doc = build(&setup()).unwrap();
+        let mut update = unchanged_update(doc.score());
+        update.instruments[1].hide_name = true;
+        update_properties(&mut doc, update).unwrap();
+        assert!(!doc.score().parts[0].hide_name);
+        assert!(doc.score().parts[1].hide_name);
+        assert!(properties(doc.score()).parts[1].hide_name);
+        doc.undo().unwrap();
+        assert!(!doc.score().parts[1].hide_name);
     }
 
     #[test]
@@ -777,6 +801,7 @@ mod tests {
                 remove_part_ids: Vec::new(),
                 instruments: vec![PartInstrumentUpdate {
                     part_id,
+                    hide_name: false,
                     name: "Flute solo".into(),
                     short_name: "Fl. solo".into(),
                     preset_id: Some("oboe".into()),
@@ -864,6 +889,7 @@ mod tests {
                 instruments: vec![
                     PartInstrumentUpdate {
                         part_id,
+                        hide_name: false,
                         name: "Violin".into(),
                         short_name: "Vln.".into(),
                         preset_id: None,
@@ -871,6 +897,7 @@ mod tests {
                     },
                     PartInstrumentUpdate {
                         part_id: original_parts[0].id,
+                        hide_name: false,
                         name: "Flute".into(),
                         short_name: "Fl.".into(),
                         preset_id: None,
@@ -940,6 +967,7 @@ mod tests {
                 remove_part_ids: vec![removed_part.id],
                 instruments: vec![PartInstrumentUpdate {
                     part_id: kept_part_id,
+                    hide_name: false,
                     name: "Flute".into(),
                     short_name: "Fl.".into(),
                     preset_id: None,
@@ -997,6 +1025,7 @@ mod tests {
                 remove_part_ids: Vec::new(),
                 instruments: vec![PartInstrumentUpdate {
                     part_id,
+                    hide_name: false,
                     name: "Violin 1".into(),
                     short_name: "Vln. 1".into(),
                     preset_id: None,
@@ -1065,6 +1094,7 @@ mod tests {
                 remove_part_ids: Vec::new(),
                 instruments: vec![PartInstrumentUpdate {
                     part_id,
+                    hide_name: false,
                     name: "Piano".into(),
                     short_name: "Pno.".into(),
                     preset_id: Some("flute".into()),
@@ -1135,6 +1165,7 @@ mod tests {
                 remove_part_ids: Vec::new(),
                 instruments: vec![PartInstrumentUpdate {
                     part_id,
+                    hide_name: false,
                     name: "Piano".into(),
                     short_name: "Pno.".into(),
                     preset_id: None,
@@ -1178,6 +1209,7 @@ mod tests {
                 remove_part_ids: Vec::new(),
                 instruments: vec![PartInstrumentUpdate {
                     part_id,
+                    hide_name: false,
                     name: "Piano".into(),
                     short_name: "Pno.".into(),
                     preset_id: None,

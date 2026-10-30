@@ -219,6 +219,8 @@ export interface ScorePart {
   id: number;
   name: string;
   short_name: string;
+  /** The name is kept but not printed beside the staves. */
+  hide_name: boolean;
   staves: number;
 }
 
@@ -237,7 +239,14 @@ export interface ScorePropertiesUpdate {
   tempo: Tempo;
   tempo_visible: boolean;
   remove_part_ids: number[];
-  instruments: { part_id: number; name: string; short_name: string; preset_id: string | null; staves: number }[];
+  instruments: {
+    part_id: number;
+    name: string;
+    short_name: string;
+    hide_name: boolean;
+    preset_id: string | null;
+    staves: number;
+  }[];
   add_instruments: { preset_id: string; name: string; short_name: string; staves: number }[];
 }
 

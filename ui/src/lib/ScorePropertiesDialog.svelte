@@ -9,6 +9,7 @@
   let removedPartIds = $state<number[]>([]);
   let partNames = $state<string[]>([]);
   let partShortNames = $state<string[]>([]);
+  let partNamesHidden = $state<boolean[]>([]);
   let selectedPresets = $state<string[]>([]);
   let selectedStaffCounts = $state<number[]>([]);
   let additions = $state<{ presetId: string; name: string; shortName: string; staves: number }[]>([]);
@@ -46,6 +47,7 @@
       pendingRemoval = null;
       partNames = current.parts.map((part) => part.name);
       partShortNames = current.parts.map((part) => part.short_name);
+      partNamesHidden = current.parts.map((part) => part.hide_name);
       title = current.title;
       composer = current.composer;
       tempoBeat = tempoBeatKey(current.tempo);
@@ -91,6 +93,7 @@
     parts = swap(parts);
     partNames = swap(partNames);
     partShortNames = swap(partShortNames);
+    partNamesHidden = swap(partNamesHidden);
     selectedPresets = swap(selectedPresets);
     selectedStaffCounts = swap(selectedStaffCounts);
   }
@@ -141,6 +144,7 @@
         part_id: part.id,
         name: partNames[index],
         short_name: partShortNames[index],
+        hide_name: partNamesHidden[index],
         preset_id: selectedPresets[index] || null,
         staves: selectedStaffCounts[index],
       })),
@@ -186,6 +190,15 @@
               <label class="part-short-name">
                 Short name
                 <input bind:value={partShortNames[index]} aria-label="Short name for {partNames[index]}" disabled={!loaded} />
+              </label>
+              <label class="part-hide-name" title="Keep the name, but do not print it beside the staves">
+                <input
+                  type="checkbox"
+                  bind:checked={partNamesHidden[index]}
+                  aria-label="Hide the name of {partNames[index]}"
+                  disabled={!loaded}
+                />
+                Hide name
               </label>
               <label class="part-type">
                 Instrument type
@@ -364,6 +377,16 @@
   .part-type,
   .staff-count {
     min-width: 0;
+  }
+
+  /* Its own row under the name fields, so the row keeps its width. */
+  .part-hide-name {
+    grid-row: 2;
+    grid-column: 1 / span 2;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    white-space: nowrap;
   }
 
   .reorder-controls {
