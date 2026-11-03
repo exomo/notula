@@ -2147,14 +2147,18 @@ pub fn import(xml: &str) -> Result<MusicXmlImport, MusicXmlError> {
             .map(|staff| staff.id)
             .collect();
         for (staff_index, staff_id) in staff_ids.iter().copied().enumerate() {
-            let voice_count = part
+            // Voices are numbered per part in MusicXML (MuseScore puts the second staff's
+            // first voice at 5), so each staff keeps only the voices it has, in their order.
+            let voices: Vec<usize> = part
                 .measures
                 .iter()
                 .flat_map(|measure| &measure.events)
                 .filter(|event| event.staff == staff_index)
-                .map(|event| event.voice + 1)
-                .max()
-                .unwrap_or(1);
+                .map(|event| event.voice)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let voice_count = voices.len().max(1);
             for voice in 1..voice_count {
                 doc.execute(Command::InsertVoice {
                     staff: staff_id,
@@ -2176,7 +2180,10 @@ pub fn import(xml: &str) -> Result<MusicXmlImport, MusicXmlError> {
                     let mut events: Vec<_> = source
                         .events
                         .iter()
-                        .filter(|event| event.staff == staff_index && event.voice == voice_index)
+                        .filter(|event| {
+                            event.staff == staff_index
+                                && voices.get(voice_index) == Some(&event.voice)
+                        })
                         .cloned()
                         .collect();
                     events.sort_by_key(|event| event.onset);
@@ -2897,6 +2904,60 @@ mod tests {
             ]
         );
         assert_eq!(imported.unsupported, vec!["sostenuto pedal".to_owned()]);
+    }
+
+    #[test]
+    fn voices_are_numbered_per_staff_without_empty_ones() {
+        // MuseScore numbers voices across the part: the second staff's first voice is 5.
+        let note = |step: &str, voice: u32, staff: u32| {
+            format!(
+                "<note><pitch><step>{step}</step><octave>4</octave></pitch><duration>2</duration><voice>{voice}</voice><staff>{staff}</staff><type>half</type></note>"
+            )
+        };
+        let pedal = |kind: &str| {
+            format!(
+                r#"<direction placement="below"><direction-type><pedal type="{kind}" line="no"/></direction-type><voice>5</voice><staff>2</staff></direction>"#
+            )
+        };
+        let xml = format!(
+            r#"<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list><part id="P1">
+<measure number="1"><attributes><divisions>1</divisions><staves>2</staves><time><beats>4</beats><beat-type>4</beat-type></time><clef number="1"><sign>G</sign><line>2</line></clef><clef number="2"><sign>F</sign><line>4</line></clef></attributes>{c1}{d1}<backup><duration>4</duration></backup>{e2}{f2}<backup><duration>4</duration></backup>{start}{g5}{a5}{stop}</measure>
+</part></score-partwise>"#,
+            c1 = note("C", 1, 1),
+            d1 = note("D", 1, 1),
+            e2 = note("E", 3, 1),
+            f2 = note("F", 3, 1),
+            g5 = note("G", 5, 2),
+            a5 = note("A", 5, 2),
+            start = pedal("start"),
+            stop = pedal("stop"),
+        );
+        let imported = import(&xml).unwrap();
+        let steps = |staff: usize| -> Vec<Vec<Step>> {
+            imported.score.parts[0].staves[staff].measures[0]
+                .voices
+                .iter()
+                .map(|voice| {
+                    voice
+                        .events
+                        .iter()
+                        .filter_map(|event| match &event.kind {
+                            EventKind::Chord { pitches, .. } => Some(pitches[0].step),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .collect()
+        };
+        assert_eq!(
+            steps(0),
+            vec![vec![Step::C, Step::D], vec![Step::E, Step::F]]
+        );
+        assert_eq!(steps(1), vec![vec![Step::G, Step::A]]);
+        assert_eq!(
+            pedal_ranges(&imported.score),
+            vec![(PedalStyle::Text, 1, 0, 3840)]
+        );
     }
 
     #[test]
