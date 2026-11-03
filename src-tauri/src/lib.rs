@@ -39,6 +39,7 @@ pub fn run() {
             commands::change_pedal,
             commands::remove_pedal,
             commands::set_pedal_release_hidden,
+            commands::set_pedal_style,
             commands::remove_slur,
             commands::select,
             commands::edit_selection,

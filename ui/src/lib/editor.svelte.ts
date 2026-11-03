@@ -477,7 +477,9 @@ class Editor {
   }
 
   async clickStaff(x: number, y: number, shift = false) {
-    const hit = await this.run(() => api.hitTest(this.layoutWidth, x, y, this.cursor?.voice ?? 0));
+    const hit = await this.run(() =>
+      api.hitTest(this.layoutWidth, x, y, this.cursor?.voice ?? 0, !this.inputMode),
+    );
     if (shift && !this.inputMode && hit?.note != null) {
       await this.extendSelectionTo(hit.note);
       return;
@@ -731,6 +733,22 @@ class Editor {
     const event = this.selected;
     if (event === null || !this.eventArticulations?.pedal) return;
     const edited = await this.run(() => api.changePedal(event));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshArticulations(event);
+  }
+
+  /**
+   * Chooses the style for new pedals and, when the selected note belongs to a pedal,
+   * changes that pedal's style too.
+   */
+  async choosePedalStyle(style: PedalStyle) {
+    this.pedalStyle = style;
+    const event = this.selected;
+    if (event === null || !this.eventArticulations?.pedal || this.eventArticulations.pedal_style === style) {
+      return;
+    }
+    const edited = await this.run(() => api.setPedalStyle(event, style));
     if (!edited) return;
     this.apply(edited);
     await this.refreshArticulations(event);

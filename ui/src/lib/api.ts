@@ -277,8 +277,9 @@ export interface PlaybackStatus {
 export const api = {
   currentState: () => invoke<Edited>("current_state"),
   renderScore: (width: number) => invoke<RenderList>("render_score", { width }),
-  hitTest: (width: number, x: number, y: number, voice: number) =>
-    invoke<HitInfo | null>("hit_test", { width, x, y, voice }),
+  /** With `select`, a click may pick a rest, or an event of another voice at that column. */
+  hitTest: (width: number, x: number, y: number, voice: number, select = false) =>
+    invoke<HitInfo | null>("hit_test", { width, x, y, voice, select }),
   selectEvent: (event: number) => invoke<Cursor | null>("select_event", { event }),
   moveCursor: (cursor: Cursor, selected: number | null, forward: boolean, movement = "step") =>
     invoke<CursorPosition | null>("move_cursor", { cursor, selected, forward, movement }),
@@ -321,6 +322,8 @@ export const api = {
     invoke<Edited>("toggle_pedal", { start, end, style }),
   changePedal: (event: number) => invoke<Edited>("change_pedal", { event }),
   removePedal: (event: number) => invoke<Edited>("remove_pedal", { event }),
+  setPedalStyle: (event: number, style: PedalStyle) =>
+    invoke<Edited>("set_pedal_style", { event, style }),
   setPedalReleaseHidden: (event: number, hidden: boolean) =>
     invoke<Edited>("set_pedal_release_hidden", { event, hidden }),
   select: (request: SelectionRequest) => invoke<SelectionInfo | null>("select", { request }),

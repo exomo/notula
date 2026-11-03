@@ -104,6 +104,54 @@ pub fn note_at_cursor(score: &Score, cursor: Cursor) -> Option<EventId> {
     None
 }
 
+/// The note or rest that starts exactly at the cursor, in its voice.
+pub fn event_at_cursor(score: &Score, cursor: Cursor) -> Option<EventId> {
+    let voice = score.voice(cursor.at()).ok()?;
+    let mut onset = 0;
+    for event in &voice.events {
+        if onset == cursor.tick {
+            return Some(event.id);
+        }
+        onset += event.duration.ticks();
+    }
+    None
+}
+
+/// The note or rest a click selects, with the cursor moved to it. `cursor` is the click's
+/// position in the cursor's voice; `column` is the tick of the clicked column, if any. The
+/// cursor's voice wins when it has an event at the column; otherwise another voice of the
+/// staff starting an event exactly there, as clicking that event directly would; otherwise
+/// the event at the cursor.
+pub fn event_at_click(
+    score: &Score,
+    cursor: Cursor,
+    column: Option<u32>,
+) -> Option<(Cursor, EventId)> {
+    let own = event_at_cursor(score, cursor).map(|id| (cursor, id));
+    if own.is_some() && Some(cursor.tick) == column {
+        return own;
+    }
+    let voices = score
+        .staff(cursor.staff)
+        .ok()?
+        .measures
+        .get(cursor.measure)?
+        .voices
+        .len();
+    column
+        .and_then(|tick| {
+            (0..voices).find_map(|voice| {
+                let candidate = Cursor {
+                    voice,
+                    tick,
+                    ..cursor
+                };
+                event_at_cursor(score, candidate).map(|id| (candidate, id))
+            })
+        })
+        .or(own)
+}
+
 /// Returns the last valid insertion/overwrite position in a measure.
 pub fn cursor_at_content_end(score: &Score, cursor: Cursor) -> Option<Cursor> {
     let voice = score.voice(cursor.at()).ok()?;
@@ -1318,6 +1366,19 @@ pub fn remove_pedal(doc: &mut Document, id: EventId) -> Result<(), ModelError> {
 fn clear_pedal_stop(markings: &mut Markings) {
     markings.pedal_stop = false;
     markings.pedal_release_hidden = false;
+}
+
+/// Changes how the pedal that starts at, ends at, or is held through the event is printed.
+pub fn set_pedal_style(
+    doc: &mut Document,
+    id: EventId,
+    style: PedalStyle,
+) -> Result<(), ModelError> {
+    let span =
+        pedal_at(doc.score(), id).ok_or(ModelError::Invalid("the event is not part of a pedal"))?;
+    edit_markings(doc, span.start, |markings| {
+        markings.pedal_start = Some(style)
+    })
 }
 
 /// Prints or hides the release of the pedal that starts at, ends at, or is held through the

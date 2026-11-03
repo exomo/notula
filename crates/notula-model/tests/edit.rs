@@ -1612,3 +1612,63 @@ fn a_pedal_release_can_be_hidden_and_is_cleared_with_the_pedal() {
     edit::remove_pedal(&mut doc, ids[0]).unwrap();
     assert!((0..4).all(|index| event_at(&doc, cursor, index).markings.is_empty()));
 }
+
+#[test]
+fn a_click_selects_rests_and_events_of_other_voices_at_its_column() {
+    let (mut doc, cursor) = setup(1);
+    // Voice 1: half note, half rest. Voice 2 (index 1) holds quarter notes; voice 1 has no
+    // event at the second quarter.
+    let half = enter_note(&mut doc, cursor, c4(), dur(NoteValue::Half)).unwrap();
+    let rest = enter_rest(&mut doc, half.next, dur(NoteValue::Half)).unwrap();
+    let voice = edit::add_voice(&mut doc, cursor.staff, 0).unwrap();
+    let lower = Cursor { voice, ..cursor };
+    let quarters = quarters(&mut doc, lower, 4);
+    let at = |voice, tick| Cursor {
+        voice,
+        tick,
+        ..cursor
+    };
+
+    // A rest is selected like a note.
+    assert_eq!(
+        edit::event_at_click(doc.score(), at(0, 1920), Some(1920)),
+        Some((at(0, 1920), rest.event))
+    );
+    // Where the cursor's voice has nothing at the column, the other voice's event is taken.
+    assert_eq!(
+        edit::event_at_click(doc.score(), at(0, 1920), Some(960)),
+        Some((at(voice, 960), quarters[1]))
+    );
+    // The cursor's own voice wins at a shared column.
+    assert_eq!(
+        edit::event_at_click(doc.score(), at(voice, 0), Some(0)),
+        Some((at(voice, 0), quarters[0]))
+    );
+    assert_eq!(
+        edit::event_at_click(doc.score(), at(0, 0), Some(0)),
+        Some((at(0, 0), half.event))
+    );
+}
+
+#[test]
+fn a_pedal_style_is_changed_from_any_event_of_the_pedal() {
+    use notula_model::PedalStyle;
+    let (mut doc, cursor) = setup(1);
+    let ids = quarters(&mut doc, cursor, 4);
+    edit::toggle_pedal(&mut doc, ids[0], ids[2], PedalStyle::Line).unwrap();
+    edit::set_pedal_release_hidden(&mut doc, ids[0], true).unwrap();
+
+    edit::set_pedal_style(&mut doc, ids[1], PedalStyle::Text).unwrap();
+    let span = edit::pedal_at(doc.score(), ids[2]).unwrap();
+    assert_eq!(
+        (span.style, span.start, span.end),
+        (PedalStyle::Text, ids[0], ids[2])
+    );
+    assert!(span.release_hidden, "the release stays hidden");
+    assert!(edit::set_pedal_style(&mut doc, ids[3], PedalStyle::Text).is_err());
+    doc.undo().unwrap();
+    assert_eq!(
+        edit::pedal_at(doc.score(), ids[0]).unwrap().style,
+        PedalStyle::Line
+    );
+}

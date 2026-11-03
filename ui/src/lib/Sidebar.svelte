@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Dynamic, TempoDirection } from "./api";
+  import type { Dynamic, PedalStyle, TempoDirection } from "./api";
   import { TEMPO_BEATS, editor, tempoBeatKey, tempoFromBeatKey } from "./editor.svelte";
   import { returnFocusAfterChoice, returnFocusAfterClick } from "./focus";
   import Icon from "./Icon.svelte";
@@ -243,7 +243,14 @@
         title="Select the note where the sustain pedal goes down, then the last note it holds; the same range again removes it"
         onclick={() => editor.togglePedalMode()}>{editor.pedalMode ? "Cancel" : "Pedal"}</button
       >
-      <select aria-label="Pedal style" title="How new pedals are printed" bind:value={editor.pedalStyle}>
+      <select
+        aria-label="Pedal style"
+        title={selectedNote?.pedal
+          ? "How the selected note's pedal is printed; new pedals use the same style"
+          : "How new pedals are printed"}
+        value={selectedNote?.pedal_style ?? editor.pedalStyle}
+        onchange={(event) => editor.choosePedalStyle(event.currentTarget.value as PedalStyle)}
+      >
         <option value="text">Ped. ✱</option>
         <option value="line">Line</option>
         <option value="text_line">Ped. with line</option>

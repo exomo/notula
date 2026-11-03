@@ -452,6 +452,7 @@ pub fn hit_test(
     x: f32,
     y: f32,
     voice: usize,
+    select: Option<bool>,
 ) -> Option<HitInfo> {
     let session = state.lock();
     let score = session.doc.score();
@@ -484,7 +485,17 @@ pub fn hit_test(
     } else {
         edit::cursor_at_staff_hit(score, cursor)?
     };
-    let note = edit::note_at_cursor(score, cursor);
+    // Selecting picks the note or rest at the clicked column: the cursor's voice first, then
+    // another voice starting an event exactly there (as clicking it directly would), then the
+    // cursor voice's next event. Note input keeps its voice and picks only notes.
+    let (cursor, note) = if select.unwrap_or(false) {
+        match edit::event_at_click(score, cursor, hit.tick) {
+            Some((cursor, note)) => (cursor, Some(note)),
+            None => (cursor, None),
+        }
+    } else {
+        (cursor, edit::note_at_cursor(score, cursor))
+    };
     let pitches = note
         .and_then(|id| edit::locate(score, id))
         .and_then(|located| {
@@ -733,6 +744,20 @@ pub fn toggle_pedal(
 pub fn change_pedal(app: AppHandle, state: State<AppState>, event: EventId) -> Reply<Edited> {
     let mut session = state.lock();
     edit::change_pedal(&mut session.doc, event).map_err(text)?;
+    let cursor = cursor_of(&session, event);
+    Ok(finish(&app, &session, cursor, Some(event)))
+}
+
+/// Changes the style of the pedal the event belongs to.
+#[tauri::command]
+pub fn set_pedal_style(
+    app: AppHandle,
+    state: State<AppState>,
+    event: EventId,
+    style: PedalStyle,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::set_pedal_style(&mut session.doc, event, style).map_err(text)?;
     let cursor = cursor_of(&session, event);
     Ok(finish(&app, &session, cursor, Some(event)))
 }
