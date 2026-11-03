@@ -3,6 +3,7 @@
 mod emit;
 mod engrave;
 mod measure;
+mod pedal;
 mod prefix;
 mod render;
 mod smufl;
@@ -215,6 +216,7 @@ struct Layouter<'a> {
     metrics: Vec<MeasureMetrics>,
     rows: Rows,
     hairpins: Vec<notula_model::edit::HairpinSpan>,
+    pedals: Vec<notula_model::edit::PedalSpan>,
 }
 
 struct PlacedNote {
@@ -441,6 +443,7 @@ pub fn layout(score: &Score, options: &LayoutOptions) -> RenderList {
         metrics,
         rows: Rows::new(score),
         hairpins: notula_model::edit::hairpins(score).0,
+        pedals: notula_model::edit::pedals(score).0,
     };
     layouter.run(options.width)
 }
@@ -756,6 +759,12 @@ impl Layouter<'_> {
             if marked {
                 reach.1 = reach.1.max(volume::line_bottom(reach.1));
             }
+            let pedalled = self.pedals.iter().any(|span| {
+                span.staff == staff.id && span.start_tick < last_tick && span.end_tick > first_tick
+            });
+            if pedalled {
+                reach.1 = pedal::line_bottom(reach.1);
+            }
         }
 
         let in_system = |measure: usize| system.measures.contains(&measure);
@@ -863,6 +872,8 @@ impl Layouter<'_> {
         let mut timeline = volume::Timeline::default();
         let mut tempo_texts = Vec::new();
         let mut foreground_fermatas = Vec::new();
+        // How far each staff's notes, articulations, and fermatas reach down in this system.
+        let mut marks_bottoms: Vec<f32> = rows.y.iter().map(|row| y_top + row).collect();
         let mut placed_events = Vec::new();
         let mut measure_tick: u64 = self.score.measures[..system.measures.start]
             .iter()
@@ -998,6 +1009,8 @@ impl Layouter<'_> {
                     }
                 }
                 foreground_fermatas.extend(emit::fermatas(&plan.voices, y0, &event_x));
+                marks_bottoms[staff_index] =
+                    marks_bottoms[staff_index].max(y0 + emit::marks_bottom(&plan.voices));
             }
 
             for mark in self
@@ -1070,10 +1083,30 @@ impl Layouter<'_> {
             timeline: &timeline,
         }
         .emit(canvas);
-        // Tempo directions go below each part, under its lowest dynamics line.
+        let pedal_bottoms: Vec<Option<f32>> = self
+            .staves
+            .iter()
+            .enumerate()
+            .map(|(index, staff)| {
+                pedal::PedalMarks {
+                    staff: staff.id,
+                    staff_top: y_top + rows.y[index],
+                    dynamics_bottom: volume_bottoms[index],
+                    marks_bottom: marks_bottoms[index],
+                    placed: &placed_events,
+                    pedals: &self.pedals,
+                    timeline: &timeline,
+                }
+                .emit(canvas)
+            })
+            .collect();
+        // Tempo directions go below each part, under its lowest dynamics or pedal line.
         for part in rows.parts.iter().filter(|part| !part.is_empty()) {
             let bottom = y_top + rows.y[part.end - 1] + STAFF_HEIGHT;
-            let below = volume_bottoms[part.end - 1].map_or(bottom, |line| line.max(bottom));
+            let below = [volume_bottoms[part.end - 1], pedal_bottoms[part.end - 1]]
+                .into_iter()
+                .flatten()
+                .fold(bottom, f32::max);
             for &(x, text) in &tempo_texts {
                 canvas.text(x, below + 1.8, text, NAME_SIZE, render::Anchor::Start);
             }

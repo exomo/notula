@@ -151,6 +151,8 @@ pub(crate) fn split_at_barlines(
             if index == 0 {
                 markings = Markings {
                     hairpin_stop: false,
+                    pedal_stop: false,
+                    pedal_release_hidden: false,
                     slur_stop: false,
                     phrase_slur_stop: false,
                     ..event.markings.clone()
@@ -158,6 +160,8 @@ pub(crate) fn split_at_barlines(
             }
             if index == last {
                 markings.hairpin_stop = event.markings.hairpin_stop;
+                markings.pedal_stop = event.markings.pedal_stop;
+                markings.pedal_release_hidden = event.markings.pedal_release_hidden;
                 markings.slur_stop = event.markings.slur_stop;
                 markings.phrase_slur_stop = event.markings.phrase_slur_stop;
             }

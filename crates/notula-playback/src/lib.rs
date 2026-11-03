@@ -27,6 +27,7 @@ pub struct PlaybackEvent {
 struct NoteSpan {
     start: u64,
     end: u64,
+    part: usize,
     track: usize,
     channel: u8,
     note: u8,
@@ -47,12 +48,27 @@ fn measure_starts(score: &Score) -> Vec<u64> {
 }
 
 /// Builds note-on/off events for all parts, staves, voices, and measures.
+///
+/// A sustain pedal holds every note of its instrument, on all of its staves: a note released
+/// while the pedal is down sounds until the pedal comes up, or until its key is struck again.
 pub fn events(score: &Score) -> Vec<PlaybackEvent> {
     let mut spans = Vec::new();
     let measure_starts = measure_starts(score);
+    let part_of = |staff| {
+        score
+            .parts
+            .iter()
+            .position(|part| part.staves.iter().any(|candidate| candidate.id == staff))
+    };
+    // Per part, where the pedal is down: (start, end) in score ticks.
+    let pedals: Vec<(usize, u64, u64)> = notula_model::edit::pedals(score)
+        .0
+        .into_iter()
+        .filter_map(|span| Some((part_of(span.staff)?, span.start_tick, span.end_tick)))
+        .collect();
 
     let mut track = 0;
-    for part in &score.parts {
+    for (part_index, part) in score.parts.iter().enumerate() {
         let max_voices = part
             .staves
             .iter()
@@ -108,6 +124,7 @@ pub fn events(score: &Score) -> Vec<PlaybackEvent> {
                                     spans.push(NoteSpan {
                                         start: onset,
                                         end,
+                                        part: part_index,
                                         track: track_id,
                                         channel,
                                         note,
@@ -125,10 +142,32 @@ pub fn events(score: &Score) -> Vec<PlaybackEvent> {
         }
     }
 
+    let released = |span: &NoteSpan| {
+        span.start + (span.end - span.start) * span.duration_ratio.0 / span.duration_ratio.1
+    };
     let mut events = Vec::with_capacity(spans.len() * 2);
-    for span in spans {
-        let sounding_end =
-            span.start + (span.end - span.start) * span.duration_ratio.0 / span.duration_ratio.1;
+    for span in &spans {
+        let mut sounding_end = released(span);
+        // A pedal that goes down before the key is released holds the note until it comes up.
+        if let Some(&(_, _, pedal_end)) = pedals.iter().find(|(part, start, end)| {
+            *part == span.part && *start < sounding_end && sounding_end < *end
+        }) {
+            sounding_end = pedal_end;
+            // Striking the key again ends the held note.
+            if let Some(next) = spans
+                .iter()
+                .filter(|next| {
+                    next.channel == span.channel
+                        && next.note == span.note
+                        && next.start > span.start
+                        && next.start < sounding_end
+                })
+                .map(|next| next.start)
+                .min()
+            {
+                sounding_end = next;
+            }
+        }
         events.push(PlaybackEvent {
             tick: span.start,
             channel: span.channel,
@@ -610,6 +649,72 @@ mod tests {
         })
         .unwrap();
         assert_eq!(TempoMap::new(doc.score()).seconds_at(960), 1.0);
+    }
+
+    #[test]
+    fn a_pedal_holds_the_notes_of_its_instrument_until_it_comes_up() {
+        use notula_model::PedalStyle;
+        let mut doc = Document::new();
+        let piano = doc.new_part("Piano", &[Clef::Treble, Clef::Bass]);
+        let (treble, bass) = (piano.staves[0].id, piano.staves[1].id);
+        doc.execute(Command::AddPart {
+            index: 0,
+            part: piano,
+        })
+        .unwrap();
+        let flute = doc.new_part("Flute", &[Clef::Treble]);
+        let flute_staff = flute.staves[0].id;
+        doc.execute(Command::AddPart {
+            index: 1,
+            part: flute,
+        })
+        .unwrap();
+        let at = |staff, tick| Cursor {
+            staff,
+            measure: 0,
+            voice: 0,
+            tick,
+        };
+        let pitch = |step, octave| Pitch::new(step, 0, octave);
+        // Treble and flute: C, D, C, E. Bass: C, C, and a half note G, with one pedal over
+        // the two Cs and a change at the G.
+        for (index, step) in [Step::C, Step::D, Step::C, Step::E].into_iter().enumerate() {
+            let tick = index as u32 * 960;
+            enter_note(&mut doc, at(treble, tick), pitch(step, 4), quarter()).unwrap();
+            enter_note(&mut doc, at(flute_staff, tick), pitch(step, 4), quarter()).unwrap();
+        }
+        let first = enter_note(&mut doc, at(bass, 0), pitch(Step::C, 3), quarter()).unwrap();
+        let second = enter_note(&mut doc, first.next, pitch(Step::C, 3), quarter()).unwrap();
+        let half = Duration::new(NoteValue::Half, 0);
+        let last = enter_note(&mut doc, second.next, pitch(Step::G, 3), half).unwrap();
+        edit::toggle_pedal(&mut doc, first.event, second.event, PedalStyle::Text).unwrap();
+        edit::toggle_pedal(&mut doc, last.event, last.event, PedalStyle::Line).unwrap();
+
+        let generated = events(doc.score());
+        let release = |channel: u8, note: Pitch, from: u64| {
+            generated
+                .iter()
+                .find(|event| {
+                    event.kind == PlaybackEventKind::NoteOff
+                        && event.channel == channel
+                        && event.note == note.midi() as u8
+                        && event.tick > from
+                })
+                .map(|event| event.tick)
+        };
+        let (c4, d4, c3) = (pitch(Step::C, 4), pitch(Step::D, 4), pitch(Step::C, 3));
+        // Treble notes are held by the bass staff's pedal: the first C until the pedal is
+        // changed, the second C until it comes up.
+        assert_eq!(release(0, c4, 0), Some(1920));
+        assert_eq!(release(0, d4, 960), Some(1920));
+        assert_eq!(release(0, c4, 1920), Some(3840));
+        // Striking a held key again ends it.
+        assert_eq!(release(1, c3, 0), Some(960));
+        assert_eq!(release(1, c3, 960), Some(1920));
+        // Another instrument is not held.
+        let flute_channel = 2;
+        assert_eq!(release(flute_channel, c4, 0), Some(960));
+        assert_eq!(release(flute_channel, c4, 1920), Some(2880));
     }
 
     #[test]

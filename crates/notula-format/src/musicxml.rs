@@ -9,9 +9,9 @@ use std::path::Path;
 
 use notula_model::{
     Articulation, Clef, Command, Document, Duration, Dynamic, Event, EventKind, Hairpin,
-    KeySignature, Markings, MeasureInfo, NoteValue, Pitch, Register, Score, SlurPlacement, Step,
-    TICKS_PER_QUARTER, Tempo, TempoDirection, TimeSignature, TimeSignatureDisplay, Voice,
-    VoiceLocation,
+    KeySignature, Markings, MeasureInfo, NoteValue, PedalStyle, Pitch, Register, Score,
+    SlurPlacement, Step, TICKS_PER_QUARTER, Tempo, TempoDirection, TimeSignature,
+    TimeSignatureDisplay, Voice, VoiceLocation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +48,11 @@ pub fn export(score: &Score) -> MusicXmlExport {
         );
     }
     let wedges = wedge_marks(&hairpins);
+    let (pedals, unpaired_pedals) = notula_model::edit::pedals(score);
+    if !unpaired_pedals.is_empty() {
+        remember(&mut unsupported, "pedals without a matching end (omitted)");
+    }
+    let pedals = pedal_marks(&pedals);
     // Events where a double slur or double phrase slur ends, which close both halves.
     let placements: std::collections::HashMap<_, _> = score
         .staves()
@@ -202,7 +207,12 @@ pub fn export(score: &Score) -> MusicXmlExport {
                     let mut onset = 0;
                     for event in &voice.events {
                         let wedge = wedges.get(&event.id).copied().unwrap_or_default();
+                        let pedal = pedals.get(&event.id).copied().unwrap_or_default();
                         write_directions(&mut xml, event, wedge, voice_index + 1, staff_index + 1);
+                        if let Some((style, change)) = pedal.start {
+                            let kind = if change { "change" } else { "start" };
+                            write_pedal(&mut xml, kind, style, voice_index, staff_index + 1);
+                        }
                         write_event(
                             &mut xml,
                             event,
@@ -223,6 +233,10 @@ pub fn export(score: &Score) -> MusicXmlExport {
                                 voice_index + 1,
                                 staff_index + 1
                             );
+                        }
+                        // The pedal comes up where its last event ends.
+                        if let Some(style) = pedal.stop {
+                            write_pedal(&mut xml, "stop", style, voice_index, staff_index + 1);
                         }
                         onset += event.duration.ticks();
                     }
@@ -775,6 +789,58 @@ fn wedge_marks(
     marks
 }
 
+/// Pedal marks written around one event: a start or change (`true`) before it, a stop after.
+#[derive(Debug, Clone, Copy, Default)]
+struct PedalMarks {
+    start: Option<(PedalStyle, bool)>,
+    stop: Option<PedalStyle>,
+}
+
+/// A pedal that goes down where the previous one in its voice comes up is written as a
+/// change, unless only one of them is a text pedal; the change replaces the previous stop.
+/// A hidden release is not written, so the pedal reads as one without an end.
+fn pedal_marks(
+    spans: &[notula_model::edit::PedalSpan],
+) -> HashMap<notula_model::EventId, PedalMarks> {
+    let text = |style| style == PedalStyle::Text;
+    let follows = |earlier: &notula_model::edit::PedalSpan,
+                   later: &notula_model::edit::PedalSpan| {
+        earlier.staff == later.staff
+            && earlier.voice == later.voice
+            && !earlier.release_hidden
+            && earlier.end_tick == later.start_tick
+            && text(earlier.style) == text(later.style)
+    };
+    let mut marks = HashMap::<notula_model::EventId, PedalMarks>::new();
+    for span in spans {
+        let change = spans.iter().any(|earlier| follows(earlier, span));
+        marks.entry(span.start).or_default().start = Some((span.style, change));
+        if !span.release_hidden && !spans.iter().any(|later| follows(span, later)) {
+            marks.entry(span.end).or_default().stop = Some(span.style);
+        }
+    }
+    marks
+}
+
+/// Pedals of the first voice keep MusicXML's default number, so other programs read them.
+fn write_pedal(xml: &mut String, kind: &str, style: PedalStyle, voice: usize, staff: usize) {
+    let (line, sign) = match style {
+        PedalStyle::Text => ("no", "yes"),
+        PedalStyle::Line => ("yes", "no"),
+        PedalStyle::TextLine => ("yes", "yes"),
+    };
+    let number = if voice == 0 {
+        String::new()
+    } else {
+        format!(" number=\"{}\"", voice + 1)
+    };
+    let _ = writeln!(
+        xml,
+        "      <direction placement=\"below\"><direction-type><pedal type=\"{kind}\"{number} line=\"{line}\" sign=\"{sign}\"/></direction-type><voice>{}</voice><staff>{staff}</staff></direction>",
+        voice + 1
+    );
+}
+
 fn write_directions(
     xml: &mut String,
     event: &Event,
@@ -882,6 +948,7 @@ struct ParsedMeasure {
     tempo_directions: Vec<(u32, TempoDirection)>,
     /// In document order; attached to events once the whole part is read.
     wedges: Vec<ParsedWedge>,
+    pedals: Vec<ParsedPedal>,
 }
 
 struct ParsedPart {
@@ -898,6 +965,19 @@ struct ParsedDirection {
     onset: u32,
     dynamic: Option<Dynamic>,
     register: Option<Register>,
+}
+
+/// A pedal start or change (`style`) or stop (`None`), paired with others by staff and number.
+/// A change ends the held pedal and starts the next.
+#[derive(Clone, Copy)]
+struct ParsedPedal {
+    staff: usize,
+    voice: Option<usize>,
+    onset: u32,
+    number: u32,
+    style: Option<PedalStyle>,
+    /// `type="change"`: the held pedal comes up here. A plain start leaves it without an end.
+    change: bool,
 }
 
 /// A wedge start (`kind`) or stop (`None`), paired with others by staff and number.
@@ -1498,7 +1578,7 @@ fn parse_measure(
                     dynamic: None,
                     register: None,
                 };
-                let wedge_voice =
+                let direction_voice =
                     child_text(child, "voice").map(|name| voice_index(name, voice_names));
                 let mut metronome_tempo = None;
                 for direction_type in elements(child, "direction-type") {
@@ -1526,7 +1606,7 @@ fn parse_measure(
                         if let Some(kind) = kind {
                             result.wedges.push(ParsedWedge {
                                 staff,
-                                voice: wedge_voice,
+                                voice: direction_voice,
                                 onset,
                                 number: wedge
                                     .attribute("number")
@@ -1536,9 +1616,46 @@ fn parse_measure(
                             });
                         }
                     }
+                    if let Some(pedal) = element(direction_type, "pedal") {
+                        let line = pedal.attribute("line") == Some("yes");
+                        // Signs are shown by default unless the pedal uses lines.
+                        let sign = pedal.attribute("sign").map_or(!line, |sign| sign == "yes");
+                        let style = match (line, sign) {
+                            (false, _) => PedalStyle::Text,
+                            (true, false) => PedalStyle::Line,
+                            (true, true) => PedalStyle::TextLine,
+                        };
+                        let style = match pedal.attribute("type") {
+                            Some("start" | "change") => Some(Some(style)),
+                            Some("stop") => Some(None),
+                            // A line continued across a system break needs nothing here.
+                            Some("continue") => None,
+                            Some("sostenuto") => {
+                                remember(unsupported, "sostenuto pedal");
+                                None
+                            }
+                            _ => {
+                                remember(unsupported, "pedal type");
+                                None
+                            }
+                        };
+                        if let Some(style) = style {
+                            result.pedals.push(ParsedPedal {
+                                staff,
+                                voice: direction_voice,
+                                onset,
+                                number: pedal
+                                    .attribute("number")
+                                    .and_then(|number| number.parse().ok())
+                                    .unwrap_or(1),
+                                style,
+                                change: pedal.attribute("type") == Some("change"),
+                            });
+                        }
+                    }
                     for item in direction_type.children().filter(|n| n.is_element()) {
                         match item.tag_name().name() {
-                            "dynamics" | "wedge" => {}
+                            "dynamics" | "wedge" | "pedal" => {}
                             "accordion-registration" => {
                                 direction.register = Some(parse_accordion_registration(item));
                             }
@@ -1647,6 +1764,7 @@ fn parse_partwise_part(
         .map(|measure| parse_measure(measure, &mut divisions, &mut voice_names, unsupported))
         .collect();
     attach_wedges(&mut measures, unsupported);
+    attach_pedals(&mut measures, unsupported);
     let staff_count = measures
         .iter()
         .map(|measure| measure.staves)
@@ -1671,6 +1789,61 @@ fn parse_partwise_part(
     }
 }
 
+/// The first event of a staff at or after `onset` in `measure`, in `voice` if given: where a
+/// mark written there starts. Returns (measure, event index).
+fn event_from(
+    measures: &[ParsedMeasure],
+    measure: usize,
+    staff: usize,
+    voice: Option<usize>,
+    onset: u32,
+) -> Option<(usize, usize)> {
+    (measure..measures.len()).find_map(|index| {
+        let earliest = if index == measure { onset } else { 0 };
+        measures[index]
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(_, event)| {
+                event.staff == staff
+                    && voice.is_none_or(|voice| event.voice == voice)
+                    && event.onset >= earliest
+            })
+            .min_by_key(|(_, event)| (event.onset, event.voice))
+            .map(|(event, _)| (index, event))
+    })
+}
+
+/// The last event in the voice of the event at `start` that begins before `onset` in
+/// `measure`: where a mark started at `start` and stopped there ends. A stop at the start
+/// itself ends the mark on its first event.
+fn event_before(
+    measures: &[ParsedMeasure],
+    (start_measure, start_index): (usize, usize),
+    measure: usize,
+    onset: u32,
+) -> (usize, usize) {
+    let start = &measures[start_measure].events[start_index];
+    let (staff, voice, start_onset) = (start.staff, start.voice, start.onset);
+    (start_measure..=measure)
+        .rev()
+        .find_map(|index| {
+            measures[index]
+                .events
+                .iter()
+                .enumerate()
+                .filter(|(_, event)| {
+                    event.staff == staff
+                        && event.voice == voice
+                        && (index != measure || event.onset < onset)
+                        && (index != start_measure || event.onset >= start_onset)
+                })
+                .max_by_key(|(_, event)| event.onset)
+                .map(|(event, _)| (index, event))
+        })
+        .unwrap_or((start_measure, start_index))
+}
+
 /// A wedge start marks the first event at or after it; its stop marks the last event of the
 /// same voice that begins before the stop, so the hairpin runs through that event.
 fn attach_wedges(measures: &mut [ParsedMeasure], unsupported: &mut BTreeSet<String>) {
@@ -1683,48 +1856,15 @@ fn attach_wedges(measures: &mut [ParsedMeasure], unsupported: &mut BTreeSet<Stri
         .collect();
     for (measure, wedge) in wedges {
         let Some(kind) = wedge.kind else {
-            let Some((start_measure, start_index)) = open.remove(&(wedge.staff, wedge.number))
-            else {
+            let Some(start) = open.remove(&(wedge.staff, wedge.number)) else {
                 remember(unsupported, "hairpin end without a start");
                 continue;
             };
-            let start = &measures[start_measure].events[start_index];
-            let (voice, start_onset) = (start.voice, start.onset);
-            let end = (start_measure..=measure)
-                .rev()
-                .find_map(|index| {
-                    measures[index]
-                        .events
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, event)| {
-                            event.staff == wedge.staff
-                                && event.voice == voice
-                                && (index != measure || event.onset < wedge.onset)
-                                && (index != start_measure || event.onset >= start_onset)
-                        })
-                        .max_by_key(|(_, event)| event.onset)
-                        .map(|(event, _)| (index, event))
-                })
-                .unwrap_or((start_measure, start_index));
+            let end = event_before(measures, start, measure, wedge.onset);
             measures[end.0].events[end.1].markings.hairpin_stop = true;
             continue;
         };
-        let start = (measure..measures.len()).find_map(|index| {
-            let earliest = if index == measure { wedge.onset } else { 0 };
-            measures[index]
-                .events
-                .iter()
-                .enumerate()
-                .filter(|(_, event)| {
-                    event.staff == wedge.staff
-                        && wedge.voice.is_none_or(|voice| event.voice == voice)
-                        && event.onset >= earliest
-                })
-                .min_by_key(|(_, event)| (event.onset, event.voice))
-                .map(|(event, _)| (index, event))
-        });
-        match start {
+        match event_from(measures, measure, wedge.staff, wedge.voice, wedge.onset) {
             Some((index, event)) => {
                 measures[index].events[event].markings.hairpin_start = Some(kind);
                 open.insert((wedge.staff, wedge.number), (index, event));
@@ -1735,6 +1875,59 @@ fn attach_wedges(measures: &mut [ParsedMeasure], unsupported: &mut BTreeSet<Stri
     if !open.is_empty() {
         remember(unsupported, "hairpin without an end");
     }
+}
+
+/// A pedal start marks the first event at or after it, and a stop the last event of the
+/// start's voice that begins before the stop, so the pedal is held through that event. A
+/// change does both, the new pedal starting in the same voice. A pedal without an end (a
+/// "Ped." whose release is left to the player, followed by another start or by nothing) ends
+/// on its first event, with its release hidden.
+fn attach_pedals(measures: &mut [ParsedMeasure], unsupported: &mut BTreeSet<String>) {
+    // Where each held pedal went down, by staff and number: (measure, event index).
+    let mut open = HashMap::<(usize, u32), (usize, usize)>::new();
+    let pedals: Vec<_> = measures
+        .iter()
+        .enumerate()
+        .flat_map(|(index, measure)| measure.pedals.iter().map(move |pedal| (index, *pedal)))
+        .collect();
+    for (measure, pedal) in pedals {
+        let key = (pedal.staff, pedal.number);
+        let held = open.remove(&key);
+        let mut voice = pedal.voice;
+        match held {
+            Some(start) if pedal.style.is_some() && !pedal.change => {
+                end_without_release(measures, start);
+            }
+            Some(start) => {
+                let end = event_before(measures, start, measure, pedal.onset);
+                measures[end.0].events[end.1].markings.pedal_stop = true;
+                voice = voice.or(Some(measures[start.0].events[start.1].voice));
+            }
+            None if pedal.style.is_none() => {
+                remember(unsupported, "pedal end without a start");
+            }
+            None => {}
+        }
+        let Some(style) = pedal.style else {
+            continue;
+        };
+        match event_from(measures, measure, pedal.staff, voice, pedal.onset) {
+            Some((index, event)) => {
+                measures[index].events[event].markings.pedal_start = Some(style);
+                open.insert(key, (index, event));
+            }
+            None => remember(unsupported, "pedal with no following note"),
+        }
+    }
+    for start in open.into_values() {
+        end_without_release(measures, start);
+    }
+}
+
+fn end_without_release(measures: &mut [ParsedMeasure], (measure, event): (usize, usize)) {
+    let markings = &mut measures[measure].events[event].markings;
+    markings.pedal_stop = true;
+    markings.pedal_release_hidden = true;
 }
 
 fn insert_rest_gap(
@@ -2211,6 +2404,7 @@ mod tests {
                 phrase_slur_stop: false,
                 phrase_slur_placement: SlurPlacement::Auto,
                 register: None,
+                ..Markings::default()
             },
         };
         let at = VoiceLocation {
@@ -2570,6 +2764,199 @@ mod tests {
             imported.unsupported,
             vec!["hairpin end without a start".to_owned()]
         );
+    }
+
+    /// Pedals as (style, staff index, start tick, end tick).
+    fn pedal_ranges(score: &Score) -> Vec<(PedalStyle, usize, u64, u64)> {
+        let staves: Vec<_> = score.staves().map(|staff| staff.id).collect();
+        let (spans, unpaired) = notula_model::edit::pedals(score);
+        assert!(unpaired.is_empty());
+        spans
+            .iter()
+            .map(|span| {
+                let staff = staves.iter().position(|id| *id == span.staff).unwrap();
+                (span.style, staff, span.start_tick, span.end_tick)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pedals_roundtrip_through_musicxml() {
+        use notula_model::edit::{Cursor, enter_note, toggle_pedal};
+        let mut doc = Document::new();
+        let part = doc.new_part("Piano", &[Clef::Treble, Clef::Bass]);
+        let bass = part.staves[1].id;
+        doc.execute(Command::AddPart { index: 0, part }).unwrap();
+        notula_model::edit::append_measure(&mut doc).unwrap();
+        let mut cursor = Cursor {
+            staff: bass,
+            measure: 0,
+            voice: 0,
+            tick: 0,
+        };
+        let mut ids = Vec::new();
+        for _ in 0..8 {
+            let entry = enter_note(
+                &mut doc,
+                cursor,
+                Pitch::new(Step::C, 0, 3),
+                Duration::new(NoteValue::Quarter, 0),
+            )
+            .unwrap();
+            ids.push(entry.event);
+            cursor = entry.next;
+        }
+        // Text pedals with a change, a bracket across the barline changed into another, a
+        // bracket after a text pedal, and "Ped." with a line on one note.
+        toggle_pedal(&mut doc, ids[0], ids[0], PedalStyle::Text).unwrap();
+        toggle_pedal(&mut doc, ids[1], ids[1], PedalStyle::Text).unwrap();
+        toggle_pedal(&mut doc, ids[2], ids[4], PedalStyle::Line).unwrap();
+        toggle_pedal(&mut doc, ids[5], ids[5], PedalStyle::Line).unwrap();
+        toggle_pedal(&mut doc, ids[7], ids[7], PedalStyle::TextLine).unwrap();
+
+        let exported = export(doc.score());
+        assert!(
+            exported.unsupported.is_empty(),
+            "{:?}",
+            exported.unsupported
+        );
+        let count = |kind: &str| {
+            exported
+                .xml
+                .matches(&format!("<pedal type=\"{kind}\""))
+                .count()
+        };
+        assert_eq!((count("start"), count("change"), count("stop")), (3, 2, 3));
+        assert!(
+            exported
+                .xml
+                .contains(r#"<pedal type="start" line="no" sign="yes"/>"#)
+        );
+        assert!(
+            exported
+                .xml
+                .contains(r#"<pedal type="change" line="yes" sign="no"/>"#)
+        );
+        assert!(
+            exported
+                .xml
+                .contains(r#"<pedal type="stop" line="yes" sign="yes"/>"#)
+        );
+
+        let imported = import(&exported.xml).unwrap();
+        assert!(
+            imported.unsupported.is_empty(),
+            "{:?}",
+            imported.unsupported
+        );
+        let expected = pedal_ranges(doc.score());
+        assert_eq!(expected.len(), 5);
+        assert_eq!(pedal_ranges(&imported.score), expected);
+    }
+
+    #[test]
+    fn import_attaches_pedals_written_by_other_programs() {
+        // Releases at the next note, a change, a stop at the start of the next measure, a
+        // line without a sign, and a sostenuto pedal.
+        let note = |step: &str| {
+            format!(
+                "<note><pitch><step>{step}</step><octave>3</octave></pitch><duration>1</duration><voice>1</voice><staff>2</staff><type>quarter</type></note>"
+            )
+        };
+        let pedal = |attributes: &str| {
+            format!(
+                r#"<direction placement="below"><direction-type><pedal {attributes}/></direction-type><staff>2</staff></direction>"#
+            )
+        };
+        let xml = format!(
+            r#"<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list><part id="P1">
+<measure number="1"><attributes><divisions>1</divisions><staves>2</staves><time><beats>4</beats><beat-type>4</beat-type></time><clef number="1"><sign>G</sign><line>2</line></clef><clef number="2"><sign>F</sign><line>4</line></clef></attributes>{start}{c}{d}{change}{e}{sostenuto}{f}</measure>
+<measure number="2">{stop}{line}{g}{a}{b}{line_stop}{c}</measure>
+</part></score-partwise>"#,
+            start = pedal(r#"type="start""#),
+            change = pedal(r#"type="change""#),
+            stop = pedal(r#"type="stop""#),
+            sostenuto = pedal(r#"type="sostenuto""#),
+            line = pedal(r#"type="start" line="yes""#),
+            line_stop = pedal(r#"type="stop" line="yes""#),
+            c = note("C"),
+            d = note("D"),
+            e = note("E"),
+            f = note("F"),
+            g = note("G"),
+            a = note("A"),
+            b = note("B"),
+        );
+        let imported = import(&xml).unwrap();
+        assert_eq!(
+            pedal_ranges(&imported.score),
+            vec![
+                (PedalStyle::Text, 1, 0, 1920),
+                (PedalStyle::Text, 1, 1920, 3840),
+                (PedalStyle::Line, 1, 3840, 6720),
+            ]
+        );
+        assert_eq!(imported.unsupported, vec!["sostenuto pedal".to_owned()]);
+    }
+
+    #[test]
+    fn a_pedal_without_an_end_imports_as_a_ped_with_a_hidden_release() {
+        // As in Schumann's Dichterliebe no. 1: "Ped." in the pickup, never released, then
+        // a pedal at the end with its release.
+        let note = |step: &str| {
+            format!(
+                "<note><pitch><step>{step}</step><octave>3</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>"
+            )
+        };
+        let pedal = |kind: &str| {
+            format!(
+                r#"<direction placement="below"><direction-type><pedal type="{kind}" line="no"/></direction-type></direction>"#
+            )
+        };
+        let xml = format!(
+            r#"<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list><part id="P1">
+<measure number="1"><attributes><divisions>1</divisions><time><beats>2</beats><beat-type>4</beat-type></time></attributes>{start}{c}{d}</measure>
+<measure number="2">{e}{start}{f}{stop}</measure>
+<measure number="3">{start}{g}{a}</measure>
+</part></score-partwise>"#,
+            start = pedal("start"),
+            stop = pedal("stop"),
+            c = note("C"),
+            d = note("D"),
+            e = note("E"),
+            f = note("F"),
+            g = note("G"),
+            a = note("A"),
+        );
+        let imported = import(&xml).unwrap();
+        assert!(
+            imported.unsupported.is_empty(),
+            "{:?}",
+            imported.unsupported
+        );
+        let summary = |score: &Score| {
+            notula_model::edit::pedals(score)
+                .0
+                .iter()
+                .map(|span| (span.start_tick, span.end_tick, span.release_hidden))
+                .collect::<Vec<_>>()
+        };
+        // The open pedals end on their first note without a printed release, so they hold
+        // nothing beyond it; the pedal with a stop is unchanged.
+        let expected = vec![(0, 960, true), (2880, 3840, false), (3840, 4800, true)];
+        assert_eq!(summary(&imported.score), expected);
+
+        // Export leaves the hidden releases out again; the stop followed right away by the
+        // last pedal becomes a change, which means the same.
+        let exported = export(&imported.score);
+        let count = |kind: &str| {
+            exported
+                .xml
+                .matches(&format!("<pedal type=\"{kind}\""))
+                .count()
+        };
+        assert_eq!((count("start"), count("change"), count("stop")), (2, 1, 0));
+        assert_eq!(summary(&import(&exported.xml).unwrap().score), expected);
     }
 
     #[test]

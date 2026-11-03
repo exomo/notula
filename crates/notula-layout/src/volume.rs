@@ -55,14 +55,14 @@ impl Timeline {
         self.points.push((tick, x));
     }
 
-    fn range(&self) -> Range<u64> {
+    pub(crate) fn range(&self) -> Range<u64> {
         let start = self.points.first().map_or(0, |point| point.0);
         let end = self.points.last().map_or(0, |point| point.0);
         start..end
     }
 
     /// Where `tick` lies; at a barline, `after` picks the following measure over the barline.
-    fn x_at(&self, tick: u64, after: bool) -> Option<f32> {
+    pub(crate) fn x_at(&self, tick: u64, after: bool) -> Option<f32> {
         // Points are in drawing order, so the barline comes before the next measure's start.
         let exact = if after {
             self.points.iter().rfind(|point| point.0 == tick)
@@ -78,11 +78,11 @@ impl Timeline {
         Some(before.1 + (after.1 - before.1) * fraction)
     }
 
-    fn start_x(&self) -> f32 {
+    pub(crate) fn start_x(&self) -> f32 {
         self.points.first().map_or(0.0, |point| point.1)
     }
 
-    fn end_x(&self) -> f32 {
+    pub(crate) fn end_x(&self) -> f32 {
         self.points.last().map_or(0.0, |point| point.1)
     }
 }

@@ -28,6 +28,19 @@ pub enum Hairpin {
     Diminuendo,
 }
 
+/// How a sustain pedal mark is printed. All styles mean the same to playback.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PedalStyle {
+    /// "Ped." where the pedal goes down and "✱" where it comes up.
+    #[default]
+    Text,
+    /// A bracket line with hooks at both ends and a notch where the pedal is changed.
+    Line,
+    /// "Ped." followed by a line that ends in a hook.
+    TextLine,
+}
+
 /// How older files stored hairpins: a start, or the event where one ended.
 #[derive(Deserialize)]
 enum StoredHairpin {
@@ -121,6 +134,17 @@ pub struct Markings {
     /// Takes effect at this event and stays until the next register on the staff.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub register: Option<Register>,
+    /// The sustain pedal goes down at the start of this event and comes up at the end of the
+    /// event with the matching `pedal_stop` in the same voice. A start while the pedal is
+    /// down changes it: the held pedal ends at the previous event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pedal_start: Option<PedalStyle>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pedal_stop: bool,
+    /// The pedal ending here comes up without a printed release, as a "Ped." whose end is
+    /// left to the player. Only set together with `pedal_stop`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pedal_release_hidden: bool,
 }
 
 /// Markings as stored in files, including the older single `hairpin` field.
@@ -150,6 +174,12 @@ struct StoredMarkings {
     phrase_slur_placement: SlurPlacement,
     #[serde(default)]
     register: Option<Register>,
+    #[serde(default)]
+    pedal_start: Option<PedalStyle>,
+    #[serde(default)]
+    pedal_stop: bool,
+    #[serde(default)]
+    pedal_release_hidden: bool,
 }
 
 impl From<StoredMarkings> for Markings {
@@ -172,6 +202,9 @@ impl From<StoredMarkings> for Markings {
             phrase_slur_stop: stored.phrase_slur_stop,
             phrase_slur_placement: stored.phrase_slur_placement,
             register: stored.register,
+            pedal_start: stored.pedal_start,
+            pedal_stop: stored.pedal_stop,
+            pedal_release_hidden: stored.pedal_release_hidden,
         }
     }
 }
@@ -195,6 +228,9 @@ impl Markings {
             && !self.phrase_slur_stop
             && self.phrase_slur_placement == SlurPlacement::Auto
             && self.register.is_none()
+            && self.pedal_start.is_none()
+            && !self.pedal_stop
+            && !self.pedal_release_hidden
     }
 
     pub fn validate(&self, on_rest: bool) -> Result<(), ModelError> {
@@ -205,6 +241,11 @@ impl Markings {
                 || self.phrase_slur_stop)
         {
             return Err(ModelError::Invalid("slurs can only be placed on notes"));
+        }
+        if self.pedal_release_hidden && !self.pedal_stop {
+            return Err(ModelError::Invalid(
+                "only a pedal's end can hide its release",
+            ));
         }
         for (index, articulation) in self.articulations.iter().enumerate() {
             if self.articulations[..index].contains(articulation) {
@@ -254,10 +295,19 @@ mod tests {
                 lower: false,
                 master: false,
             }),
+            pedal_start: Some(PedalStyle::Line),
+            pedal_stop: true,
+            pedal_release_hidden: true,
         };
         let rest = markings.for_rest();
         assert_eq!(rest.dynamic, Some(Dynamic::F));
         assert!(rest.register.is_some(), "a rest keeps the register");
+        assert_eq!(
+            rest.pedal_start,
+            Some(PedalStyle::Line),
+            "a rest keeps the pedal"
+        );
+        assert!(rest.pedal_stop && rest.pedal_release_hidden);
         assert_eq!(rest.articulations, vec![Articulation::Fermata]);
         assert!(rest.validate(true).is_ok());
     }
@@ -312,5 +362,28 @@ mod tests {
         assert_eq!(json, r#"{"register":{"side":"treble","middle":true}}"#);
         assert_eq!(serde_json::from_str::<Markings>(&json).unwrap(), clarinet);
         assert!(!clarinet.is_empty());
+    }
+
+    #[test]
+    fn pedals_store_their_style_and_stop() {
+        let pedal = Markings {
+            pedal_start: Some(PedalStyle::TextLine),
+            pedal_stop: true,
+            ..Markings::default()
+        };
+        let json = serde_json::to_string(&pedal).unwrap();
+        assert_eq!(json, r#"{"pedal_start":"text_line","pedal_stop":true}"#);
+        assert_eq!(serde_json::from_str::<Markings>(&json).unwrap(), pedal);
+        assert!(!pedal.is_empty());
+        assert!(serde_json::from_str::<Markings>("{}").unwrap().is_empty());
+
+        let hidden = Markings {
+            pedal_release_hidden: true,
+            ..Markings::default()
+        };
+        assert!(
+            hidden.validate(false).is_err(),
+            "a hidden release needs a stop"
+        );
     }
 }

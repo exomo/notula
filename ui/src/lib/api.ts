@@ -32,6 +32,8 @@ export type Dynamic =
   | "Sfz"
   | "Rfz";
 export type Hairpin = "Crescendo" | "Diminuendo";
+/** How a sustain pedal is printed: "Ped." and "✱", a bracket line, or "Ped." with a line. */
+export type PedalStyle = "text" | "line" | "text_line";
 /** Where a note lies in a hairpin or slur; a mark on a single note counts as its start. */
 export type SpanPosition = "start" | "inside" | "end";
 export type TempoDirection = "accelerando" | "ritardando" | "rallentando" | "a_tempo" | "rubato";
@@ -153,6 +155,9 @@ export interface EventArticulations {
   dynamic: Dynamic | null;
   register: Register | null;
   hairpin: SpanPosition | null;
+  pedal: SpanPosition | null;
+  pedal_style: PedalStyle | null;
+  pedal_release_hidden: boolean;
   slur: SpanPosition | null;
   phrase_slur: SpanPosition | null;
 }
@@ -312,6 +317,12 @@ export const api = {
   toggleHairpin: (start: number, end: number, kind: Hairpin) =>
     invoke<Edited>("toggle_hairpin", { start, end, kind }),
   removeHairpin: (event: number) => invoke<Edited>("remove_hairpin", { event }),
+  togglePedal: (start: number, end: number, style: PedalStyle) =>
+    invoke<Edited>("toggle_pedal", { start, end, style }),
+  changePedal: (event: number) => invoke<Edited>("change_pedal", { event }),
+  removePedal: (event: number) => invoke<Edited>("remove_pedal", { event }),
+  setPedalReleaseHidden: (event: number, hidden: boolean) =>
+    invoke<Edited>("set_pedal_release_hidden", { event, hidden }),
   select: (request: SelectionRequest) => invoke<SelectionInfo | null>("select", { request }),
   shiftSelection: (selection: Selection, forward: boolean, duration: Duration) =>
     invoke<{ edited: Edited; selection: SelectionInfo | null }>("shift_selection", {

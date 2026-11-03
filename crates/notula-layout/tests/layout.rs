@@ -1852,3 +1852,195 @@ fn ties_of_a_chord_bend_apart() {
     assert!(bends[0].1 < 0.0, "{bends:?}");
     assert!(bends[2].1 > 0.0, "{bends:?}");
 }
+
+#[test]
+fn pedals_are_drawn_below_the_dynamics_with_releases_changes_and_hooks() {
+    use notula_model::{Dynamic, PedalStyle};
+    let mut b = Builder::new(&[
+        ("Piano", &[Clef::Treble, Clef::Bass]),
+        ("Flute", &[Clef::Treble]),
+    ]);
+    b.measures(2);
+    let mut ids = Vec::new();
+    for measure in 0..2 {
+        b.note(0, measure, c4(), NoteValue::Whole);
+        b.note(2, measure, c4(), NoteValue::Whole);
+        for _ in 0..4 {
+            ids.push(b.note(1, measure, Pitch::new(Step::C, 0, 3), NoteValue::Quarter));
+        }
+    }
+    edit::set_dynamic(&mut b.doc, ids[0], Some(Dynamic::P)).unwrap();
+    edit::toggle_pedal(&mut b.doc, ids[0], ids[1], PedalStyle::Text).unwrap();
+    edit::toggle_pedal(&mut b.doc, ids[2], ids[3], PedalStyle::Text).unwrap();
+    edit::toggle_pedal(&mut b.doc, ids[4], ids[5], PedalStyle::Line).unwrap();
+    edit::toggle_pedal(&mut b.doc, ids[6], ids[7], PedalStyle::Line).unwrap();
+    let list = b.layout(200.0);
+
+    let glyphs = |event, glyph| {
+        list.items
+            .iter()
+            .filter_map(|item| match item.shape {
+                Shape::Glyph { x, y, glyph: g, .. } if item.event == Some(event) && g == glyph => {
+                    Some((x, y))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let bass_top = list
+        .areas
+        .iter()
+        .find(|area| area.staff == b.staves[1])
+        .unwrap()
+        .y_top;
+    // The event's lines below its staff, leaving out stems and ledger lines.
+    let lines = |event| {
+        list.items
+            .iter()
+            .filter_map(|item| match item.shape {
+                Shape::Line { x1, y1, x2, y2, .. }
+                    if item.event == Some(event) && y1.min(y2) > bass_top + STAFF_HEIGHT + 1.0 =>
+                {
+                    Some((x1, y1, x2, y2))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let flute_top = list
+        .areas
+        .iter()
+        .find(|area| area.staff == b.staves[2])
+        .unwrap()
+        .y_top;
+    let dynamic = glyphs(ids[0], '\u{E520}');
+    assert_eq!(dynamic.len(), 1);
+
+    // "Ped." and the release mark, on one line below the dynamics; the second pedal's "Ped."
+    // comes after the first one's release.
+    let (first_ped, first_up) = (glyphs(ids[0], '\u{E650}'), glyphs(ids[0], '\u{E655}'));
+    let (second_ped, second_up) = (glyphs(ids[2], '\u{E650}'), glyphs(ids[2], '\u{E655}'));
+    assert_eq!(
+        [
+            first_ped.len(),
+            first_up.len(),
+            second_ped.len(),
+            second_up.len()
+        ],
+        [1; 4]
+    );
+    let baseline = first_ped[0].1;
+    assert!(baseline > dynamic[0].1 + 1.5, "below the dynamics line");
+    assert!(
+        [first_up[0].1, second_ped[0].1, second_up[0].1]
+            .iter()
+            .all(|y| *y == baseline)
+    );
+    assert!(first_ped[0].0 + 3.0 < first_up[0].0);
+    assert!(first_up[0].0 + 1.0 < second_ped[0].0);
+    // The flute below keeps clear of the pedal line.
+    assert!(flute_top > baseline + 1.5);
+    assert!(bass_top + STAFF_HEIGHT < baseline - 2.0);
+
+    // A bracket: a hook up at the start, the line, and a notch where the pedal is changed.
+    let first = lines(ids[4]);
+    let second = lines(ids[6]);
+    assert!(glyphs(ids[4], '\u{E650}').is_empty());
+    let vertical = |line: &&(f32, f32, f32, f32)| line.0 == line.2;
+    let hooks: Vec<_> = first.iter().chain(&second).filter(vertical).collect();
+    assert_eq!(hooks.len(), 2, "hooks only at the outer ends");
+    assert!(hooks[0].0 < hooks[1].0 && hooks.iter().all(|hook| hook.1 != hook.3));
+    let rise = first
+        .iter()
+        .find(|line| line.3 < line.1 && line.0 < line.2)
+        .unwrap();
+    let fall = second
+        .iter()
+        .find(|line| line.1 < line.3 && line.0 < line.2)
+        .unwrap();
+    assert_eq!(
+        (rise.2, rise.3),
+        (fall.0, fall.1),
+        "the notch rises and falls at its peak"
+    );
+    // A text pedal followed by a bracket is a release and a hook, not a notch.
+    let ends = glyphs(ids[2], '\u{E655}');
+    assert!(ends[0].0 < hooks[0].0);
+}
+
+#[test]
+fn a_hidden_pedal_release_prints_neither_a_release_mark_nor_an_end_hook() {
+    use notula_model::PedalStyle;
+    let mut b = Builder::new(&[("Piano", &[Clef::Treble])]);
+    let ids: Vec<_> = (0..4)
+        .map(|_| b.note(0, 0, c4(), NoteValue::Quarter))
+        .collect();
+    edit::toggle_pedal(&mut b.doc, ids[0], ids[0], PedalStyle::Text).unwrap();
+    edit::set_pedal_release_hidden(&mut b.doc, ids[0], true).unwrap();
+    edit::toggle_pedal(&mut b.doc, ids[1], ids[3], PedalStyle::Line).unwrap();
+    edit::set_pedal_release_hidden(&mut b.doc, ids[1], true).unwrap();
+    let list = b.layout(100.0);
+    let staff_bottom = list.areas[0].y_top + STAFF_HEIGHT;
+    let glyphs = |glyph| {
+        list.items
+            .iter()
+            .filter(|item| matches!(item.shape, Shape::Glyph { glyph: g, .. } if g == glyph))
+            .count()
+    };
+    assert_eq!(glyphs('\u{E650}'), 1, "the text pedal keeps its Ped.");
+    assert_eq!(glyphs('\u{E655}'), 0, "but has no release mark");
+    // The bracket has its start hook and line, but no hook at the end.
+    let bracket: Vec<_> = list
+        .items
+        .iter()
+        .filter_map(|item| match item.shape {
+            Shape::Line { x1, y1, x2, y2, .. }
+                if item.event == Some(ids[1]) && y1.min(y2) > staff_bottom + 1.0 =>
+            {
+                Some((x1, x2))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bracket.len(), 2);
+    assert_eq!(bracket.iter().filter(|line| line.0 == line.1).count(), 1);
+}
+
+#[test]
+fn a_pedal_line_clears_a_fermata_below_the_staff() {
+    use notula_model::PedalStyle;
+    let mut b = Builder::new(&[("Piano", &[Clef::Bass])]);
+    let upper = b.note(0, 0, Pitch::new(Step::C, 0, 4), NoteValue::Whole);
+    let voice = edit::add_voice(&mut b.doc, b.staves[0], 0).unwrap();
+    let cursor = Cursor {
+        staff: b.staves[0],
+        measure: 0,
+        voice,
+        tick: 0,
+    };
+    let lower = edit::enter_note(
+        &mut b.doc,
+        cursor,
+        Pitch::new(Step::A, 0, 2),
+        Duration::new(NoteValue::Whole, 0),
+    )
+    .unwrap()
+    .event;
+    edit::toggle_articulation(&mut b.doc, lower, Articulation::Fermata).unwrap();
+    edit::toggle_pedal(&mut b.doc, upper, upper, PedalStyle::Text).unwrap();
+    let list = b.layout(100.0);
+    let glyph_at = |glyph| {
+        list.items
+            .iter()
+            .find_map(|item| match item.shape {
+                Shape::Glyph { y, glyph: g, .. } if g == glyph => Some(y),
+                _ => None,
+            })
+            .unwrap()
+    };
+    // The fermata below the lower voice reaches 1.5 spaces down from its position; "Ped." is
+    // about 1.8 spaces tall above its baseline.
+    let fermata_bottom = glyph_at('\u{E4C1}') + 1.5;
+    let ped_top = glyph_at('\u{E650}') - 1.8;
+    assert!(ped_top > fermata_bottom, "{ped_top} > {fermata_bottom}");
+}

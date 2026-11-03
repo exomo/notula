@@ -74,6 +74,9 @@
   const slurPosition = $derived(selectedNote?.slur ?? null);
   const phrasePosition = $derived(selectedNote?.phrase_slur ?? null);
   const canStartHairpin = $derived(hairpinPosition === null || hairpinPosition === "start");
+  // A pedal can start where none is held, or replace one starting at the selection.
+  const pedalPosition = $derived(selectedNote?.pedal ?? null);
+  const canStartPedal = $derived(pedalPosition === null || pedalPosition === "start");
   const canStartSlur = $derived(slurPosition === null || slurPosition === "start");
   const canStartPhrase = $derived(phrasePosition === null || phrasePosition === "start");
 
@@ -228,6 +231,46 @@
         title="Remove the hairpin the selected note belongs to"
       >Remove</button>
     </div>
+  </section>
+
+  <section>
+    <h2>Pedal</h2>
+    <div class="row">
+      <button
+        class:active={editor.pedalMode}
+        aria-pressed={editor.pedalMode}
+        disabled={!canStartPedal && !editor.pedalMode}
+        title="Select the note where the sustain pedal goes down, then the last note it holds; the same range again removes it"
+        onclick={() => editor.togglePedalMode()}>{editor.pedalMode ? "Cancel" : "Pedal"}</button
+      >
+      <select aria-label="Pedal style" title="How new pedals are printed" bind:value={editor.pedalStyle}>
+        <option value="text">Ped. ✱</option>
+        <option value="line">Line</option>
+        <option value="text_line">Ped. with line</option>
+      </select>
+    </div>
+    <div class="row">
+      <button
+        onclick={() => editor.changePedal()}
+        disabled={pedalPosition === null || pedalPosition === "start"}
+        title="Release the pedal before the selected note and press it again there"
+      >Change here</button>
+      <button
+        onclick={() => editor.removePedal()}
+        disabled={pedalPosition === null}
+        title="Remove the pedal the selected note belongs to"
+      >Remove</button>
+    </div>
+    {#if selectedNote?.pedal}
+      <label class="check" title="Leave the end to the player: no ✱ or end hook is printed, but the pedal still comes up there">
+        <input
+          type="checkbox"
+          checked={selectedNote.pedal_release_hidden}
+          onchange={(event) => editor.setPedalReleaseHidden(event.currentTarget.checked)}
+        />
+        Hide release
+      </label>
+    {/if}
   </section>
 
   <section>
@@ -462,6 +505,13 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 0.3rem;
+  }
+
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.82rem;
   }
 
   .field {

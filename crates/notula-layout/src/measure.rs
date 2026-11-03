@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use notula_model::{Score, Staff, TICKS_PER_QUARTER};
 
 use crate::engrave::{StaffPlan, plan_staff};
-use crate::{emit, smufl, volume};
+use crate::{emit, pedal, smufl, volume};
 
 const START_PAD: f32 = 1.0;
 const MIN_CLEARANCE: f32 = 1.0;
@@ -63,7 +63,21 @@ pub(crate) fn measure_metrics(score: &Score, staves: &[&Staff], measure: usize) 
     for staff in staves {
         for voice in &staff.measures[measure].voices {
             let mut onset = 0;
+            let mut released = false;
             for event in &voice.events {
+                // A pedal released before this event marks it just before its column.
+                if released || event.markings.pedal_start.is_some() {
+                    let left = if released {
+                        pedal::release_extent()
+                    } else {
+                        0.0
+                    };
+                    let right = event.markings.pedal_start.map_or(0.0, pedal::start_extent);
+                    let entry = extents.entry(onset).or_insert((0.0, 0.0));
+                    entry.0 = entry.0.max(left);
+                    entry.1 = entry.1.max(right);
+                }
+                released = event.markings.pedal_stop && !event.markings.pedal_release_hidden;
                 if event.markings.register.is_some() {
                     let (left, right) = emit::register_extent();
                     let entry = extents.entry(onset).or_insert((0.0, 0.0));

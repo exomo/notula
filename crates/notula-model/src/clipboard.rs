@@ -3,7 +3,7 @@
 //! A clip holds the selected events of each staff and voice at their offsets from the start of
 //! the selection's grown span. Pasting replaces the clip's length of time in each target voice:
 //! notes that would cross a barline are split into tied notes, gaps become rests, and slurs,
-//! hairpins, and ties that lose a partner are removed.
+//! hairpins, pedals, and ties that lose a partner are removed.
 
 use crate::command::Command;
 use crate::edit;
@@ -50,9 +50,15 @@ enum Spanner {
     Slur,
     PhraseSlur,
     Hairpin,
+    Pedal,
 }
 
-const SPANNERS: [Spanner; 3] = [Spanner::Slur, Spanner::PhraseSlur, Spanner::Hairpin];
+const SPANNERS: [Spanner; 4] = [
+    Spanner::Slur,
+    Spanner::PhraseSlur,
+    Spanner::Hairpin,
+    Spanner::Pedal,
+];
 
 impl Spanner {
     fn flags(self, markings: &Markings) -> (bool, bool) {
@@ -60,6 +66,7 @@ impl Spanner {
             Spanner::Slur => (markings.slur_start, markings.slur_stop),
             Spanner::PhraseSlur => (markings.phrase_slur_start, markings.phrase_slur_stop),
             Spanner::Hairpin => (markings.hairpin_start.is_some(), markings.hairpin_stop),
+            Spanner::Pedal => (markings.pedal_start.is_some(), markings.pedal_stop),
         }
     }
 
@@ -78,18 +85,38 @@ impl Spanner {
             (Spanner::PhraseSlur, false) => markings.phrase_slur_stop = false,
             (Spanner::Hairpin, true) => markings.hairpin_start = None,
             (Spanner::Hairpin, false) => markings.hairpin_stop = false,
+            (Spanner::Pedal, true) => markings.pedal_start = None,
+            (Spanner::Pedal, false) => {
+                markings.pedal_stop = false;
+                markings.pedal_release_hidden = false;
+            }
         }
     }
 
     /// Start and stop indices of each mark in a run of events, and the starts (`true`) and
-    /// stops without a partner, paired as `edit::slurs` and `edit::hairpins` read them.
+    /// stops without a partner, paired as `edit::slurs`, `edit::hairpins`, and `edit::pedals`
+    /// read them.
     fn pairs(self, events: &[Placed]) -> Pairing {
         let mut pairs = Vec::new();
         let mut unpaired = Vec::new();
         let mut open: Option<usize> = None;
         for (index, item) in events.iter().enumerate() {
             let (starts, stops) = self.flags(&item.event.markings);
-            if self == Spanner::Hairpin {
+            if self == Spanner::Pedal {
+                // A start while the pedal is down changes it; a stop ends the held pedal.
+                if starts {
+                    if let Some(current) = open.take() {
+                        pairs.push((current, index - 1));
+                    }
+                    open = Some(index);
+                }
+                if stops {
+                    match open.take() {
+                        Some(current) => pairs.push((current, index)),
+                        None => unpaired.push((index, false)),
+                    }
+                }
+            } else if self == Spanner::Hairpin {
                 // A stop closes the open hairpin before a start opens the next; a start while
                 // one is open ends that one at the previous event.
                 match open.take() {

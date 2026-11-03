@@ -6,9 +6,9 @@ use notula_model::clipboard::{self, Clip};
 use notula_model::edit::{self, Cursor};
 use notula_model::selection::{ResolvedSelection, Selection, Step as SelectionStep};
 use notula_model::{
-    Articulation, Document, Duration, Dynamic, EventId, EventKind, Hairpin, KeySignature, Pitch,
-    Register, StaffId, Step, Tempo, TempoChangeMark, TempoDirection, TimeSignature,
-    TimeSignatureDisplay,
+    Articulation, Document, Duration, Dynamic, EventId, EventKind, Hairpin, KeySignature,
+    PedalStyle, Pitch, Register, StaffId, Step, Tempo, TempoChangeMark, TempoDirection,
+    TimeSignature, TimeSignatureDisplay,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -60,6 +60,11 @@ pub struct EventArticulations {
     register: Option<Register>,
     /// Where the event lies in a hairpin, slur, and phrase slur, if it belongs to one.
     hairpin: Option<edit::SpanPosition>,
+    /// Where the event lies in a sustain pedal, and that pedal's style.
+    pedal: Option<edit::SpanPosition>,
+    pedal_style: Option<PedalStyle>,
+    /// The pedal comes up without a printed release.
+    pedal_release_hidden: bool,
     slur: Option<edit::SpanPosition>,
     phrase_slur: Option<edit::SpanPosition>,
 }
@@ -710,6 +715,51 @@ pub fn toggle_hairpin(
 }
 
 #[tauri::command]
+pub fn toggle_pedal(
+    app: AppHandle,
+    state: State<AppState>,
+    start: EventId,
+    end: EventId,
+    style: PedalStyle,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::toggle_pedal(&mut session.doc, start, end, style).map_err(text)?;
+    let cursor = cursor_of(&session, end);
+    Ok(finish(&app, &session, cursor, Some(end)))
+}
+
+/// Releases and presses the held pedal again at the event.
+#[tauri::command]
+pub fn change_pedal(app: AppHandle, state: State<AppState>, event: EventId) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::change_pedal(&mut session.doc, event).map_err(text)?;
+    let cursor = cursor_of(&session, event);
+    Ok(finish(&app, &session, cursor, Some(event)))
+}
+
+/// Prints or hides the release of the pedal the event belongs to.
+#[tauri::command]
+pub fn set_pedal_release_hidden(
+    app: AppHandle,
+    state: State<AppState>,
+    event: EventId,
+    hidden: bool,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::set_pedal_release_hidden(&mut session.doc, event, hidden).map_err(text)?;
+    let cursor = cursor_of(&session, event);
+    Ok(finish(&app, &session, cursor, Some(event)))
+}
+
+#[tauri::command]
+pub fn remove_pedal(app: AppHandle, state: State<AppState>, event: EventId) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::remove_pedal(&mut session.doc, event).map_err(text)?;
+    let cursor = cursor_of(&session, event);
+    Ok(finish(&app, &session, cursor, Some(event)))
+}
+
+#[tauri::command]
 pub fn remove_hairpin(app: AppHandle, state: State<AppState>, event: EventId) -> Reply<Edited> {
     let mut session = state.lock();
     edit::remove_hairpin(&mut session.doc, event).map_err(text)?;
@@ -831,6 +881,7 @@ pub fn event_articulations(state: State<AppState>, event: EventId) -> Option<Eve
             }
             EventKind::Rest => false,
         };
+    let pedal = edit::pedal_at(session.doc.score(), event.id);
     Some(EventArticulations {
         articulations: event.markings.articulations.clone(),
         is_rest: matches!(event.kind, EventKind::Rest),
@@ -840,6 +891,9 @@ pub fn event_articulations(state: State<AppState>, event: EventId) -> Option<Eve
         register: event.markings.register,
         hairpin: edit::hairpin_at(session.doc.score(), event.id)
             .map(|span| span.position_of(event.id)),
+        pedal: pedal.map(|span| span.position_of(event.id)),
+        pedal_style: pedal.map(|span| span.style),
+        pedal_release_hidden: pedal.is_some_and(|span| span.release_hidden),
         slur: edit::slur_at(session.doc.score(), event.id, false)
             .map(|span| span.position_of(event.id)),
         phrase_slur: edit::slur_at(session.doc.score(), event.id, true)

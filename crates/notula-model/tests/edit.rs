@@ -1444,3 +1444,171 @@ fn phrase_slurs_are_found_and_removed_separately() {
     assert!(!start.phrase_slur_start);
     assert_eq!(start.phrase_slur_placement, SlurPlacement::Auto);
 }
+
+#[test]
+fn pedals_follow_each_other_change_and_reject_overlaps() {
+    use notula_model::PedalStyle;
+    use notula_model::edit::SpanPosition;
+    let (mut doc, cursor) = setup(2);
+    let ids = quarters(&mut doc, cursor, 6);
+
+    // A pedal through the first three notes, the next from the fourth, and one on a single note.
+    edit::toggle_pedal(&mut doc, ids[0], ids[2], PedalStyle::Text).unwrap();
+    edit::toggle_pedal(&mut doc, ids[3], ids[4], PedalStyle::Line).unwrap();
+    edit::toggle_pedal(&mut doc, ids[5], ids[5], PedalStyle::Text).unwrap();
+    let (spans, unpaired) = edit::pedals(doc.score());
+    assert!(unpaired.is_empty());
+    let summary: Vec<_> = spans
+        .iter()
+        .map(|span| {
+            (
+                span.style,
+                span.start,
+                span.end,
+                span.start_tick,
+                span.end_tick,
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            (PedalStyle::Text, ids[0], ids[2], 0, 2880),
+            (PedalStyle::Line, ids[3], ids[4], 2880, 4800),
+            (PedalStyle::Text, ids[5], ids[5], 4800, 5760),
+        ]
+    );
+    let at = |id| edit::pedal_at(doc.score(), id).map(|span| (span.start, span.position_of(id)));
+    assert_eq!(at(ids[1]), Some((ids[0], SpanPosition::Inside)));
+    assert_eq!(at(ids[3]), Some((ids[3], SpanPosition::Start)));
+    assert_eq!(at(ids[4]), Some((ids[3], SpanPosition::End)));
+
+    // A pedal may not start where another is still down, nor reach into the next one.
+    let before = doc.score().clone();
+    assert!(edit::toggle_pedal(&mut doc, ids[2], ids[3], PedalStyle::Text).is_err());
+    assert!(edit::toggle_pedal(&mut doc, ids[1], ids[1], PedalStyle::Text).is_err());
+    assert!(edit::toggle_pedal(&mut doc, ids[4], ids[3], PedalStyle::Text).is_err());
+    assert_eq!(doc.score(), &before);
+
+    // Changing the pedal inside one splits it there, in the same style, in one step.
+    edit::change_pedal(&mut doc, ids[1]).unwrap();
+    let spans = edit::pedals(doc.score()).0;
+    assert_eq!(
+        spans
+            .iter()
+            .take(2)
+            .map(|span| (span.style, span.start, span.end))
+            .collect::<Vec<_>>(),
+        vec![
+            (PedalStyle::Text, ids[0], ids[0]),
+            (PedalStyle::Text, ids[1], ids[2])
+        ]
+    );
+    assert!(
+        edit::change_pedal(&mut doc, ids[1]).is_err(),
+        "it already goes down there"
+    );
+    doc.undo().unwrap();
+    assert_eq!(edit::pedals(doc.score()).0.len(), 3);
+
+    // The same range again removes it; another style or end replaces it.
+    edit::toggle_pedal(&mut doc, ids[3], ids[4], PedalStyle::TextLine).unwrap();
+    assert_eq!(
+        edit::pedal_at(doc.score(), ids[3]).unwrap().style,
+        PedalStyle::TextLine
+    );
+    edit::toggle_pedal(&mut doc, ids[3], ids[4], PedalStyle::TextLine).unwrap();
+    assert!(edit::pedal_at(doc.score(), ids[4]).is_none());
+    edit::remove_pedal(&mut doc, ids[1]).unwrap();
+    assert!(edit::pedal_at(doc.score(), ids[0]).is_none());
+    assert!(edit::remove_pedal(&mut doc, ids[1]).is_err());
+    assert_eq!(edit::pedals(doc.score()).0.len(), 1);
+}
+
+#[test]
+fn pedals_without_a_stop_and_implicit_changes_pair_by_voice_order() {
+    use notula_model::PedalStyle;
+    let (mut doc, cursor) = setup(1);
+    let ids = quarters(&mut doc, cursor, 4);
+    let location = VoiceLocation {
+        staff: cursor.staff,
+        measure: 0,
+        voice: 0,
+    };
+    // Starts on the first and third notes, one stop on the last: the second start changes the
+    // pedal, so the first ends after the second note.
+    for (index, start, stop) in [(0, true, false), (2, true, false), (3, false, true)] {
+        let mut event = event_at(&doc, cursor, index);
+        event.markings.pedal_start = start.then_some(PedalStyle::Text);
+        event.markings.pedal_stop = stop;
+        doc.execute(Command::ReplaceEvent {
+            at: location,
+            index,
+            event,
+        })
+        .unwrap();
+    }
+    let (spans, unpaired) = edit::pedals(doc.score());
+    assert!(unpaired.is_empty());
+    assert_eq!(
+        spans
+            .iter()
+            .map(|span| (span.start, span.end))
+            .collect::<Vec<_>>(),
+        vec![(ids[0], ids[1]), (ids[2], ids[3])]
+    );
+
+    // Deleting the last note keeps its pedal stop on the rest; removing the stop leaves a start
+    // without an end.
+    edit::delete_event(&mut doc, ids[3]).unwrap();
+    assert_eq!(
+        edit::pedals(doc.score()).0.len(),
+        2,
+        "a rest keeps the pedal"
+    );
+    let mut last = event_at(&doc, cursor, 3);
+    last.markings.pedal_stop = false;
+    doc.execute(Command::ReplaceEvent {
+        at: location,
+        index: 3,
+        event: last,
+    })
+    .unwrap();
+    let (spans, unpaired) = edit::pedals(doc.score());
+    assert_eq!(spans.len(), 1);
+    assert_eq!(unpaired, vec![ids[2]]);
+}
+
+#[test]
+fn a_pedal_release_can_be_hidden_and_is_cleared_with_the_pedal() {
+    use notula_model::PedalStyle;
+    let (mut doc, cursor) = setup(1);
+    let ids = quarters(&mut doc, cursor, 4);
+    edit::toggle_pedal(&mut doc, ids[0], ids[2], PedalStyle::Text).unwrap();
+
+    // Hidden from any event of the pedal; the flag sits on its last event.
+    edit::set_pedal_release_hidden(&mut doc, ids[1], true).unwrap();
+    assert!(event_at(&doc, cursor, 2).markings.pedal_release_hidden);
+    assert!(edit::pedal_at(doc.score(), ids[0]).unwrap().release_hidden);
+    assert!(edit::set_pedal_release_hidden(&mut doc, ids[3], true).is_err());
+
+    // A change keeps the hidden release at the old end; the first half's release is printed.
+    edit::change_pedal(&mut doc, ids[1]).unwrap();
+    let spans = edit::pedals(doc.score()).0;
+    assert_eq!(
+        spans
+            .iter()
+            .map(|span| span.release_hidden)
+            .collect::<Vec<_>>(),
+        vec![false, true]
+    );
+    doc.undo().unwrap();
+
+    // Moving the end prints the release again; removing the pedal clears the flag too.
+    edit::toggle_pedal(&mut doc, ids[0], ids[3], PedalStyle::Text).unwrap();
+    assert!(!edit::pedal_at(doc.score(), ids[0]).unwrap().release_hidden);
+    assert!(!event_at(&doc, cursor, 2).markings.pedal_release_hidden);
+    edit::set_pedal_release_hidden(&mut doc, ids[0], true).unwrap();
+    edit::remove_pedal(&mut doc, ids[0]).unwrap();
+    assert!((0..4).all(|index| event_at(&doc, cursor, index).markings.is_empty()));
+}

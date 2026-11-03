@@ -7,7 +7,9 @@ use crate::duration::{Duration, NoteValue, TimeSignature, TimeSignatureDisplay};
 use crate::error::ModelError;
 use crate::history::Document;
 use crate::ids::{EventId, StaffId};
-use crate::markings::{Articulation, Dynamic, Hairpin, Markings, Register, SlurPlacement};
+use crate::markings::{
+    Articulation, Dynamic, Hairpin, Markings, PedalStyle, Register, SlurPlacement,
+};
 use crate::pitch::{Pitch, Step};
 use crate::score::{Clef, Event, EventKind, Score, Voice, VoiceLocation};
 
@@ -225,7 +227,7 @@ fn enter_event(
         }
         let fillers = rest_durations(covered.saturating_sub(length))?;
 
-        // A new note keeps the volume marks and register of what it replaces, but not its
+        // A new note keeps the volume marks, register, and pedal of what it replaces, but not its
         // articulations.
         let inherited = voice
             .events
@@ -236,6 +238,9 @@ fn enter_event(
                 hairpin_start: replaced.markings.hairpin_start,
                 hairpin_stop: replaced.markings.hairpin_stop,
                 register: replaced.markings.register,
+                pedal_start: replaced.markings.pedal_start,
+                pedal_stop: replaced.markings.pedal_stop,
+                pedal_release_hidden: replaced.markings.pedal_release_hidden,
                 articulations: Vec::new(),
                 slur_start: false,
                 slur_stop: false,
@@ -865,7 +870,7 @@ pub fn set_register(
     edit_markings(doc, id, |markings| markings.register = register)
 }
 
-/// Where an event lies within a hairpin, slur, or phrase slur.
+/// Where an event lies within a hairpin, pedal, slur, or phrase slur.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpanPosition {
@@ -1121,6 +1126,223 @@ pub fn hairpin_at(score: &Score, id: EventId) -> Option<HairpinSpan> {
                 .find(|span| span.start_tick <= tick && tick < span.end_tick)
         })
         .copied()
+}
+
+/// A sustain pedal held from the start of `start` through the end of `end`, both in one voice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PedalSpan {
+    pub style: PedalStyle,
+    pub staff: StaffId,
+    pub voice: usize,
+    pub start: EventId,
+    pub end: EventId,
+    /// Score ticks where the pedal goes down and comes up.
+    pub start_tick: u64,
+    pub end_tick: u64,
+    /// It comes up without a printed release.
+    pub release_hidden: bool,
+}
+
+impl PedalSpan {
+    pub fn position_of(&self, id: EventId) -> SpanPosition {
+        span_position(self.start, self.end, id)
+    }
+}
+
+/// All pedals in the score, and events whose pedal flags have no partner.
+///
+/// Each voice is read in order. A start while a pedal is down is a pedal change: the held
+/// pedal ends at the previous event. A stop then ends the pedal that is down, so one event can
+/// hold a whole pedal.
+pub fn pedals(score: &Score) -> (Vec<PedalSpan>, Vec<EventId>) {
+    let mut spans = Vec::new();
+    let mut unpaired = Vec::new();
+    for staff in score.staves() {
+        let voice_count = staff
+            .measures
+            .iter()
+            .map(|measure| measure.voices.len())
+            .max()
+            .unwrap_or(0);
+        for voice in 0..voice_count {
+            // The pedal that is down: (style, start event, start tick).
+            let mut open: Option<(PedalStyle, EventId, u64)> = None;
+            let mut previous: Option<(EventId, u64)> = None;
+            let mut measure_start = 0_u64;
+            for (content, info) in staff.measures.iter().zip(&score.measures) {
+                let mut tick = measure_start;
+                for event in content
+                    .voices
+                    .get(voice)
+                    .map_or(&[][..], |voice| &voice.events)
+                {
+                    let end_tick = tick + u64::from(event.duration.ticks());
+                    let span = |(style, start, start_tick): (PedalStyle, EventId, u64),
+                                (end, end_tick): (EventId, u64),
+                                release_hidden: bool| PedalSpan {
+                        style,
+                        staff: staff.id,
+                        voice,
+                        start,
+                        end,
+                        start_tick,
+                        end_tick,
+                        release_hidden,
+                    };
+                    if let Some(style) = event.markings.pedal_start {
+                        if let Some(held) = open.take() {
+                            let before = previous.expect("a held pedal has an event");
+                            spans.push(span(held, before, false));
+                        }
+                        open = Some((style, event.id, tick));
+                    }
+                    if event.markings.pedal_stop {
+                        match open.take() {
+                            Some(held) => spans.push(span(
+                                held,
+                                (event.id, end_tick),
+                                event.markings.pedal_release_hidden,
+                            )),
+                            None => unpaired.push(event.id),
+                        }
+                    }
+                    previous = Some((event.id, end_tick));
+                    tick = end_tick;
+                }
+                measure_start += u64::from(info.capacity());
+            }
+            if let Some((_, start, _)) = open {
+                unpaired.push(start);
+            }
+        }
+    }
+    (spans, unpaired)
+}
+
+fn voice_pedals(score: &Score, staff: StaffId, voice: usize) -> Vec<PedalSpan> {
+    pedals(score)
+        .0
+        .into_iter()
+        .filter(|span| span.staff == staff && span.voice == voice)
+        .collect()
+}
+
+/// Adds a pedal from `start` through `end`, or removes it when exactly that one exists.
+/// `start` and `end` may be the same event. A pedal already starting at `start` is replaced,
+/// and pedals in one voice may follow each other but not overlap.
+pub fn toggle_pedal(
+    doc: &mut Document,
+    start: EventId,
+    end: EventId,
+    style: PedalStyle,
+) -> Result<(), ModelError> {
+    let start_location = locate(doc.score(), start).ok_or(ModelError::EventNotFound(start))?;
+    let end_location = locate(doc.score(), end).ok_or(ModelError::EventNotFound(end))?;
+    if start_location.cursor.staff != end_location.cursor.staff
+        || start_location.cursor.voice != end_location.cursor.voice
+        || (start_location.cursor.measure, start_location.cursor.tick)
+            > (end_location.cursor.measure, end_location.cursor.tick)
+    {
+        return Err(ModelError::Invalid(
+            "pedal endpoints must be ordered in the same voice",
+        ));
+    }
+    let spans = voice_pedals(
+        doc.score(),
+        start_location.cursor.staff,
+        start_location.cursor.voice,
+    );
+    let existing = spans.iter().find(|span| span.start == start).copied();
+    let mut edits = EventEdits {
+        score: doc.score(),
+        events: Vec::new(),
+    };
+    if let Some(old) = existing {
+        edits.edit(old.start, |markings| markings.pedal_start = None)?;
+        edits.edit(old.end, clear_pedal_stop)?;
+    }
+    if existing.is_none_or(|old| old.end != end || old.style != style) {
+        let new_start = event_tick(doc.score(), start)?;
+        let (_, end_event) = find(doc.score(), end)?;
+        let new_end = event_tick(doc.score(), end)? + u64::from(end_event.duration.ticks());
+        let overlaps = spans.iter().any(|span| {
+            span.start != start && span.start_tick < new_end && new_start < span.end_tick
+        });
+        if overlaps {
+            return Err(ModelError::Invalid("pedals in one voice cannot overlap"));
+        }
+        edits.edit(start, |markings| markings.pedal_start = Some(style))?;
+        edits.edit(end, |markings| {
+            markings.pedal_stop = true;
+            markings.pedal_release_hidden = false;
+        })?;
+    }
+    let events = edits.events;
+    replace_events(doc, events)
+}
+
+/// Changes the pedal at an event inside a held pedal: it comes up after the previous event
+/// and goes down again here, in the same style, until the old end.
+pub fn change_pedal(doc: &mut Document, id: EventId) -> Result<(), ModelError> {
+    let span =
+        pedal_at(doc.score(), id).ok_or(ModelError::Invalid("the event is not part of a pedal"))?;
+    if span.start == id {
+        return Err(ModelError::Invalid("the pedal already goes down here"));
+    }
+    let previous = adjacent_event(doc.score(), id, false)
+        .ok_or(ModelError::Invalid("the pedal already goes down here"))?;
+    let mut edits = EventEdits {
+        score: doc.score(),
+        events: Vec::new(),
+    };
+    edits.edit(previous, |markings| markings.pedal_stop = true)?;
+    edits.edit(id, |markings| markings.pedal_start = Some(span.style))?;
+    let events = edits.events;
+    replace_events(doc, events)
+}
+
+/// Removes the pedal that starts at, ends at, or is held through the event.
+pub fn remove_pedal(doc: &mut Document, id: EventId) -> Result<(), ModelError> {
+    let span =
+        pedal_at(doc.score(), id).ok_or(ModelError::Invalid("the event is not part of a pedal"))?;
+    let mut edits = EventEdits {
+        score: doc.score(),
+        events: Vec::new(),
+    };
+    edits.edit(span.start, |markings| markings.pedal_start = None)?;
+    edits.edit(span.end, clear_pedal_stop)?;
+    let events = edits.events;
+    replace_events(doc, events)
+}
+
+fn clear_pedal_stop(markings: &mut Markings) {
+    markings.pedal_stop = false;
+    markings.pedal_release_hidden = false;
+}
+
+/// Prints or hides the release of the pedal that starts at, ends at, or is held through the
+/// event. A hidden release still ends the pedal there.
+pub fn set_pedal_release_hidden(
+    doc: &mut Document,
+    id: EventId,
+    hidden: bool,
+) -> Result<(), ModelError> {
+    let span =
+        pedal_at(doc.score(), id).ok_or(ModelError::Invalid("the event is not part of a pedal"))?;
+    edit_markings(doc, span.end, |markings| {
+        markings.pedal_release_hidden = hidden;
+    })
+}
+
+/// The pedal that starts at, ends at, or is held through the event, if any.
+pub fn pedal_at(score: &Score, id: EventId) -> Option<PedalSpan> {
+    let located = locate(score, id)?;
+    let tick = event_tick(score, id).ok()?;
+    voice_pedals(score, located.cursor.staff, located.cursor.voice)
+        .into_iter()
+        .find(|span| {
+            span.start == id || span.end == id || (span.start_tick..span.end_tick).contains(&tick)
+        })
 }
 
 /// Adds the articulation, or removes it if the event already has it.

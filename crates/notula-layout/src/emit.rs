@@ -707,6 +707,16 @@ const METRONOME_HEIGHT: f32 = 3.0;
 /// How far a staff's events reach above and below its top line in one measure: notes, stems,
 /// beams, articulations, fermatas, and slur ends; staff coordinates grow downwards.
 pub(crate) fn staff_reach(voices: &[VoicePlan]) -> (f32, f32) {
+    reach(voices, true)
+}
+
+/// How far the notes and their articulations and fermatas reach below a staff's top line,
+/// leaving out slurs, for marks placed below them on a line of their own.
+pub(crate) fn marks_bottom(voices: &[VoicePlan]) -> f32 {
+    reach(voices, false).1
+}
+
+fn reach(voices: &[VoicePlan], slurs: bool) -> (f32, f32) {
     let (mut top, mut bottom) = (0.0_f32, 4.0_f32);
     for voice in voices {
         for (index, event) in voice.events.iter().enumerate() {
@@ -739,10 +749,10 @@ pub(crate) fn staff_reach(voices: &[VoicePlan]) -> (f32, f32) {
                 event.phrase_slur_start || event.phrase_slur_stop,
                 event.phrase_slur_placement,
             );
-            if slur.0 || phrase.0 {
+            if slurs && (slur.0 || phrase.0) {
                 above -= SLUR_ROOM;
             }
-            if slur.1 || phrase.1 {
+            if slurs && (slur.1 || phrase.1) {
                 below += SLUR_ROOM;
             }
             top = top.min(above);

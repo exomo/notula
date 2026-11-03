@@ -5,6 +5,7 @@ import {
   type Articulation,
   type Dynamic,
   type Hairpin,
+  type PedalStyle,
   type Register,
   type Edited,
   type EventArticulations,
@@ -105,6 +106,10 @@ class Editor {
   hairpinMode = $state<Hairpin | null>(null);
   hairpinStart = $state<number | null>(null);
   slurPlacement = $state<SlurPlacement>("auto");
+  /** Picking a pedal's start and end note, like a hairpin. */
+  pedalMode = $state(false);
+  pedalStart = $state<number | null>(null);
+  pedalStyle = $state<PedalStyle>("text");
   tempoDirectionAt = $state<TempoDirection | null>(null);
   tempoChangeAt = $state<TempoChangeMark | null>(null);
   inputMode = $state(false);
@@ -482,12 +487,13 @@ class Editor {
       this.selected = null;
       return;
     }
-    if (this.hairpinMode) {
+    if (this.hairpinMode || this.pedalMode) {
       if (hit.note === null) {
         this.message = "Choose a note or rest as the endpoint.";
         return;
       }
-      await this.chooseHairpinEvent(hit.note, hit.cursor);
+      if (this.pedalMode) await this.choosePedalEvent(hit.note, hit.cursor);
+      else await this.chooseHairpinEvent(hit.note, hit.cursor);
       return;
     }
     if (this.slurMode || this.phraseSlurMode) {
@@ -534,7 +540,7 @@ class Editor {
 
   async clickEvent(id: number, x: number, y: number, shift = false) {
     // In note input, Shift+click adds a tone to a chord instead.
-    if (shift && !this.inputMode && !this.hairpinMode && !this.slurMode && !this.phraseSlurMode) {
+    if (shift && !this.inputMode && !this.hairpinMode && !this.pedalMode && !this.slurMode && !this.phraseSlurMode) {
       await this.extendSelectionTo(id);
       return;
     }
@@ -543,6 +549,10 @@ class Editor {
     if (!eventCursor) return;
     if (this.hairpinMode) {
       await this.chooseHairpinEvent(id, eventCursor);
+      return;
+    }
+    if (this.pedalMode) {
+      await this.choosePedalEvent(id, eventCursor);
       return;
     }
     if (this.slurMode || this.phraseSlurMode) {
@@ -647,6 +657,7 @@ class Editor {
       return;
     }
     this.cancelSlurMode();
+    this.cancelPedalMode();
     this.hairpinMode = kind;
     // A selected note is the start; the footer explains the next click.
     this.hairpinStart = this.selected;
@@ -676,6 +687,72 @@ class Editor {
       this.apply(edited);
       await this.refreshArticulations(event);
     }
+  }
+
+  /** Picks a start and an end event, in the style chosen in the side panel. */
+  togglePedalMode() {
+    if (this.pedalMode) {
+      this.cancelPedalMode();
+      return;
+    }
+    this.cancelHairpinMode();
+    this.cancelSlurMode();
+    this.pedalMode = true;
+    this.pedalStart = this.selected;
+    this.message = null;
+  }
+
+  cancelPedalMode() {
+    this.pedalMode = false;
+    this.pedalStart = null;
+    this.message = null;
+  }
+
+  private async choosePedalEvent(event: number, cursor: Cursor) {
+    this.cursor = cursor;
+    this.selected = event;
+    this.selectedTone = null;
+    const start = this.pedalStart;
+    if (start === null) {
+      this.pedalStart = event;
+      return;
+    }
+    const style = this.pedalStyle;
+    this.cancelPedalMode();
+    const edited = await this.run(() => api.togglePedal(start, event, style));
+    if (edited) {
+      this.apply(edited);
+      await this.refreshArticulations(event);
+    }
+  }
+
+  /** Releases the held pedal before the selected note and presses it again there. */
+  async changePedal() {
+    const event = this.selected;
+    if (event === null || !this.eventArticulations?.pedal) return;
+    const edited = await this.run(() => api.changePedal(event));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshArticulations(event);
+  }
+
+  /** Prints or hides the release ("✱" or end hook) of the selected note's pedal. */
+  async setPedalReleaseHidden(hidden: boolean) {
+    const event = this.selected;
+    if (event === null || !this.eventArticulations?.pedal) return;
+    const edited = await this.run(() => api.setPedalReleaseHidden(event, hidden));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshArticulations(event);
+  }
+
+  async removePedal() {
+    const event = this.selected;
+    if (event === null || !this.eventArticulations?.pedal) return;
+    const edited = await this.run(() => api.removePedal(event));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshArticulations(event);
   }
 
   async setDynamic(dynamic: Dynamic | null) {
@@ -721,6 +798,7 @@ class Editor {
       return;
     }
     this.cancelHairpinMode();
+    this.cancelPedalMode();
     this.phraseSlurMode = false;
     this.phraseSlurStart = null;
     this.slurMode = true;
@@ -734,6 +812,7 @@ class Editor {
       return;
     }
     this.cancelHairpinMode();
+    this.cancelPedalMode();
     this.slurMode = false;
     this.slurStart = null;
     this.phraseSlurMode = true;
@@ -1241,6 +1320,7 @@ class Editor {
       case "Escape":
         if (this.rangeSelection) this.clearSelection();
         else if (this.hairpinMode) this.cancelHairpinMode();
+        else if (this.pedalMode) this.cancelPedalMode();
         else if (this.slurMode || this.phraseSlurMode) this.cancelSlurMode();
         else if (this.inputMode) this.disableInputMode();
         else this.selected = null;
