@@ -6,7 +6,7 @@ use notula_model::clipboard::{self, Clip};
 use notula_model::edit::{self, Cursor};
 use notula_model::selection::{ResolvedSelection, Selection, Step as SelectionStep};
 use notula_model::{
-    Articulation, Document, Duration, Dynamic, EventId, EventKind, Hairpin, KeySignature,
+    Articulation, Bracket, Document, Duration, Dynamic, EventId, EventKind, Hairpin, KeySignature,
     PedalStyle, Pitch, Register, StaffId, StaffText, Step, Tempo, TempoChangeMark, TempoDirection,
     TextPlacement, TimeSignature, TimeSignatureDisplay,
 };
@@ -68,6 +68,9 @@ pub struct EventArticulations {
     pedal_release_hidden: bool,
     slur: Option<edit::SpanPosition>,
     phrase_slur: Option<edit::SpanPosition>,
+    /// Where the event lies in a bracket, and that bracket's style.
+    bracket: Option<edit::SpanPosition>,
+    bracket_style: Option<Bracket>,
 }
 
 type Reply<T> = Result<T, String>;
@@ -807,6 +810,43 @@ pub fn remove_pedal(app: AppHandle, state: State<AppState>, event: EventId) -> R
     Ok(finish(&app, &session, cursor, Some(event)))
 }
 
+/// Adds a bracket from `start` through `end`, or removes exactly that bracket.
+#[tauri::command]
+pub fn toggle_bracket(
+    app: AppHandle,
+    state: State<AppState>,
+    start: EventId,
+    end: EventId,
+    style: Bracket,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::toggle_bracket(&mut session.doc, start, end, style).map_err(text)?;
+    let cursor = cursor_of(&session, end);
+    Ok(finish(&app, &session, cursor, Some(end)))
+}
+
+/// Changes how the bracket the event belongs to is drawn.
+#[tauri::command]
+pub fn set_bracket_style(
+    app: AppHandle,
+    state: State<AppState>,
+    event: EventId,
+    style: Bracket,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::set_bracket_style(&mut session.doc, event, style).map_err(text)?;
+    let cursor = cursor_of(&session, event);
+    Ok(finish(&app, &session, cursor, Some(event)))
+}
+
+#[tauri::command]
+pub fn remove_bracket(app: AppHandle, state: State<AppState>, event: EventId) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::remove_bracket(&mut session.doc, event).map_err(text)?;
+    let cursor = cursor_of(&session, event);
+    Ok(finish(&app, &session, cursor, Some(event)))
+}
+
 #[tauri::command]
 pub fn remove_hairpin(app: AppHandle, state: State<AppState>, event: EventId) -> Reply<Edited> {
     let mut session = state.lock();
@@ -964,6 +1004,7 @@ pub fn event_articulations(state: State<AppState>, event: EventId) -> Option<Eve
             EventKind::Rest => false,
         };
     let pedal = edit::pedal_at(session.doc.score(), event.id);
+    let bracket = edit::bracket_at(session.doc.score(), event.id);
     Some(EventArticulations {
         articulations: event.markings.articulations.clone(),
         is_rest: matches!(event.kind, EventKind::Rest),
@@ -981,6 +1022,8 @@ pub fn event_articulations(state: State<AppState>, event: EventId) -> Option<Eve
             .map(|span| span.position_of(event.id)),
         phrase_slur: edit::slur_at(session.doc.score(), event.id, true)
             .map(|span| span.position_of(event.id)),
+        bracket: bracket.map(|span| span.position_of(event.id)),
+        bracket_style: bracket.map(|span| span.bracket),
     })
 }
 

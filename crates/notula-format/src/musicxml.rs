@@ -8,10 +8,10 @@ use std::io::{Read, Seek};
 use std::path::Path;
 
 use notula_model::{
-    Articulation, Clef, Command, Document, Duration, Dynamic, Event, EventKind, Hairpin,
-    KeySignature, Markings, MeasureInfo, NoteValue, PedalStyle, Pitch, Register, Score,
-    SlurPlacement, StaffText, Step, TICKS_PER_QUARTER, Tempo, TempoDirection, TextPlacement,
-    TimeSignature, TimeSignatureDisplay, Voice, VoiceLocation,
+    Articulation, Bracket, BracketLine, Clef, Command, Document, Duration, Dynamic, Event,
+    EventKind, Hairpin, KeySignature, Markings, MeasureInfo, NoteValue, PedalStyle, Pitch,
+    Register, Score, SlurPlacement, StaffText, Step, TICKS_PER_QUARTER, Tempo, TempoDirection,
+    TextPlacement, TimeSignature, TimeSignatureDisplay, Voice, VoiceLocation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +53,18 @@ pub fn export(score: &Score) -> MusicXmlExport {
         remember(&mut unsupported, "pedals without a matching end (omitted)");
     }
     let pedals = pedal_marks(&pedals);
+    let (bracket_spans, unpaired_brackets) = notula_model::edit::brackets(score);
+    if !unpaired_brackets.is_empty() {
+        remember(
+            &mut unsupported,
+            "brackets without a matching end (omitted)",
+        );
+    }
+    let mut brackets = HashMap::<notula_model::EventId, BracketMarks>::new();
+    for span in &bracket_spans {
+        brackets.entry(span.start).or_default().start = Some((span.bracket, span.voice));
+        brackets.entry(span.end).or_default().stop = Some((span.bracket, span.voice));
+    }
     // Events where a double slur or double phrase slur ends, which close both halves.
     let placements: std::collections::HashMap<_, _> = score
         .staves()
@@ -208,6 +220,10 @@ pub fn export(score: &Score) -> MusicXmlExport {
                     for event in &voice.events {
                         let wedge = wedges.get(&event.id).copied().unwrap_or_default();
                         let pedal = pedals.get(&event.id).copied().unwrap_or_default();
+                        let bracket = brackets.get(&event.id).copied().unwrap_or_default();
+                        if let Some((style, voice)) = bracket.start {
+                            write_bracket(&mut xml, true, style, voice, staff_index + 1);
+                        }
                         write_directions(&mut xml, event, wedge, voice_index + 1, staff_index + 1);
                         if let Some((style, change)) = pedal.start {
                             let kind = if change { "change" } else { "start" };
@@ -237,6 +253,9 @@ pub fn export(score: &Score) -> MusicXmlExport {
                         // The pedal comes up where its last event ends.
                         if let Some(style) = pedal.stop {
                             write_pedal(&mut xml, "stop", style, voice_index, staff_index + 1);
+                        }
+                        if let Some((style, voice)) = bracket.stop {
+                            write_bracket(&mut xml, false, style, voice, staff_index + 1);
                         }
                         onset += event.duration.ticks();
                     }
@@ -880,6 +899,40 @@ fn pedal_marks(
     marks
 }
 
+/// The start and stop of the brackets around one event, with their voice.
+#[derive(Debug, Clone, Copy, Default)]
+struct BracketMarks {
+    start: Option<(Bracket, usize)>,
+    stop: Option<(Bracket, usize)>,
+}
+
+/// Brackets in one voice never overlap, so the voice numbers them. Hooks point towards the
+/// notes: down from a bracket above, up from one below.
+fn write_bracket(xml: &mut String, start: bool, bracket: Bracket, voice: usize, staff: usize) {
+    let (placement, hook) = match bracket.placement {
+        TextPlacement::Above => ("above", "down"),
+        TextPlacement::Below => ("below", "up"),
+    };
+    let hooked = if start {
+        bracket.start_hook
+    } else {
+        bracket.end_hook
+    };
+    let line_end = if hooked { hook } else { "none" };
+    let kind = if start { "start" } else { "stop" };
+    let line_type = match (start, bracket.line) {
+        (true, BracketLine::Solid) => " line-type=\"solid\"",
+        (true, BracketLine::Dashed) => " line-type=\"dashed\"",
+        (false, _) => "",
+    };
+    let _ = writeln!(
+        xml,
+        "      <direction placement=\"{placement}\"><direction-type><bracket type=\"{kind}\" number=\"{}\" line-end=\"{line_end}\"{line_type}/></direction-type><voice>{}</voice><staff>{staff}</staff></direction>",
+        voice + 1,
+        voice + 1
+    );
+}
+
 /// Pedals of the first voice keep MusicXML's default number, so other programs read them.
 fn write_pedal(xml: &mut String, kind: &str, style: PedalStyle, voice: usize, staff: usize) {
     let (line, sign) = match style {
@@ -1024,6 +1077,7 @@ struct ParsedMeasure {
     /// In document order; attached to events once the whole part is read.
     wedges: Vec<ParsedWedge>,
     pedals: Vec<ParsedPedal>,
+    brackets: Vec<ParsedBracket>,
 }
 
 struct ParsedPart {
@@ -1055,6 +1109,18 @@ struct ParsedPedal {
     style: Option<PedalStyle>,
     /// `type="change"`: the held pedal comes up here. A plain start leaves it without an end.
     change: bool,
+}
+
+/// A bracket start (`style`) or stop (`None`), paired with others by staff and number.
+#[derive(Clone, Copy)]
+struct ParsedBracket {
+    staff: usize,
+    voice: Option<usize>,
+    onset: u32,
+    number: u32,
+    style: Option<Bracket>,
+    /// A stop's hook, which belongs to the bracket's style at its start.
+    end_hook: bool,
 }
 
 /// A wedge start (`kind`) or stop (`None`), paired with others by staff and number.
@@ -1735,9 +1801,52 @@ fn parse_measure(
                             });
                         }
                     }
+                    if let Some(bracket) = element(direction_type, "bracket") {
+                        let hooked = !matches!(bracket.attribute("line-end"), Some("none") | None);
+                        let line = match bracket.attribute("line-type") {
+                            Some("dashed" | "dotted") => BracketLine::Dashed,
+                            Some("wavy") => {
+                                remember(unsupported, "wavy brackets (drawn solid)");
+                                BracketLine::Solid
+                            }
+                            _ => BracketLine::Solid,
+                        };
+                        let placement = match child.attribute("placement") {
+                            Some("below") => TextPlacement::Below,
+                            _ => TextPlacement::Above,
+                        };
+                        let style = match bracket.attribute("type") {
+                            Some("start") => Some(Some(Bracket {
+                                placement,
+                                line,
+                                start_hook: hooked,
+                                end_hook: true,
+                            })),
+                            Some("stop") => Some(None),
+                            // A line continued across a system break needs nothing here.
+                            Some("continue") => None,
+                            _ => {
+                                remember(unsupported, "bracket type");
+                                None
+                            }
+                        };
+                        if let Some(style) = style {
+                            result.brackets.push(ParsedBracket {
+                                staff,
+                                voice: direction_voice,
+                                onset,
+                                number: bracket
+                                    .attribute("number")
+                                    .and_then(|number| number.parse().ok())
+                                    .unwrap_or(1),
+                                style,
+                                end_hook: hooked,
+                            });
+                        }
+                    }
                     for item in direction_type.children().filter(|n| n.is_element()) {
                         match item.tag_name().name() {
-                            "dynamics" | "wedge" | "pedal" => {}
+                            "dynamics" | "wedge" | "pedal" | "bracket" => {}
                             "accordion-registration" => {
                                 direction.register = Some(parse_accordion_registration(item));
                             }
@@ -1892,6 +2001,7 @@ fn parse_partwise_part(
         .collect();
     attach_wedges(&mut measures, unsupported);
     attach_pedals(&mut measures, unsupported);
+    attach_brackets(&mut measures, unsupported);
     let staff_count = measures
         .iter()
         .map(|measure| measure.staves)
@@ -2048,6 +2158,70 @@ fn attach_pedals(measures: &mut [ParsedMeasure], unsupported: &mut BTreeSet<Stri
     }
     for start in open.into_values() {
         end_without_release(measures, start);
+    }
+}
+
+/// A bracket start marks the first event at or after it, in its voice if the direction names
+/// one; its stop marks the last event of the start's voice that begins before the stop.
+/// Brackets in one voice may not overlap, so a start inside another bracket of its voice is
+/// dropped.
+fn attach_brackets(measures: &mut [ParsedMeasure], unsupported: &mut BTreeSet<String>) {
+    // Where each open bracket started, by staff and number: (measure, event index).
+    let mut open = HashMap::<(usize, u32), (usize, usize)>::new();
+    let brackets: Vec<_> = measures
+        .iter()
+        .enumerate()
+        .flat_map(|(index, measure)| {
+            measure
+                .brackets
+                .iter()
+                .map(move |bracket| (index, *bracket))
+        })
+        .collect();
+    for (measure, bracket) in brackets {
+        let key = (bracket.staff, bracket.number);
+        let Some(style) = bracket.style else {
+            let Some(start) = open.remove(&key) else {
+                remember(unsupported, "bracket end without a start");
+                continue;
+            };
+            let end = event_before(measures, start, measure, bracket.onset);
+            measures[end.0].events[end.1].markings.bracket_stop = true;
+            if let Some(style) = &mut measures[start.0].events[start.1].markings.bracket_start {
+                style.end_hook = bracket.end_hook;
+            }
+            continue;
+        };
+        if open.contains_key(&key) {
+            remember(unsupported, "bracket start inside an open bracket");
+            continue;
+        }
+        let Some((index, event)) = event_from(
+            measures,
+            measure,
+            bracket.staff,
+            bracket.voice,
+            bracket.onset,
+        ) else {
+            remember(unsupported, "bracket with no following note");
+            continue;
+        };
+        let voice = measures[index].events[event].voice;
+        let overlaps = open.iter().any(|(&(staff, _), &(m, e))| {
+            staff == bracket.staff && measures[m].events[e].voice == voice
+        });
+        if overlaps {
+            remember(unsupported, "overlapping brackets in one voice");
+            continue;
+        }
+        measures[index].events[event].markings.bracket_start = Some(style);
+        open.insert(key, (index, event));
+    }
+    if !open.is_empty() {
+        remember(unsupported, "brackets without an end (omitted)");
+        for (measure, event) in open.into_values() {
+            measures[measure].events[event].markings.bracket_start = None;
+        }
     }
 }
 
@@ -3450,6 +3624,121 @@ sul tasto</words></direction-type><offset>1</offset></direction>
         assert_eq!(
             imported.unsupported,
             vec!["text on several lines".to_owned()]
+        );
+    }
+
+    /// Brackets as (style, staff index, voice, start tick, end tick).
+    fn bracket_ranges(score: &Score) -> Vec<(Bracket, usize, usize, u64, u64)> {
+        let staves: Vec<_> = score.staves().map(|staff| staff.id).collect();
+        let (spans, unpaired) = notula_model::edit::brackets(score);
+        assert!(unpaired.is_empty());
+        spans
+            .iter()
+            .map(|span| {
+                let staff = staves.iter().position(|id| *id == span.staff).unwrap();
+                (
+                    span.bracket,
+                    staff,
+                    span.voice,
+                    span.start_tick,
+                    span.end_tick,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn brackets_round_trip_with_style_and_hooks() {
+        let mut doc = Document::new();
+        let part = doc.new_part("Cantus", &[Clef::Treble, Clef::Bass]);
+        let staves = [part.staves[0].id, part.staves[1].id];
+        doc.execute(Command::AddPart { index: 0, part }).unwrap();
+        let data = doc.score().blank_measure(1);
+        doc.execute(Command::InsertMeasure { index: 1, data })
+            .unwrap();
+        let mut ids = Vec::new();
+        for staff in staves {
+            for measure in 0..2 {
+                for index in 0..4 {
+                    let event = Event::new(
+                        doc.new_event_id(),
+                        Duration::new(NoteValue::Quarter, 0),
+                        EventKind::Chord {
+                            pitches: vec![Pitch::new(Step::G, 0, 4)],
+                            tied: false,
+                        },
+                    );
+                    ids.push(event.id);
+                    let at = VoiceLocation {
+                        staff,
+                        measure,
+                        voice: 0,
+                    };
+                    doc.execute(Command::InsertEvent { at, index, event })
+                        .unwrap();
+                }
+            }
+        }
+        let dashed_below = Bracket {
+            placement: TextPlacement::Below,
+            line: BracketLine::Dashed,
+            start_hook: false,
+            end_hook: true,
+        };
+        let open_end = Bracket {
+            end_hook: false,
+            ..Bracket::default()
+        };
+        // Across a barline, then one following directly, one on a single note, and one in
+        // the second staff.
+        notula_model::edit::toggle_bracket(&mut doc, ids[2], ids[5], Bracket::default()).unwrap();
+        notula_model::edit::toggle_bracket(&mut doc, ids[6], ids[7], open_end).unwrap();
+        notula_model::edit::toggle_bracket(&mut doc, ids[0], ids[0], dashed_below).unwrap();
+        notula_model::edit::toggle_bracket(&mut doc, ids[9], ids[11], Bracket::default()).unwrap();
+
+        let exported = export(doc.score());
+        assert!(exported.unsupported.is_empty());
+        assert!(exported.xml.contains(
+            "<direction placement=\"below\"><direction-type><bracket type=\"start\" number=\"1\" line-end=\"none\" line-type=\"dashed\"/>"
+        ));
+        let imported = import(&exported.xml).unwrap();
+        assert!(
+            imported.unsupported.is_empty(),
+            "{:?}",
+            imported.unsupported
+        );
+        assert_eq!(bracket_ranges(&imported.score), bracket_ranges(doc.score()));
+    }
+
+    #[test]
+    fn import_reads_ligature_brackets_written_by_other_programs() {
+        let note = |step: &str| {
+            format!(
+                "<note><pitch><step>{step}</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>half</type></note>"
+            )
+        };
+        let start = r#"<direction placement="above"><direction-type><bracket type="start" number="1" line-end="down" line-type="solid"/></direction-type></direction>"#;
+        let stop = r#"<direction placement="above"><direction-type><bracket type="stop" number="1" line-end="down"/></direction-type></direction>"#;
+        let nested = r#"<direction placement="above"><direction-type><bracket type="start" number="2" line-end="down"/></direction-type></direction>"#;
+        let xml = format!(
+            r#"<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Tenor</part-name></score-part></part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>{start}{a}{nested}{b}</measure>
+<measure number="2">{c}{stop}{d}</measure></part></score-partwise>"#,
+            a = note("A"),
+            b = note("B"),
+            c = note("C"),
+            d = note("D"),
+        );
+        let imported = import(&xml).unwrap();
+        // The ligature runs from the first note through the third; the bracket starting
+        // inside it is dropped.
+        assert_eq!(
+            bracket_ranges(&imported.score),
+            vec![(Bracket::default(), 0, 0, 0, 5760)]
+        );
+        assert_eq!(
+            imported.unsupported,
+            vec!["overlapping brackets in one voice".to_owned()]
         );
     }
 

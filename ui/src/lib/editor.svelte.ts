@@ -8,6 +8,7 @@ import {
   type PedalStyle,
   type Register,
   type StaffText,
+  type Bracket,
   type TextPlacement,
   type Edited,
   type EventArticulations,
@@ -112,6 +113,10 @@ class Editor {
   pedalMode = $state(false);
   pedalStart = $state<number | null>(null);
   pedalStyle = $state<PedalStyle>("text");
+  /** Picking a bracket's start and end note, like a pedal. */
+  bracketMode = $state(false);
+  bracketStart = $state<number | null>(null);
+  bracketStyle = $state<Bracket>({});
   tempoDirectionAt = $state<TempoDirection | null>(null);
   tempoChangeAt = $state<TempoChangeMark | null>(null);
   tempoTextAt = $state<string | null>(null);
@@ -493,12 +498,13 @@ class Editor {
       this.selected = null;
       return;
     }
-    if (this.hairpinMode || this.pedalMode) {
+    if (this.hairpinMode || this.pedalMode || this.bracketMode) {
       if (hit.note === null) {
         this.message = "Choose a note or rest as the endpoint.";
         return;
       }
       if (this.pedalMode) await this.choosePedalEvent(hit.note, hit.cursor);
+      else if (this.bracketMode) await this.chooseBracketEvent(hit.note, hit.cursor);
       else await this.chooseHairpinEvent(hit.note, hit.cursor);
       return;
     }
@@ -546,7 +552,15 @@ class Editor {
 
   async clickEvent(id: number, x: number, y: number, shift = false) {
     // In note input, Shift+click adds a tone to a chord instead.
-    if (shift && !this.inputMode && !this.hairpinMode && !this.pedalMode && !this.slurMode && !this.phraseSlurMode) {
+    if (
+      shift &&
+      !this.inputMode &&
+      !this.hairpinMode &&
+      !this.pedalMode &&
+      !this.bracketMode &&
+      !this.slurMode &&
+      !this.phraseSlurMode
+    ) {
       await this.extendSelectionTo(id);
       return;
     }
@@ -559,6 +573,10 @@ class Editor {
     }
     if (this.pedalMode) {
       await this.choosePedalEvent(id, eventCursor);
+      return;
+    }
+    if (this.bracketMode) {
+      await this.chooseBracketEvent(id, eventCursor);
       return;
     }
     if (this.slurMode || this.phraseSlurMode) {
@@ -664,6 +682,7 @@ class Editor {
     }
     this.cancelSlurMode();
     this.cancelPedalMode();
+    this.cancelBracketMode();
     this.hairpinMode = kind;
     // A selected note is the start; the footer explains the next click.
     this.hairpinStart = this.selected;
@@ -703,6 +722,7 @@ class Editor {
     }
     this.cancelHairpinMode();
     this.cancelSlurMode();
+    this.cancelBracketMode();
     this.pedalMode = true;
     this.pedalStart = this.selected;
     this.message = null;
@@ -777,6 +797,67 @@ class Editor {
     await this.refreshArticulations(event);
   }
 
+  /** Picks a start and an end event, in the style chosen in the side panel. */
+  toggleBracketMode() {
+    if (this.bracketMode) {
+      this.cancelBracketMode();
+      return;
+    }
+    this.cancelHairpinMode();
+    this.cancelSlurMode();
+    this.cancelPedalMode();
+    this.bracketMode = true;
+    this.bracketStart = this.selected;
+    this.message = null;
+  }
+
+  cancelBracketMode() {
+    this.bracketMode = false;
+    this.bracketStart = null;
+    this.message = null;
+  }
+
+  private async chooseBracketEvent(event: number, cursor: Cursor) {
+    this.cursor = cursor;
+    this.selected = event;
+    this.selectedTone = null;
+    const start = this.bracketStart;
+    if (start === null) {
+      this.bracketStart = event;
+      return;
+    }
+    const style = this.bracketStyle;
+    this.cancelBracketMode();
+    const edited = await this.run(() => api.toggleBracket(start, event, style));
+    if (edited) {
+      this.apply(edited);
+      await this.refreshArticulations(event);
+    }
+  }
+
+  /**
+   * Chooses the style for new brackets and, when the selected note belongs to a bracket,
+   * changes that bracket's style too.
+   */
+  async chooseBracketStyle(style: Bracket) {
+    this.bracketStyle = style;
+    const event = this.selected;
+    if (event === null || !this.eventArticulations?.bracket) return;
+    const edited = await this.run(() => api.setBracketStyle(event, style));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshArticulations(event);
+  }
+
+  async removeBracket() {
+    const event = this.selected;
+    if (event === null || !this.eventArticulations?.bracket) return;
+    const edited = await this.run(() => api.removeBracket(event));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshArticulations(event);
+  }
+
   async setDynamic(dynamic: Dynamic | null) {
     const event = this.selected;
     if (event === null) return;
@@ -830,6 +911,7 @@ class Editor {
     }
     this.cancelHairpinMode();
     this.cancelPedalMode();
+    this.cancelBracketMode();
     this.phraseSlurMode = false;
     this.phraseSlurStart = null;
     this.slurMode = true;
@@ -844,6 +926,7 @@ class Editor {
     }
     this.cancelHairpinMode();
     this.cancelPedalMode();
+    this.cancelBracketMode();
     this.slurMode = false;
     this.slurStart = null;
     this.phraseSlurMode = true;
@@ -1375,6 +1458,7 @@ class Editor {
         if (this.rangeSelection) this.clearSelection();
         else if (this.hairpinMode) this.cancelHairpinMode();
         else if (this.pedalMode) this.cancelPedalMode();
+        else if (this.bracketMode) this.cancelBracketMode();
         else if (this.slurMode || this.phraseSlurMode) this.cancelSlurMode();
         else if (this.inputMode) this.disableInputMode();
         else this.selected = null;

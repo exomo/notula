@@ -8,8 +8,8 @@ use crate::error::ModelError;
 use crate::history::Document;
 use crate::ids::{EventId, StaffId};
 use crate::markings::{
-    Articulation, Dynamic, Hairpin, Markings, PedalStyle, Register, SlurPlacement, StaffText,
-    TextPlacement,
+    Articulation, Bracket, Dynamic, Hairpin, Markings, PedalStyle, Register, SlurPlacement,
+    StaffText, TextPlacement,
 };
 use crate::pitch::{Pitch, Step};
 use crate::score::{Clef, Event, EventKind, Score, Voice, VoiceLocation};
@@ -276,8 +276,8 @@ fn enter_event(
         }
         let fillers = rest_durations(covered.saturating_sub(length))?;
 
-        // A new note keeps the volume marks, register, pedal, and text of what it replaces, but
-        // not its articulations.
+        // A new note keeps the volume marks, register, pedal, bracket, and text of what it
+        // replaces, but not its articulations.
         let inherited = voice
             .events
             .get(index)
@@ -290,6 +290,8 @@ fn enter_event(
                 pedal_start: replaced.markings.pedal_start,
                 pedal_stop: replaced.markings.pedal_stop,
                 pedal_release_hidden: replaced.markings.pedal_release_hidden,
+                bracket_start: replaced.markings.bracket_start,
+                bracket_stop: replaced.markings.bracket_stop,
                 texts: replaced.markings.texts.clone(),
                 articulations: Vec::new(),
                 slur_start: false,
@@ -1412,6 +1414,187 @@ pub fn pedal_at(score: &Score, id: EventId) -> Option<PedalSpan> {
     let located = locate(score, id)?;
     let tick = event_tick(score, id).ok()?;
     voice_pedals(score, located.cursor.staff, located.cursor.voice)
+        .into_iter()
+        .find(|span| {
+            span.start == id || span.end == id || (span.start_tick..span.end_tick).contains(&tick)
+        })
+}
+
+/// A bracket from the start of `start` through the end of `end`, both in one voice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BracketSpan {
+    pub bracket: Bracket,
+    pub staff: StaffId,
+    pub voice: usize,
+    pub start: EventId,
+    pub end: EventId,
+    /// Score ticks where the start event begins and the end event finishes.
+    pub start_tick: u64,
+    pub end_tick: u64,
+}
+
+impl BracketSpan {
+    pub fn position_of(&self, id: EventId) -> SpanPosition {
+        span_position(self.start, self.end, id)
+    }
+}
+
+/// All brackets in the score, and events whose bracket flags have no partner.
+///
+/// Each voice is read in order. At an event, a start opens a bracket and a stop closes the
+/// open one, so one event can hold a whole bracket. A start while another is open ends the
+/// open one at the previous event.
+pub fn brackets(score: &Score) -> (Vec<BracketSpan>, Vec<EventId>) {
+    let mut spans = Vec::new();
+    let mut unpaired = Vec::new();
+    for staff in score.staves() {
+        let voice_count = staff
+            .measures
+            .iter()
+            .map(|measure| measure.voices.len())
+            .max()
+            .unwrap_or(0);
+        for voice in 0..voice_count {
+            // The open bracket: (style, start event, start tick).
+            let mut open: Option<(Bracket, EventId, u64)> = None;
+            let mut previous: Option<(EventId, u64)> = None;
+            let mut measure_start = 0_u64;
+            for (content, info) in staff.measures.iter().zip(&score.measures) {
+                let mut tick = measure_start;
+                for event in content
+                    .voices
+                    .get(voice)
+                    .map_or(&[][..], |voice| &voice.events)
+                {
+                    let end_tick = tick + u64::from(event.duration.ticks());
+                    let span =
+                        |(bracket, start, start_tick): (Bracket, EventId, u64),
+                         (end, end_tick): (EventId, u64)| BracketSpan {
+                            bracket,
+                            staff: staff.id,
+                            voice,
+                            start,
+                            end,
+                            start_tick,
+                            end_tick,
+                        };
+                    if let Some(bracket) = event.markings.bracket_start {
+                        if let Some(held) = open.take() {
+                            let before = previous.expect("an open bracket has an event");
+                            spans.push(span(held, before));
+                        }
+                        open = Some((bracket, event.id, tick));
+                    }
+                    if event.markings.bracket_stop {
+                        match open.take() {
+                            Some(held) => spans.push(span(held, (event.id, end_tick))),
+                            None => unpaired.push(event.id),
+                        }
+                    }
+                    previous = Some((event.id, end_tick));
+                    tick = end_tick;
+                }
+                measure_start += u64::from(info.capacity());
+            }
+            if let Some((_, start, _)) = open {
+                unpaired.push(start);
+            }
+        }
+    }
+    (spans, unpaired)
+}
+
+fn voice_brackets(score: &Score, staff: StaffId, voice: usize) -> Vec<BracketSpan> {
+    brackets(score)
+        .0
+        .into_iter()
+        .filter(|span| span.staff == staff && span.voice == voice)
+        .collect()
+}
+
+/// Adds a bracket from `start` through `end`, or removes it when exactly that one exists.
+/// `start` and `end` may be the same event. A bracket already starting at `start` is
+/// replaced, and brackets in one voice may follow each other but not overlap.
+pub fn toggle_bracket(
+    doc: &mut Document,
+    start: EventId,
+    end: EventId,
+    bracket: Bracket,
+) -> Result<(), ModelError> {
+    let start_location = locate(doc.score(), start).ok_or(ModelError::EventNotFound(start))?;
+    let end_location = locate(doc.score(), end).ok_or(ModelError::EventNotFound(end))?;
+    if start_location.cursor.staff != end_location.cursor.staff
+        || start_location.cursor.voice != end_location.cursor.voice
+        || (start_location.cursor.measure, start_location.cursor.tick)
+            > (end_location.cursor.measure, end_location.cursor.tick)
+    {
+        return Err(ModelError::Invalid(
+            "bracket endpoints must be ordered in the same voice",
+        ));
+    }
+    let spans = voice_brackets(
+        doc.score(),
+        start_location.cursor.staff,
+        start_location.cursor.voice,
+    );
+    let existing = spans.iter().find(|span| span.start == start).copied();
+    let mut edits = EventEdits {
+        score: doc.score(),
+        events: Vec::new(),
+    };
+    if let Some(old) = existing {
+        edits.edit(old.start, |markings| markings.bracket_start = None)?;
+        edits.edit(old.end, |markings| markings.bracket_stop = false)?;
+    }
+    if existing.is_none_or(|old| old.end != end || old.bracket != bracket) {
+        let new_start = event_tick(doc.score(), start)?;
+        let (_, end_event) = find(doc.score(), end)?;
+        let new_end = event_tick(doc.score(), end)? + u64::from(end_event.duration.ticks());
+        let overlaps = spans.iter().any(|span| {
+            span.start != start && span.start_tick < new_end && new_start < span.end_tick
+        });
+        if overlaps {
+            return Err(ModelError::Invalid("brackets in one voice cannot overlap"));
+        }
+        edits.edit(start, |markings| markings.bracket_start = Some(bracket))?;
+        edits.edit(end, |markings| markings.bracket_stop = true)?;
+    }
+    let events = edits.events;
+    replace_events(doc, events)
+}
+
+/// Removes the bracket that starts at, ends at, or runs over the event.
+pub fn remove_bracket(doc: &mut Document, id: EventId) -> Result<(), ModelError> {
+    let span = bracket_at(doc.score(), id)
+        .ok_or(ModelError::Invalid("the event is not part of a bracket"))?;
+    let mut edits = EventEdits {
+        score: doc.score(),
+        events: Vec::new(),
+    };
+    edits.edit(span.start, |markings| markings.bracket_start = None)?;
+    edits.edit(span.end, |markings| markings.bracket_stop = false)?;
+    let events = edits.events;
+    replace_events(doc, events)
+}
+
+/// Changes how the bracket that starts at, ends at, or runs over the event is drawn.
+pub fn set_bracket_style(
+    doc: &mut Document,
+    id: EventId,
+    bracket: Bracket,
+) -> Result<(), ModelError> {
+    let span = bracket_at(doc.score(), id)
+        .ok_or(ModelError::Invalid("the event is not part of a bracket"))?;
+    edit_markings(doc, span.start, |markings| {
+        markings.bracket_start = Some(bracket)
+    })
+}
+
+/// The bracket that starts at, ends at, or runs over the event, if any.
+pub fn bracket_at(score: &Score, id: EventId) -> Option<BracketSpan> {
+    let located = locate(score, id)?;
+    let tick = event_tick(score, id).ok()?;
+    voice_brackets(score, located.cursor.staff, located.cursor.voice)
         .into_iter()
         .find(|span| {
             span.start == id || span.end == id || (span.start_tick..span.end_tick).contains(&tick)

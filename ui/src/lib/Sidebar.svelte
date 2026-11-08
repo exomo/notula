@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Dynamic, PedalStyle, TempoDirection } from "./api";
+  import type { Bracket, Dynamic, PedalStyle, TempoDirection } from "./api";
   import { TEMPO_BEATS, editor, tempoBeatKey, tempoFromBeatKey } from "./editor.svelte";
   import { returnFocusAfterChoice, returnFocusAfterClick } from "./focus";
   import Icon from "./Icon.svelte";
@@ -93,6 +93,17 @@
   // A pedal can start where none is held, or replace one starting at the selection.
   const pedalPosition = $derived(selectedNote?.pedal ?? null);
   const canStartPedal = $derived(pedalPosition === null || pedalPosition === "start");
+  const bracketPosition = $derived(selectedNote?.bracket ?? null);
+  const canStartBracket = $derived(bracketPosition === null || bracketPosition === "start");
+  // The selected note's bracket, or the style for new brackets.
+  const bracketStyle = $derived(selectedNote?.bracket_style ?? editor.bracketStyle);
+  const bracketHooks = $derived(
+    `${bracketStyle.start_hook ?? true ? "start" : ""}${bracketStyle.end_hook ?? true ? "end" : ""}` || "none",
+  );
+
+  function changeBracketStyle(change: Bracket) {
+    void editor.chooseBracketStyle({ ...bracketStyle, ...change });
+  }
   const canStartSlur = $derived(slurPosition === null || slurPosition === "start");
   const canStartPhrase = $derived(phrasePosition === null || phrasePosition === "start");
 
@@ -316,6 +327,58 @@
         Hide release
       </label>
     {/if}
+  </section>
+
+  <section>
+    <h2>Bracket</h2>
+    <div class="row">
+      <button
+        class:active={editor.bracketMode}
+        aria-pressed={editor.bracketMode}
+        disabled={!canStartBracket && !editor.bracketMode}
+        title="Select the first note of the bracket, then its last note; the same range again removes it"
+        onclick={() => editor.toggleBracketMode()}>{editor.bracketMode ? "Cancel" : "Bracket"}</button
+      >
+      <select
+        aria-label="Bracket placement"
+        title={selectedNote?.bracket ? "Where the selected note's bracket goes; new brackets follow" : "Where new brackets go"}
+        value={bracketStyle.placement ?? "above"}
+        onchange={(event) => changeBracketStyle({ placement: event.currentTarget.value as "above" | "below" })}
+      >
+        <option value="above">Above</option>
+        <option value="below">Below</option>
+      </select>
+      <select
+        aria-label="Bracket line"
+        title="Solid or dashed line"
+        value={bracketStyle.line ?? "solid"}
+        onchange={(event) => changeBracketStyle({ line: event.currentTarget.value as "solid" | "dashed" })}
+      >
+        <option value="solid">Solid</option>
+        <option value="dashed">Dashed</option>
+      </select>
+    </div>
+    <div class="row">
+      <select
+        aria-label="Bracket hooks"
+        title="Which ends of the bracket have a hook towards the notes"
+        value={bracketHooks}
+        onchange={(event) => {
+          const hooks = event.currentTarget.value;
+          changeBracketStyle({ start_hook: hooks.includes("start"), end_hook: hooks.includes("end") });
+        }}
+      >
+        <option value="startend">Hooks at both ends</option>
+        <option value="start">Hook at the start</option>
+        <option value="end">Hook at the end</option>
+        <option value="none">No hooks</option>
+      </select>
+      <button
+        onclick={() => editor.removeBracket()}
+        disabled={bracketPosition === null}
+        title="Remove the bracket the selected note belongs to"
+      >Remove</button>
+    </div>
   </section>
 
   <section>

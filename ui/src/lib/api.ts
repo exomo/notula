@@ -138,6 +138,14 @@ export interface Duration {
 /** An accordion register symbol; unset dots are omitted. */
 export type TextPlacement = "above" | "below";
 
+/** A horizontal bracket over or under notes; absent fields mean solid, above, with hooks. */
+export interface Bracket {
+  placement?: TextPlacement;
+  line?: "solid" | "dashed";
+  start_hook?: boolean;
+  end_hook?: boolean;
+}
+
 /** Free text at a note or rest; placement defaults to above and italic to off. */
 export interface StaffText {
   text: string;
@@ -171,6 +179,8 @@ export interface EventArticulations {
   pedal_release_hidden: boolean;
   slur: SpanPosition | null;
   phrase_slur: SpanPosition | null;
+  bracket: SpanPosition | null;
+  bracket_style: Bracket | null;
 }
 
 export interface Cursor {
@@ -335,6 +345,11 @@ export const api = {
     invoke<Edited>("toggle_pedal", { start, end, style }),
   changePedal: (event: number) => invoke<Edited>("change_pedal", { event }),
   removePedal: (event: number) => invoke<Edited>("remove_pedal", { event }),
+  toggleBracket: (start: number, end: number, style: Bracket) =>
+    invoke<Edited>("toggle_bracket", { start, end, style }),
+  setBracketStyle: (event: number, style: Bracket) =>
+    invoke<Edited>("set_bracket_style", { event, style }),
+  removeBracket: (event: number) => invoke<Edited>("remove_bracket", { event }),
   setPedalStyle: (event: number, style: PedalStyle) =>
     invoke<Edited>("set_pedal_style", { event, style }),
   setPedalReleaseHidden: (event: number, hidden: boolean) =>

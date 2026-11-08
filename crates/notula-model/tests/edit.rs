@@ -1672,3 +1672,83 @@ fn a_pedal_style_is_changed_from_any_event_of_the_pedal() {
         PedalStyle::Line
     );
 }
+
+#[test]
+fn brackets_follow_each_other_and_reject_overlaps() {
+    use notula_model::edit::SpanPosition;
+    use notula_model::{Bracket, BracketLine, TextPlacement};
+    let (mut doc, cursor) = setup(2);
+    let ids = quarters(&mut doc, cursor, 6);
+    let solid = Bracket::default();
+    let dashed = Bracket {
+        line: BracketLine::Dashed,
+        ..Bracket::default()
+    };
+
+    // Ligatures of three notes, two notes, and a single note.
+    edit::toggle_bracket(&mut doc, ids[0], ids[2], solid).unwrap();
+    edit::toggle_bracket(&mut doc, ids[3], ids[4], dashed).unwrap();
+    edit::toggle_bracket(&mut doc, ids[5], ids[5], solid).unwrap();
+    let (spans, unpaired) = edit::brackets(doc.score());
+    assert!(unpaired.is_empty());
+    let summary: Vec<_> = spans
+        .iter()
+        .map(|span| {
+            (
+                span.bracket.line,
+                span.start,
+                span.end,
+                span.start_tick,
+                span.end_tick,
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            (BracketLine::Solid, ids[0], ids[2], 0, 2880),
+            (BracketLine::Dashed, ids[3], ids[4], 2880, 4800),
+            (BracketLine::Solid, ids[5], ids[5], 4800, 5760),
+        ]
+    );
+    let at = |id| edit::bracket_at(doc.score(), id).map(|span| (span.start, span.position_of(id)));
+    assert_eq!(at(ids[1]), Some((ids[0], SpanPosition::Inside)));
+    assert_eq!(at(ids[4]), Some((ids[3], SpanPosition::End)));
+
+    // Brackets may not overlap or run backwards.
+    let before = doc.score().clone();
+    assert!(edit::toggle_bracket(&mut doc, ids[2], ids[3], solid).is_err());
+    assert!(edit::toggle_bracket(&mut doc, ids[1], ids[1], solid).is_err());
+    assert!(edit::toggle_bracket(&mut doc, ids[4], ids[3], solid).is_err());
+    assert_eq!(doc.score(), &before);
+
+    // Its style changes from any of its notes, in one step.
+    let below = Bracket {
+        placement: TextPlacement::Below,
+        end_hook: false,
+        ..Bracket::default()
+    };
+    edit::set_bracket_style(&mut doc, ids[1], below).unwrap();
+    assert_eq!(
+        edit::bracket_at(doc.score(), ids[2]).unwrap().bracket,
+        below
+    );
+    doc.undo().unwrap();
+    assert_eq!(
+        edit::bracket_at(doc.score(), ids[2]).unwrap().bracket,
+        solid
+    );
+
+    // The same range again removes it; another style or end replaces it.
+    edit::toggle_bracket(&mut doc, ids[3], ids[4], solid).unwrap();
+    assert_eq!(
+        edit::bracket_at(doc.score(), ids[4]).unwrap().bracket,
+        solid
+    );
+    edit::toggle_bracket(&mut doc, ids[3], ids[4], solid).unwrap();
+    assert!(edit::bracket_at(doc.score(), ids[4]).is_none());
+    edit::remove_bracket(&mut doc, ids[1]).unwrap();
+    assert!(edit::bracket_at(doc.score(), ids[0]).is_none());
+    assert!(edit::remove_bracket(&mut doc, ids[1]).is_err());
+    assert_eq!(edit::brackets(doc.score()).0.len(), 1);
+}

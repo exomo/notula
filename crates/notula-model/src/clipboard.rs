@@ -51,13 +51,15 @@ enum Spanner {
     PhraseSlur,
     Hairpin,
     Pedal,
+    Bracket,
 }
 
-const SPANNERS: [Spanner; 4] = [
+const SPANNERS: [Spanner; 5] = [
     Spanner::Slur,
     Spanner::PhraseSlur,
     Spanner::Hairpin,
     Spanner::Pedal,
+    Spanner::Bracket,
 ];
 
 impl Spanner {
@@ -67,6 +69,7 @@ impl Spanner {
             Spanner::PhraseSlur => (markings.phrase_slur_start, markings.phrase_slur_stop),
             Spanner::Hairpin => (markings.hairpin_start.is_some(), markings.hairpin_stop),
             Spanner::Pedal => (markings.pedal_start.is_some(), markings.pedal_stop),
+            Spanner::Bracket => (markings.bracket_start.is_some(), markings.bracket_stop),
         }
     }
 
@@ -90,6 +93,8 @@ impl Spanner {
                 markings.pedal_stop = false;
                 markings.pedal_release_hidden = false;
             }
+            (Spanner::Bracket, true) => markings.bracket_start = None,
+            (Spanner::Bracket, false) => markings.bracket_stop = false,
         }
     }
 
@@ -102,8 +107,9 @@ impl Spanner {
         let mut open: Option<usize> = None;
         for (index, item) in events.iter().enumerate() {
             let (starts, stops) = self.flags(&item.event.markings);
-            if self == Spanner::Pedal {
-                // A start while the pedal is down changes it; a stop ends the held pedal.
+            if matches!(self, Spanner::Pedal | Spanner::Bracket) {
+                // A start while the pedal is down changes it, and one while a bracket is open
+                // ends that bracket at the previous event; a stop ends the open one.
                 if starts {
                     if let Some(current) = open.take() {
                         pairs.push((current, index - 1));

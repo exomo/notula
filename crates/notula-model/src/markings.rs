@@ -80,6 +80,54 @@ impl StaffText {
     }
 }
 
+/// How a bracket's line is drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BracketLine {
+    #[default]
+    Solid,
+    Dashed,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+/// A horizontal bracket over or under a group of notes, as early-music editions use to
+/// mark the ligatures of their source. Its hooks point towards the notes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Bracket {
+    #[serde(default, skip_serializing_if = "TextPlacement::is_above")]
+    pub placement: TextPlacement,
+    #[serde(default, skip_serializing_if = "BracketLine::is_solid")]
+    pub line: BracketLine,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub start_hook: bool,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub end_hook: bool,
+}
+
+impl Default for Bracket {
+    fn default() -> Self {
+        Self {
+            placement: TextPlacement::Above,
+            line: BracketLine::Solid,
+            start_hook: true,
+            end_hook: true,
+        }
+    }
+}
+
+impl BracketLine {
+    fn is_solid(&self) -> bool {
+        *self == Self::Solid
+    }
+}
+
 /// How older files stored hairpins: a start, or the event where one ended.
 #[derive(Deserialize)]
 enum StoredHairpin {
@@ -184,6 +232,12 @@ pub struct Markings {
     /// left to the player. Only set together with `pedal_stop`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pedal_release_hidden: bool,
+    /// A bracket starts at this event and runs through the event with the matching
+    /// `bracket_stop` in the same voice; one event can carry both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bracket_start: Option<Bracket>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bracket_stop: bool,
     /// Free text printed at this event: at most one above and one below the staff.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub texts: Vec<StaffText>,
@@ -223,6 +277,10 @@ struct StoredMarkings {
     #[serde(default)]
     pedal_release_hidden: bool,
     #[serde(default)]
+    bracket_start: Option<Bracket>,
+    #[serde(default)]
+    bracket_stop: bool,
+    #[serde(default)]
     texts: Vec<StaffText>,
 }
 
@@ -249,6 +307,8 @@ impl From<StoredMarkings> for Markings {
             pedal_start: stored.pedal_start,
             pedal_stop: stored.pedal_stop,
             pedal_release_hidden: stored.pedal_release_hidden,
+            bracket_start: stored.bracket_start,
+            bracket_stop: stored.bracket_stop,
             texts: stored.texts,
         }
     }
@@ -292,6 +352,8 @@ impl Markings {
             && self.pedal_start.is_none()
             && !self.pedal_stop
             && !self.pedal_release_hidden
+            && self.bracket_start.is_none()
+            && !self.bracket_stop
             && self.texts.is_empty()
     }
 
@@ -371,6 +433,8 @@ mod tests {
             pedal_start: Some(PedalStyle::Line),
             pedal_stop: true,
             pedal_release_hidden: true,
+            bracket_start: Some(Bracket::default()),
+            bracket_stop: true,
             texts: vec![StaffText {
                 text: "dolce".to_owned(),
                 placement: TextPlacement::Below,
@@ -379,6 +443,10 @@ mod tests {
         };
         let rest = markings.for_rest();
         assert_eq!(rest.texts.len(), 1, "a rest keeps its text");
+        assert!(
+            rest.bracket_start.is_some() && rest.bracket_stop,
+            "and its bracket"
+        );
         assert_eq!(rest.dynamic, Some(Dynamic::F));
         assert!(rest.register.is_some(), "a rest keeps the register");
         assert_eq!(
@@ -477,6 +545,33 @@ mod tests {
             ..Markings::default()
         };
         assert!(blank.validate(true).is_err());
+    }
+
+    #[test]
+    fn brackets_store_only_what_differs_from_a_solid_bracket_above() {
+        let plain = Markings {
+            bracket_start: Some(Bracket::default()),
+            bracket_stop: true,
+            ..Markings::default()
+        };
+        let json = serde_json::to_string(&plain).unwrap();
+        assert_eq!(json, r#"{"bracket_start":{},"bracket_stop":true}"#);
+        assert_eq!(serde_json::from_str::<Markings>(&json).unwrap(), plain);
+        let open = Markings {
+            bracket_start: Some(Bracket {
+                placement: TextPlacement::Below,
+                line: BracketLine::Dashed,
+                start_hook: true,
+                end_hook: false,
+            }),
+            ..Markings::default()
+        };
+        let json = serde_json::to_string(&open).unwrap();
+        assert_eq!(
+            json,
+            r#"{"bracket_start":{"placement":"below","line":"dashed","end_hook":false}}"#
+        );
+        assert_eq!(serde_json::from_str::<Markings>(&json).unwrap(), open);
     }
 
     #[test]

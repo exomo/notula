@@ -22,8 +22,8 @@ pub use error::ModelError;
 pub use history::Document;
 pub use ids::{EventId, PartId, StaffId};
 pub use markings::{
-    Articulation, Dynamic, Hairpin, Markings, PedalStyle, Register, SlurPlacement, StaffText,
-    TextPlacement,
+    Articulation, Bracket, BracketLine, Dynamic, Hairpin, Markings, PedalStyle, Register,
+    SlurPlacement, StaffText, TextPlacement,
 };
 pub use pitch::{Pitch, Step};
 pub use score::{

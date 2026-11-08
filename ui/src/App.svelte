@@ -46,6 +46,12 @@
       {:else}
         <span>Pedal: click the last note it holds, or the same note again to hold only that note · Esc cancels</span>
       {/if}
+    {:else if editor.bracketMode}
+      {#if editor.bracketStart === null}
+        <span>Bracket: click its first note · Esc cancels</span>
+      {:else}
+        <span>Bracket: click its last note, or the same note again for a bracket over that note alone · Esc cancels</span>
+      {/if}
     {:else if editor.slurMode || editor.phraseSlurMode}
       <span>{editor.phraseSlurMode ? "Phrase slur" : "Slur"}: click a start note, then an end note · Esc cancels</span>
     {:else if editor.message}

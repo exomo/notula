@@ -1,5 +1,6 @@
 //! Engraving layout: turns a score into a list of drawing primitives.
 
+mod bracket;
 mod emit;
 mod engrave;
 mod measure;
@@ -217,6 +218,7 @@ struct Layouter<'a> {
     rows: Rows,
     hairpins: Vec<notula_model::edit::HairpinSpan>,
     pedals: Vec<notula_model::edit::PedalSpan>,
+    brackets: Vec<notula_model::edit::BracketSpan>,
 }
 
 struct PlacedNote {
@@ -444,6 +446,7 @@ pub fn layout(score: &Score, options: &LayoutOptions) -> RenderList {
         rows: Rows::new(score),
         hairpins: notula_model::edit::hairpins(score).0,
         pedals: notula_model::edit::pedals(score).0,
+        brackets: notula_model::edit::brackets(score).0,
     };
     layouter.run(options.width)
 }
@@ -705,6 +708,33 @@ impl Layouter<'_> {
             }
         }
 
+        let first_tick: u64 = self.score.measures[..system.measures.start]
+            .iter()
+            .map(|measure| u64::from(measure.capacity()))
+            .sum();
+        let last_tick = first_tick
+            + self.score.measures[system.measures.clone()]
+                .iter()
+                .map(|measure| u64::from(measure.capacity()))
+                .sum::<u64>();
+        // Brackets lie just outside the notes, inside text and the dynamics line.
+        for (reach, staff) in reaches.iter_mut().zip(&self.staves) {
+            let bracketed = |placement| {
+                self.brackets.iter().any(|span| {
+                    span.staff == staff.id
+                        && span.bracket.placement == placement
+                        && span.start_tick < last_tick
+                        && span.end_tick > first_tick
+                })
+            };
+            if bracketed(notula_model::TextPlacement::Above) {
+                reach.0 -= bracket::ROOM;
+            }
+            if bracketed(notula_model::TextPlacement::Below) {
+                reach.1 += bracket::ROOM;
+            }
+        }
+
         // Text above the staff gets a line of its own over the notes and slurs; registers go
         // above it.
         let mut text_tops = vec![None; self.staves.len()];
@@ -738,15 +768,6 @@ impl Layouter<'_> {
             reach.0 = reach.0.min(bottom - emit::register_height());
         }
 
-        let first_tick: u64 = self.score.measures[..system.measures.start]
-            .iter()
-            .map(|measure| u64::from(measure.capacity()))
-            .sum();
-        let last_tick = first_tick
-            + self.score.measures[system.measures.clone()]
-                .iter()
-                .map(|measure| u64::from(measure.capacity()))
-                .sum::<u64>();
         for (reach, staff) in reaches.iter_mut().zip(&self.staves) {
             let marked = staff.measures[system.measures.clone()]
                 .iter()
@@ -1145,6 +1166,30 @@ impl Layouter<'_> {
             timeline.push(measure_tick, body_end);
         }
 
+        let staff_tops: Vec<(StaffId, f32)> = self
+            .staves
+            .iter()
+            .zip(&rows.y)
+            .map(|(staff, row)| (staff.id, y_top + row))
+            .collect();
+        let mut brackets = bracket::place(&self.brackets, &placed_events, &staff_tops, &timeline);
+        // Brackets below a staff push its dynamics and pedal lines down.
+        let bracket_floors: Vec<Option<f32>> = self
+            .staves
+            .iter()
+            .map(|staff| {
+                brackets
+                    .iter()
+                    .filter(|placed| placed.staff == staff.id && !placed.above)
+                    .map(bracket::Placed::outer)
+                    .reduce(f32::max)
+            })
+            .collect();
+        for (bottom, floor) in marks_bottoms.iter_mut().zip(&bracket_floors) {
+            if let Some(floor) = floor {
+                *bottom = bottom.max(*floor);
+            }
+        }
         let volume_bottoms = volume::VolumeMarks {
             staves: &self.staves,
             staff_tops: rows.y.iter().map(|row| y_top + row).collect(),
@@ -1152,6 +1197,7 @@ impl Layouter<'_> {
             placed: &placed_events,
             hairpins: &self.hairpins,
             timeline: &timeline,
+            floors: bracket_floors,
         }
         .emit(canvas);
         let pedal_bottoms: Vec<Option<f32>> = self
@@ -1457,6 +1503,32 @@ impl Layouter<'_> {
             }
         }
 
+        // Brackets above go over slurs as well.
+        for placed in brackets.iter_mut().filter(|placed| placed.above) {
+            let (x0, x1) = (placed.x0, placed.x1);
+            placed.y = arcs
+                .iter()
+                .filter(|(arc_staff, arc)| *arc_staff == placed.staff && arc.above)
+                .flat_map(|(_, arc)| {
+                    [x0, (x0 + x1) / 2.0, x1]
+                        .into_iter()
+                        .filter_map(|x| arc.top_at(x))
+                })
+                .map(|top| top - REGISTER_ABOVE_SLUR)
+                .fold(placed.y, f32::min);
+        }
+        for placed in &brackets {
+            placed.emit(canvas);
+        }
+        // How far above brackets reach over a range of a staff.
+        let bracket_top = |staff: StaffId, x0: f32, x1: f32| {
+            brackets
+                .iter()
+                .filter(|placed| placed.staff == staff && placed.above && placed.overlaps(x0, x1))
+                .map(bracket::Placed::outer)
+                .reduce(f32::min)
+        };
+
         // One line of text per staff above the notes and any slur beneath them.
         let mut text_tops: Vec<Option<f32>> = vec![None; self.staves.len()];
         for (staff_index, staff) in self.staves.iter().enumerate() {
@@ -1501,6 +1573,11 @@ impl Layouter<'_> {
                                 .filter_map(|x| arc.top_at(x))
                         })
                 })
+                .chain(
+                    items
+                        .iter()
+                        .filter_map(|&(_, x, width, _)| bracket_top(staff.id, x, x + width)),
+                )
                 .map(|top| top - emit::ABOVE_TEXT_GAP)
                 .fold(line, f32::min);
             for &(event, x, _, text) in &items {
@@ -1545,6 +1622,14 @@ impl Layouter<'_> {
                             .reduce(f32::min)
                     })
                 })
+                .chain(
+                    registers
+                        .iter()
+                        .filter(|register| register.0 == staff_index)
+                        .filter_map(|&(_, _, center, _)| {
+                            bracket_top(staff.id, center - half, center + half)
+                        }),
+                )
                 .map(|top| top - REGISTER_ABOVE_SLUR)
                 .chain(text_tops[staff_index].map(|top| top - REGISTER_ABOVE_SLUR))
                 .fold(y_top + rows.y[staff_index] + line, f32::min);
@@ -1571,6 +1656,7 @@ impl Layouter<'_> {
                 .map(|top| top - METRONOME_ABOVE_MARKS);
             let over_registers = register_tops[staff_index]
                 .or(text_tops[staff_index])
+                .or(bracket_top(staff, x, right))
                 .map(|top| top - METRONOME_ABOVE_MARKS)
                 .into_iter();
             let baseline = over_arcs.chain(over_registers).fold(baseline, f32::min);

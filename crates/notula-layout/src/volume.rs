@@ -16,6 +16,8 @@ pub(crate) const TEXT_SIZE: f32 = 2.0;
 const LINE_BELOW_STAFF: f32 = 2.6;
 /// Baseline distance below the lowest notehead or stem end above it.
 const LINE_BELOW_NOTES: f32 = 2.3;
+/// Baseline distance below other marks under the staff, such as brackets.
+const LINE_BELOW_MARKS: f32 = 1.8;
 /// Lowest baseline above the next staff, so the marks stay between the two staves.
 const LINE_ABOVE_NEXT_STAFF: f32 = 0.8;
 const NOTEHEAD_DEPTH: f32 = 0.5;
@@ -97,6 +99,8 @@ pub(crate) struct VolumeMarks<'a> {
     pub placed: &'a [PlacedEvent],
     pub hairpins: &'a [HairpinSpan],
     pub timeline: &'a Timeline,
+    /// How far other marks below each staff (brackets) reach, which the line goes under.
+    pub floors: Vec<Option<f32>>,
 }
 
 /// A dynamic, text, or both (the text after the dynamic) at one event.
@@ -240,6 +244,7 @@ impl VolumeMarks<'_> {
                 })
             })
             .map(|bottom| bottom + LINE_BELOW_NOTES)
+            .chain(self.floors[index].map(|floor| floor + LINE_BELOW_MARKS))
             .fold(below_staff, f32::max);
         match self.staff_tops.get(index + 1) {
             Some(next) => lowest.min(next - LINE_ABOVE_NEXT_STAFF).max(below_staff),

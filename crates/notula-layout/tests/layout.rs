@@ -2243,3 +2243,90 @@ fn registers_and_tempo_marks_go_above_staff_text() {
     assert!(metronome_y < register_bottom - 1.5);
     assert!(text_y < list.areas[0].y_top);
 }
+
+fn bracket_lines(list: &RenderList, start: EventId) -> Vec<(f32, f32, f32, f32)> {
+    list.items
+        .iter()
+        .filter(|item| item.event == Some(start))
+        .filter_map(|item| match item.shape {
+            Shape::Line {
+                x1,
+                y1,
+                x2,
+                y2,
+                thickness,
+                // Bracket lines and their short hooks, not stems.
+            } if thickness < 0.125 && (y1 == y2 || (y2 - y1).abs() < 1.0) => Some((x1, y1, x2, y2)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn brackets_span_their_notes_with_hooks_towards_them() {
+    use notula_model::{Bracket, BracketLine, TextPlacement};
+    let mut builder = Builder::new(&[("Cantus", &[Clef::Treble]), ("Tenor", &[Clef::Treble])]);
+    let ids: Vec<_> = [Step::C, Step::D, Step::E, Step::F]
+        .into_iter()
+        .map(|step| builder.note(0, 0, Pitch::new(step, 0, 5), NoteValue::Quarter))
+        .collect();
+    let low = builder.note(1, 0, Pitch::new(Step::A, 0, 3), NoteValue::Half);
+    let low_end = builder.note(1, 0, Pitch::new(Step::G, 0, 3), NoteValue::Half);
+    edit::toggle_bracket(&mut builder.doc, ids[0], ids[2], Bracket::default()).unwrap();
+    let below = Bracket {
+        placement: TextPlacement::Below,
+        line: BracketLine::Dashed,
+        start_hook: true,
+        end_hook: false,
+    };
+    edit::toggle_bracket(&mut builder.doc, low, low_end, below).unwrap();
+    edit::set_dynamic(&mut builder.doc, low, Some(notula_model::Dynamic::P)).unwrap();
+    let list = builder.layout(100.0);
+    let top = list.areas[0].y_top;
+
+    let lines = bracket_lines(&list, ids[0]);
+    // One line and two hooks reaching down from it.
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    let line = lines.iter().find(|line| line.1 == line.3).unwrap();
+    assert!(line.1 <= top - 1.0, "above the staff and the notes");
+    let hooks: Vec<_> = lines.iter().filter(|line| line.0 == line.2).collect();
+    assert!(hooks.iter().all(|hook| hook.3 > hook.1), "hooks point down");
+    let fourth = list
+        .items
+        .iter()
+        .find_map(|item| match item.shape {
+            Shape::Glyph { x, .. } if item.event == Some(ids[3]) => Some(x),
+            _ => None,
+        })
+        .unwrap();
+    assert!(line.2 < fourth, "the bracket ends before the fourth note");
+
+    let staff = list
+        .areas
+        .iter()
+        .find(|area| area.staff == builder.staves[1])
+        .unwrap()
+        .y_top;
+    let dashes = bracket_lines(&list, low);
+    let horizontal: Vec<_> = dashes.iter().filter(|line| line.1 == line.3).collect();
+    assert!(horizontal.len() > 2, "dashed");
+    assert_eq!(dashes.len() - horizontal.len(), 1, "only a start hook");
+    let y = horizontal[0].1;
+    assert!(y > staff + STAFF_HEIGHT + 1.0, "below the low notes");
+    let dynamic_y = list
+        .items
+        .iter()
+        .find_map(|item| match item.shape {
+            Shape::Glyph {
+                y,
+                glyph: '\u{E520}',
+                ..
+            } if item.event == Some(low) => Some(y),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        dynamic_y > y + 1.5,
+        "the dynamics line goes under the bracket"
+    );
+}
