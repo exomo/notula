@@ -2096,3 +2096,150 @@ fn a_pedal_line_clears_a_fermata_below_the_staff() {
     let ped_top = glyph_at('\u{E650}') - 1.8;
     assert!(ped_top > fermata_bottom, "{ped_top} > {fermata_bottom}");
 }
+
+fn staff_text(
+    text: &str,
+    placement: notula_model::TextPlacement,
+    italic: bool,
+) -> Option<notula_model::StaffText> {
+    Some(notula_model::StaffText {
+        text: text.to_owned(),
+        placement,
+        italic,
+    })
+}
+
+fn text_item(
+    list: &RenderList,
+    wanted: &str,
+) -> (f32, f32, notula_layout::TextStyle, Option<EventId>) {
+    list.items
+        .iter()
+        .find_map(|item| match &item.shape {
+            Shape::Text {
+                x, y, text, style, ..
+            } if text == wanted => Some((*x, *y, *style, item.event)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no text {wanted}"))
+}
+
+#[test]
+fn staff_text_goes_above_the_notes_or_after_the_dynamic_below() {
+    use notula_model::TextPlacement::{Above, Below};
+    let mut builder = Builder::new(&[("Violin", &[Clef::Treble]), ("Cello", &[Clef::Bass])]);
+    let high = builder.note(0, 0, Pitch::new(Step::C, 0, 6), NoteValue::Half);
+    let low = builder.note(0, 0, Pitch::new(Step::G, 0, 4), NoteValue::Half);
+    edit::set_text(
+        &mut builder.doc,
+        high,
+        Above,
+        staff_text("div.", Above, false),
+    )
+    .unwrap();
+    edit::set_text(
+        &mut builder.doc,
+        low,
+        Below,
+        staff_text("dolce", Below, true),
+    )
+    .unwrap();
+    edit::set_text(
+        &mut builder.doc,
+        low,
+        Above,
+        staff_text("solo", Above, false),
+    )
+    .unwrap();
+    edit::set_dynamic(&mut builder.doc, low, Some(notula_model::Dynamic::P)).unwrap();
+    let list = builder.layout(100.0);
+    let staff_top = list.areas[0].y_top;
+    let next_staff_top = list
+        .areas
+        .iter()
+        .find(|area| area.staff == builder.staves[1])
+        .unwrap()
+        .y_top;
+
+    let (div_x, div_y, div_style, div_event) = text_item(&list, "div.");
+    assert_eq!(div_event, Some(high), "clicking the text selects its note");
+    assert_eq!(div_style, notula_layout::TextStyle::Plain);
+    // A C6 with its ledger lines reaches two spaces above the staff; the text goes higher.
+    assert!(div_y < staff_top - 2.5, "{div_y} {staff_top}");
+
+    let (dolce_x, dolce_y, dolce_style, _) = text_item(&list, "dolce");
+    assert_eq!(dolce_style, notula_layout::TextStyle::Italic);
+    let dynamic = list
+        .items
+        .iter()
+        .find_map(|item| match item.shape {
+            Shape::Glyph { x, y, .. }
+                if item.event == Some(low) && y > staff_top + STAFF_HEIGHT =>
+            {
+                Some((x, y))
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(dolce_y, dynamic.1, "on the dynamics line");
+    assert!(dolce_x > dynamic.0 + 1.0, "after the dynamic");
+    assert!(dolce_y < next_staff_top);
+    assert!(div_x < dolce_x);
+    let (_, solo_y, _, _) = text_item(&list, "solo");
+    assert_eq!(solo_y, div_y, "text above a staff shares one line");
+}
+
+#[test]
+fn registers_and_tempo_marks_go_above_staff_text() {
+    use notula_model::TextPlacement::Above;
+    let mut builder = Builder::new(&[("Accordion", &[Clef::Treble])]);
+    let note = builder.note(0, 0, Pitch::new(Step::G, 0, 4), NoteValue::Whole);
+    edit::set_text(
+        &mut builder.doc,
+        note,
+        Above,
+        staff_text("bellows shake", Above, false),
+    )
+    .unwrap();
+    edit::set_register(
+        &mut builder.doc,
+        note,
+        Some(Register::Treble {
+            high: false,
+            lower_tremolo: false,
+            middle: true,
+            upper_tremolo: false,
+            low: false,
+        }),
+    )
+    .unwrap();
+    builder
+        .doc
+        .execute(Command::SetTempoChange {
+            measure: 0,
+            tick: 0,
+            tempo: Some(notula_model::Tempo::default()),
+            hidden: false,
+        })
+        .unwrap();
+    let list = builder.layout(100.0);
+    let text_y = text_item(&list, "bellows shake").1;
+    let register_bottom = list
+        .items
+        .iter()
+        .filter(|item| item.event == Some(note))
+        .filter_map(|item| match item.shape {
+            Shape::Glyph {
+                glyph: '\u{E8C6}',
+                y,
+                ..
+            } => Some(y),
+            _ => None,
+        })
+        .next()
+        .unwrap();
+    let metronome_y = text_item(&list, "= 120").1;
+    assert!(register_bottom < text_y - 1.5, "{register_bottom} {text_y}");
+    assert!(metronome_y < register_bottom - 1.5);
+    assert!(text_y < list.areas[0].y_top);
+}

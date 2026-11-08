@@ -680,7 +680,9 @@ pub(crate) const TEXT_CHAR_WIDTH: f32 = 0.45;
 /// Font size of tempo text such as "Allegro".
 const TEMPO_TEXT_SIZE: f32 = 2.2;
 /// Room between tempo text and the metronome mark after it.
-const TEMPO_TEXT_GAP: f32 = 0.8;
+const TEMPO_TEXT_GAP: f32 = 1.0;
+/// How much wider bold text is than plain text.
+const BOLD_WIDTH: f32 = 1.15;
 
 /// Estimated width of plain text at a font size, in staff spaces.
 pub(crate) fn text_width(text: &str, size: f32) -> f32 {
@@ -696,8 +698,9 @@ pub(crate) struct TempoHeading<'a> {
 
 impl TempoHeading<'_> {
     fn metronome_x(&self) -> f32 {
+        // Bold letters are wider than the plain estimate.
         self.text.map_or(0.0, |text| {
-            text_width(text, TEMPO_TEXT_SIZE) + TEMPO_TEXT_GAP
+            text_width(text, TEMPO_TEXT_SIZE) * BOLD_WIDTH + TEMPO_TEXT_GAP
         })
     }
 
@@ -855,6 +858,20 @@ pub(crate) fn register_line<'a>(measures: impl Iterator<Item = &'a [VoicePlan]>)
     }
     any.then_some(top - REGISTER_GAP)
 }
+
+/// How far a staff's events reach above its top line in a system (at most up to the line).
+pub(crate) fn reach_top<'a>(measures: impl Iterator<Item = &'a [VoicePlan]>) -> f32 {
+    measures
+        .map(|voices| staff_reach(voices).0)
+        .fold(0.0, f32::min)
+}
+
+/// Font size of text above the staff, such as "div.".
+pub(crate) const ABOVE_TEXT_SIZE: f32 = 2.0;
+/// Room between text above the staff and what lies below it.
+pub(crate) const ABOVE_TEXT_GAP: f32 = 0.8;
+/// Height of text above the staff from its baseline.
+pub(crate) const ABOVE_TEXT_HEIGHT: f32 = 1.5;
 
 /// Draws a register symbol centred on `center_x` with its bottom on `bottom`.
 pub(crate) fn register_mark(

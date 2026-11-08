@@ -33,6 +33,7 @@ pub fn run() {
             commands::toggle_phrase_slur,
             commands::set_dynamic,
             commands::set_register,
+            commands::set_staff_text,
             commands::toggle_hairpin,
             commands::remove_hairpin,
             commands::toggle_pedal,

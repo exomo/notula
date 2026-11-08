@@ -136,6 +136,15 @@ export interface Duration {
 }
 
 /** An accordion register symbol; unset dots are omitted. */
+export type TextPlacement = "above" | "below";
+
+/** Free text at a note or rest; placement defaults to above and italic to off. */
+export interface StaffText {
+  text: string;
+  placement?: TextPlacement;
+  italic?: boolean;
+}
+
 export type Register =
   | {
       side: "treble";
@@ -154,6 +163,8 @@ export interface EventArticulations {
   tie_possible: boolean;
   dynamic: Dynamic | null;
   register: Register | null;
+  /** At most one text above and one below the staff. */
+  texts: StaffText[];
   hairpin: SpanPosition | null;
   pedal: SpanPosition | null;
   pedal_style: PedalStyle | null;
@@ -315,6 +326,8 @@ export const api = {
     invoke<Edited>("set_dynamic", { event, dynamic }),
   setRegister: (event: number, register: Register | null) =>
     invoke<Edited>("set_register", { event, register }),
+  setStaffText: (event: number, placement: TextPlacement, text: StaffText | null) =>
+    invoke<Edited>("set_staff_text", { event, placement, text }),
   toggleHairpin: (start: number, end: number, kind: Hairpin) =>
     invoke<Edited>("toggle_hairpin", { start, end, kind }),
   removeHairpin: (event: number) => invoke<Edited>("remove_hairpin", { event }),

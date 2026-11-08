@@ -4,12 +4,14 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use notula_model::edit::HairpinSpan;
-use notula_model::{Dynamic, EventId, Hairpin, Staff};
+use notula_model::{Dynamic, EventId, Hairpin, Staff, StaffText, TextPlacement};
 
-use crate::render::Canvas;
-use crate::{PlacedEvent, smufl};
+use crate::render::{Anchor, Canvas, TextStyle};
+use crate::{PlacedEvent, emit, smufl};
 
 const DYNAMIC_SIZE: f32 = 4.0;
+/// Font size of text on the dynamics line, such as "dolce".
+pub(crate) const TEXT_SIZE: f32 = 2.0;
 /// Baseline of the dynamics line below the bottom staff line, when no notes reach lower.
 const LINE_BELOW_STAFF: f32 = 2.6;
 /// Baseline distance below the lowest notehead or stem end above it.
@@ -97,11 +99,35 @@ pub(crate) struct VolumeMarks<'a> {
     pub timeline: &'a Timeline,
 }
 
+/// A dynamic, text, or both (the text after the dynamic) at one event.
 struct Dynamics {
     id: EventId,
     tick: u64,
-    dynamic: Dynamic,
+    dynamic: Option<Dynamic>,
+    text: Option<StaffText>,
     x: f32,
+}
+
+impl Dynamics {
+    /// Where the text starts, relative to the column.
+    fn text_offset(&self) -> f32 {
+        self.dynamic
+            .map_or(0.0, |dynamic| dynamic_extent(dynamic).1 + DYNAMIC_GAP)
+    }
+
+    /// How far the marks reach left and right of the column.
+    fn extent(&self) -> (f32, f32) {
+        let left = self
+            .dynamic
+            .map_or(0.0, |dynamic| dynamic_extent(dynamic).0);
+        let right = match &self.text {
+            Some(text) => self.text_offset() + emit::text_width(&text.text, TEXT_SIZE),
+            None => self
+                .dynamic
+                .map_or(0.0, |dynamic| dynamic_extent(dynamic).1),
+        };
+        (left, right)
+    }
 }
 
 impl VolumeMarks<'_> {
@@ -130,14 +156,32 @@ impl VolumeMarks<'_> {
             }
             let baseline = self.baseline(index);
             for mark in dynamics {
-                let (glyph, width) = smufl::dynamic(mark.dynamic);
-                canvas.glyph(
-                    Some(mark.id),
-                    mark.x + NOTEHEAD_CENTER - width / 2.0,
-                    baseline,
-                    glyph,
-                    DYNAMIC_SIZE,
-                );
+                if let Some(dynamic) = mark.dynamic {
+                    let (glyph, width) = smufl::dynamic(dynamic);
+                    canvas.glyph(
+                        Some(mark.id),
+                        mark.x + NOTEHEAD_CENTER - width / 2.0,
+                        baseline,
+                        glyph,
+                        DYNAMIC_SIZE,
+                    );
+                }
+                if let Some(text) = &mark.text {
+                    let style = if text.italic {
+                        TextStyle::Italic
+                    } else {
+                        TextStyle::Plain
+                    };
+                    canvas.styled_text(
+                        Some(mark.id),
+                        mark.x + mark.text_offset(),
+                        baseline,
+                        &text.text,
+                        TEXT_SIZE,
+                        Anchor::Start,
+                        style,
+                    );
+                }
             }
             for span in hairpins {
                 self.emit_hairpin(canvas, span, dynamics, baseline - HAIRPIN_RAISE);
@@ -148,20 +192,26 @@ impl VolumeMarks<'_> {
     }
 
     fn dynamics(&self, staff: &Staff) -> Vec<Dynamics> {
-        let marks: HashMap<EventId, Dynamic> = staff.measures[self.measures.clone()]
-            .iter()
-            .flat_map(|measure| &measure.voices)
-            .flat_map(|voice| &voice.events)
-            .filter_map(|event| Some((event.id, event.markings.dynamic?)))
-            .collect();
+        let marks: HashMap<EventId, (Option<Dynamic>, Option<&StaffText>)> = staff.measures
+            [self.measures.clone()]
+        .iter()
+        .flat_map(|measure| &measure.voices)
+        .flat_map(|voice| &voice.events)
+        .filter_map(|event| {
+            let text = event.markings.text(TextPlacement::Below);
+            (event.markings.dynamic.is_some() || text.is_some())
+                .then_some((event.id, (event.markings.dynamic, text)))
+        })
+        .collect();
         self.placed
             .iter()
             .filter_map(|event| {
-                let dynamic = *marks.get(&event.id)?;
+                let (dynamic, text) = *marks.get(&event.id)?;
                 Some(Dynamics {
                     id: event.id,
                     tick: event.start_tick,
                     dynamic,
+                    text: text.cloned(),
                     x: self.timeline.x_at(event.start_tick, true)?,
                 })
             })
@@ -228,7 +278,7 @@ impl VolumeMarks<'_> {
             if previous.is_none()
                 && let Some(mark) = dynamics.iter().find(|mark| mark.tick == span.start_tick)
             {
-                x = x.max(mark.x + dynamic_extent(mark.dynamic).1 + DYNAMIC_GAP);
+                x = x.max(mark.x + mark.extent().1 + DYNAMIC_GAP);
             }
             x
         } else {
@@ -241,7 +291,7 @@ impl VolumeMarks<'_> {
             if next.is_none() {
                 x -= HAIRPIN_GAP;
                 if let Some(mark) = dynamics.iter().find(|mark| mark.tick == end) {
-                    x = x.min(mark.x - dynamic_extent(mark.dynamic).0 - DYNAMIC_GAP);
+                    x = x.min(mark.x - mark.extent().0 - DYNAMIC_GAP);
                 }
             }
             x

@@ -705,28 +705,35 @@ impl Layouter<'_> {
             }
         }
 
+        // Text above the staff gets a line of its own over the notes and slurs; registers go
+        // above it.
+        let mut text_tops = vec![None; self.staves.len()];
+        for (index, reach) in reaches.iter_mut().enumerate() {
+            if !self.has_text(system, index, notula_model::TextPlacement::Above) {
+                continue;
+            }
+            let slur_room = if self.slurred(system, index) {
+                SLUR_ALLOWANCE
+            } else {
+                0.0
+            };
+            let top = reach.0 - slur_room - emit::ABOVE_TEXT_GAP - emit::ABOVE_TEXT_HEIGHT;
+            text_tops[index] = Some(top);
+            reach.0 = reach.0.min(top);
+        }
+
         for (index, reach) in reaches.iter_mut().enumerate() {
             let Some(line) = self.register_line(system, index) else {
                 continue;
             };
             // Registers go above slurs too, which bow further than the estimate in
             // `staff_reach` covers; allow for the deepest common phrase.
-            let slurred = system.measures.clone().any(|measure| {
-                self.metrics[measure].plans[index]
-                    .voices
-                    .iter()
-                    .flat_map(|voice| &voice.events)
-                    .any(|event| {
-                        event.slur_start
-                            || event.slur_stop
-                            || event.phrase_slur_start
-                            || event.phrase_slur_stop
-                    })
-            });
-            let bottom = if slurred {
-                line.min(reach.0 - SLUR_ALLOWANCE - REGISTER_ABOVE_SLUR)
-            } else {
-                line
+            let bottom = match text_tops[index] {
+                Some(top) => line.min(top - REGISTER_ABOVE_SLUR),
+                None if self.slurred(system, index) => {
+                    line.min(reach.0 - SLUR_ALLOWANCE - REGISTER_ABOVE_SLUR)
+                }
+                None => line,
             };
             reach.0 = reach.0.min(bottom - emit::register_height());
         }
@@ -750,6 +757,7 @@ impl Layouter<'_> {
                     markings.dynamic.is_some()
                         || markings.hairpin_start.is_some()
                         || markings.hairpin_stop
+                        || markings.text(notula_model::TextPlacement::Below).is_some()
                 })
                 || self.hairpins.iter().any(|span| {
                     span.staff == staff.id
@@ -793,6 +801,36 @@ impl Layouter<'_> {
             }
         }
         reaches
+    }
+
+    /// Whether a staff has slurs or phrase slurs starting or ending in a system.
+    fn slurred(&self, system: &System, staff: usize) -> bool {
+        system.measures.clone().any(|measure| {
+            self.metrics[measure].plans[staff]
+                .voices
+                .iter()
+                .flat_map(|voice| &voice.events)
+                .any(|event| {
+                    event.slur_start
+                        || event.slur_stop
+                        || event.phrase_slur_start
+                        || event.phrase_slur_stop
+                })
+        })
+    }
+
+    /// Whether any event of a staff in a system has text on the given side.
+    fn has_text(
+        &self,
+        system: &System,
+        staff: usize,
+        placement: notula_model::TextPlacement,
+    ) -> bool {
+        self.staves[staff].measures[system.measures.clone()]
+            .iter()
+            .flat_map(|measure| &measure.voices)
+            .flat_map(|voice| &voice.events)
+            .any(|event| event.markings.text(placement).is_some())
     }
 
     /// Bottom of the register symbols above a staff in a system, relative to its top line.
@@ -1419,7 +1457,72 @@ impl Layouter<'_> {
             }
         }
 
-        // One line of register symbols per staff, above the notes and any slur beneath them.
+        // One line of text per staff above the notes and any slur beneath them.
+        let mut text_tops: Vec<Option<f32>> = vec![None; self.staves.len()];
+        for (staff_index, staff) in self.staves.iter().enumerate() {
+            let texts: std::collections::HashMap<_, _> = staff.measures[system.measures.clone()]
+                .iter()
+                .flat_map(|measure| &measure.voices)
+                .flat_map(|voice| &voice.events)
+                .filter_map(|event| {
+                    let text = event.markings.text(notula_model::TextPlacement::Above)?;
+                    Some((event.id, text))
+                })
+                .collect();
+            if texts.is_empty() {
+                continue;
+            }
+            let items: Vec<_> = placed_events
+                .iter()
+                .filter_map(|event| {
+                    let text = *texts.get(&event.id)?;
+                    let x = timeline.x_at(event.start_tick, true)?;
+                    let width = emit::text_width(&text.text, emit::ABOVE_TEXT_SIZE);
+                    Some((event.id, x, width, text))
+                })
+                .collect();
+            let line = y_top
+                + rows.y[staff_index]
+                + emit::reach_top(
+                    system
+                        .measures
+                        .clone()
+                        .map(|measure| &self.metrics[measure].plans[staff_index].voices[..]),
+                )
+                - emit::ABOVE_TEXT_GAP;
+            let baseline = items
+                .iter()
+                .flat_map(|&(_, x, width, _)| {
+                    arcs.iter()
+                        .filter(|(arc_staff, arc)| *arc_staff == staff.id && arc.above)
+                        .flat_map(move |(_, arc)| {
+                            [x, x + width / 2.0, x + width]
+                                .into_iter()
+                                .filter_map(|x| arc.top_at(x))
+                        })
+                })
+                .map(|top| top - emit::ABOVE_TEXT_GAP)
+                .fold(line, f32::min);
+            for &(event, x, _, text) in &items {
+                let style = if text.italic {
+                    render::TextStyle::Italic
+                } else {
+                    render::TextStyle::Plain
+                };
+                canvas.styled_text(
+                    Some(event),
+                    x,
+                    baseline,
+                    &text.text,
+                    emit::ABOVE_TEXT_SIZE,
+                    Anchor::Start,
+                    style,
+                );
+            }
+            text_tops[staff_index] = Some(baseline - emit::ABOVE_TEXT_HEIGHT);
+        }
+
+        // One line of register symbols per staff, above the notes, slurs, and text.
         let mut register_tops = vec![None; self.staves.len()];
         for (staff_index, staff) in self.staves.iter().enumerate() {
             let Some(line) = self.register_line(system, staff_index) else {
@@ -1443,6 +1546,7 @@ impl Layouter<'_> {
                     })
                 })
                 .map(|top| top - REGISTER_ABOVE_SLUR)
+                .chain(text_tops[staff_index].map(|top| top - REGISTER_ABOVE_SLUR))
                 .fold(y_top + rows.y[staff_index] + line, f32::min);
             for &(_, event, center, register) in registers
                 .iter()
@@ -1466,6 +1570,7 @@ impl Layouter<'_> {
                 })
                 .map(|top| top - METRONOME_ABOVE_MARKS);
             let over_registers = register_tops[staff_index]
+                .or(text_tops[staff_index])
                 .map(|top| top - METRONOME_ABOVE_MARKS)
                 .into_iter();
             let baseline = over_arcs.chain(over_registers).fold(baseline, f32::min);

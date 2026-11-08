@@ -7,6 +7,8 @@ import {
   type Hairpin,
   type PedalStyle,
   type Register,
+  type StaffText,
+  type TextPlacement,
   type Edited,
   type EventArticulations,
   type NoteValue,
@@ -779,6 +781,15 @@ class Editor {
     const event = this.selected;
     if (event === null) return;
     const edited = await this.run(() => api.setDynamic(event, dynamic));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshArticulations(event);
+  }
+
+  async setStaffText(placement: TextPlacement, text: StaffText | null) {
+    const event = this.selected;
+    if (event === null) return;
+    const edited = await this.run(() => api.setStaffText(event, placement, text));
     if (!edited) return;
     this.apply(edited);
     await this.refreshArticulations(event);

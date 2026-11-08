@@ -41,6 +41,45 @@ pub enum PedalStyle {
     TextLine,
 }
 
+/// Which side of the staff a text mark goes on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextPlacement {
+    /// Above the staff, as for playing directions such as "div." or "pizz.".
+    #[default]
+    Above,
+    /// On the dynamics line below the staff, as for expressions such as "dolce".
+    Below,
+}
+
+impl TextPlacement {
+    fn is_above(&self) -> bool {
+        *self == Self::Above
+    }
+}
+
+/// Free text at an event, such as "div.", "pizz.", or "dolce". Playback ignores it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct StaffText {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "TextPlacement::is_above")]
+    pub placement: TextPlacement,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub italic: bool,
+}
+
+impl StaffText {
+    pub fn validate(&self) -> Result<(), ModelError> {
+        if self.text.trim().is_empty() {
+            return Err(ModelError::Invalid("text cannot be empty"));
+        }
+        if self.text.contains(['\n', '\r']) {
+            return Err(ModelError::Invalid("text must be a single line"));
+        }
+        Ok(())
+    }
+}
+
 /// How older files stored hairpins: a start, or the event where one ended.
 #[derive(Deserialize)]
 enum StoredHairpin {
@@ -145,6 +184,9 @@ pub struct Markings {
     /// left to the player. Only set together with `pedal_stop`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pedal_release_hidden: bool,
+    /// Free text printed at this event: at most one above and one below the staff.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub texts: Vec<StaffText>,
 }
 
 /// Markings as stored in files, including the older single `hairpin` field.
@@ -180,6 +222,8 @@ struct StoredMarkings {
     pedal_stop: bool,
     #[serde(default)]
     pedal_release_hidden: bool,
+    #[serde(default)]
+    texts: Vec<StaffText>,
 }
 
 impl From<StoredMarkings> for Markings {
@@ -205,6 +249,7 @@ impl From<StoredMarkings> for Markings {
             pedal_start: stored.pedal_start,
             pedal_stop: stored.pedal_stop,
             pedal_release_hidden: stored.pedal_release_hidden,
+            texts: stored.texts,
         }
     }
 }
@@ -216,6 +261,22 @@ impl SlurPlacement {
 }
 
 impl Markings {
+    /// The text on one side of the staff, if any.
+    pub fn text(&self, placement: TextPlacement) -> Option<&StaffText> {
+        self.texts.iter().find(|text| text.placement == placement)
+    }
+
+    /// Sets or, with `None`, removes the text on one side of the staff, keeping the text above
+    /// before the text below.
+    pub fn set_text(&mut self, placement: TextPlacement, text: Option<StaffText>) {
+        self.texts.retain(|other| other.placement != placement);
+        if let Some(text) = text {
+            self.texts.push(StaffText { placement, ..text });
+            self.texts
+                .sort_by_key(|text| text.placement == TextPlacement::Below);
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.dynamic.is_none()
             && self.hairpin_start.is_none()
@@ -231,6 +292,7 @@ impl Markings {
             && self.pedal_start.is_none()
             && !self.pedal_stop
             && !self.pedal_release_hidden
+            && self.texts.is_empty()
     }
 
     pub fn validate(&self, on_rest: bool) -> Result<(), ModelError> {
@@ -241,6 +303,17 @@ impl Markings {
                 || self.phrase_slur_stop)
         {
             return Err(ModelError::Invalid("slurs can only be placed on notes"));
+        }
+        for (index, text) in self.texts.iter().enumerate() {
+            text.validate()?;
+            if self.texts[..index]
+                .iter()
+                .any(|other| other.placement == text.placement)
+            {
+                return Err(ModelError::Invalid(
+                    "an event has at most one text above and one below the staff",
+                ));
+            }
         }
         if self.pedal_release_hidden && !self.pedal_stop {
             return Err(ModelError::Invalid(
@@ -298,8 +371,14 @@ mod tests {
             pedal_start: Some(PedalStyle::Line),
             pedal_stop: true,
             pedal_release_hidden: true,
+            texts: vec![StaffText {
+                text: "dolce".to_owned(),
+                placement: TextPlacement::Below,
+                italic: true,
+            }],
         };
         let rest = markings.for_rest();
+        assert_eq!(rest.texts.len(), 1, "a rest keeps its text");
         assert_eq!(rest.dynamic, Some(Dynamic::F));
         assert!(rest.register.is_some(), "a rest keeps the register");
         assert_eq!(
@@ -362,6 +441,42 @@ mod tests {
         assert_eq!(json, r#"{"register":{"side":"treble","middle":true}}"#);
         assert_eq!(serde_json::from_str::<Markings>(&json).unwrap(), clarinet);
         assert!(!clarinet.is_empty());
+    }
+
+    #[test]
+    fn staff_text_stores_only_what_differs_from_plain_text_above() {
+        let mut markings = Markings::default();
+        let text = |text: &str, italic| StaffText {
+            text: text.to_owned(),
+            placement: TextPlacement::Above,
+            italic,
+        };
+        markings.set_text(TextPlacement::Below, Some(text("dolce", true)));
+        markings.set_text(TextPlacement::Above, Some(text("div.", false)));
+        let json = serde_json::to_string(&markings).unwrap();
+        assert_eq!(
+            json,
+            r#"{"texts":[{"text":"div."},{"text":"dolce","placement":"below","italic":true}]}"#
+        );
+        assert_eq!(serde_json::from_str::<Markings>(&json).unwrap(), markings);
+        assert!(markings.validate(false).is_ok());
+        assert_eq!(markings.text(TextPlacement::Below).unwrap().text, "dolce");
+
+        markings.set_text(TextPlacement::Above, None);
+        assert_eq!(markings.texts.len(), 1);
+        markings.set_text(TextPlacement::Below, None);
+        assert!(markings.is_empty());
+
+        let twice = Markings {
+            texts: vec![text("div.", false), text("pizz.", false)],
+            ..Markings::default()
+        };
+        assert!(twice.validate(false).is_err());
+        let blank = Markings {
+            texts: vec![text(" ", false)],
+            ..Markings::default()
+        };
+        assert!(blank.validate(true).is_err());
     }
 
     #[test]

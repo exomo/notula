@@ -10,8 +10,8 @@ use std::path::Path;
 use notula_model::{
     Articulation, Clef, Command, Document, Duration, Dynamic, Event, EventKind, Hairpin,
     KeySignature, Markings, MeasureInfo, NoteValue, PedalStyle, Pitch, Register, Score,
-    SlurPlacement, Step, TICKS_PER_QUARTER, Tempo, TempoDirection, TimeSignature,
-    TimeSignatureDisplay, Voice, VoiceLocation,
+    SlurPlacement, StaffText, Step, TICKS_PER_QUARTER, Tempo, TempoDirection, TextPlacement,
+    TimeSignature, TimeSignatureDisplay, Voice, VoiceLocation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -954,6 +954,22 @@ fn write_directions(
             "      <direction placement=\"above\"><direction-type><accordion-registration>{reeds}</accordion-registration></direction-type><staff>{staff}</staff></direction>"
         );
     }
+    for text in &event.markings.texts {
+        let placement = match text.placement {
+            TextPlacement::Above => "above",
+            TextPlacement::Below => "below",
+        };
+        let style = if text.italic {
+            " font-style=\"italic\""
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            xml,
+            "      <direction placement=\"{placement}\"><direction-type><words{style}>{}</words></direction-type><voice>{voice}</voice><staff>{staff}</staff></direction>",
+            escape(&text.text)
+        );
+    }
     if let Some((hairpin, number)) = wedge.start {
         let kind = match hairpin {
             Hairpin::Crescendo => "crescendo",
@@ -1018,12 +1034,14 @@ struct ParsedPart {
     measures: Vec<ParsedMeasure>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ParsedDirection {
     staff: usize,
+    voice: Option<usize>,
     onset: u32,
     dynamic: Option<Dynamic>,
     register: Option<Register>,
+    text: Option<StaffText>,
 }
 
 /// A pedal start or change (`style`) or stop (`None`), paired with others by staff and number.
@@ -1631,17 +1649,20 @@ fn parse_measure(
                 let offset_ticks = (u64::from(offset) * u64::from(TICKS_PER_QUARTER)
                     / u64::from((*divisions).max(1))) as u32;
                 let onset = (cursor.max(0) as u32).saturating_add(offset_ticks);
+                let direction_voice =
+                    child_text(child, "voice").map(|name| voice_index(name, voice_names));
                 let mut direction = ParsedDirection {
                     staff,
+                    voice: direction_voice,
                     onset,
                     dynamic: None,
                     register: None,
+                    text: None,
                 };
-                let direction_voice =
-                    child_text(child, "voice").map(|name| voice_index(name, voice_names));
                 let mut metronome_tempo = None;
                 let mut words = String::new();
                 let mut bold_words = false;
+                let mut italic_words = false;
                 for direction_type in elements(child, "direction-type") {
                     if let Some(dynamics) = element(direction_type, "dynamics") {
                         direction.dynamic = dynamics
@@ -1730,6 +1751,7 @@ fn parse_measure(
                             "words" => {
                                 words.push_str(item.text().unwrap_or(""));
                                 bold_words |= item.attribute("font-weight") == Some("bold");
+                                italic_words |= item.attribute("font-style") == Some("italic");
                             }
                             name => remember(unsupported, format!("direction: {name}")),
                         }
@@ -1748,8 +1770,18 @@ fn parse_measure(
                         // Words given with a tempo, set in bold as tempo text usually is, or
                         // starting with a tempo word are tempo text.
                         result.tempo_texts.push((onset, words.to_owned()));
+                    } else if words.contains(['\n', '\r']) {
+                        remember(unsupported, "text on several lines");
                     } else {
-                        remember(unsupported, "direction: words");
+                        let placement = match child.attribute("placement") {
+                            Some("below") => TextPlacement::Below,
+                            _ => TextPlacement::Above,
+                        };
+                        direction.text = Some(StaffText {
+                            text: words.to_owned(),
+                            placement,
+                            italic: italic_words,
+                        });
                     }
                 }
                 let sound_tempo = sound_tempo.map(|tempo| (tempo, true));
@@ -1761,7 +1793,10 @@ fn parse_measure(
                         hidden,
                     });
                 }
-                if direction.dynamic.is_some() || direction.register.is_some() {
+                if direction.dynamic.is_some()
+                    || direction.register.is_some()
+                    || direction.text.is_some()
+                {
                     directions.push(direction);
                 }
             }
@@ -1789,17 +1824,34 @@ fn parse_measure(
         }
     }
     for direction in directions {
+        // Text keeps to its voice when the direction names one.
+        let text_voice = direction.text.as_ref().and(direction.voice);
         if let Some(event) = result
             .events
             .iter_mut()
-            .filter(|event| event.staff == direction.staff && event.onset >= direction.onset)
-            .min_by_key(|event| event.onset)
+            .filter(|event| {
+                event.staff == direction.staff
+                    && event.onset >= direction.onset
+                    && text_voice.is_none_or(|voice| event.voice == voice)
+            })
+            .min_by_key(|event| (event.onset, event.voice))
         {
             if direction.dynamic.is_some() {
                 event.markings.dynamic = direction.dynamic;
             }
             if direction.register.is_some() {
                 event.markings.register = direction.register;
+            }
+            if let Some(text) = direction.text {
+                // Several texts on one side of an event are joined into one.
+                let joined = match event.markings.text(text.placement) {
+                    Some(existing) => StaffText {
+                        text: format!("{} {}", existing.text, text.text),
+                        ..existing.clone()
+                    },
+                    None => text,
+                };
+                event.markings.set_text(joined.placement, Some(joined));
             }
         } else {
             remember(unsupported, "direction with no following note");
@@ -3293,6 +3345,112 @@ mod tests {
         );
         assert!(exported.contains("<part-name>Tenor</part-name>"));
         assert!(import(&exported).unwrap().score.parts[0].hide_name);
+    }
+
+    fn staff_texts(score: &Score) -> Vec<Vec<StaffText>> {
+        score
+            .staves()
+            .flat_map(|staff| &staff.measures)
+            .flat_map(|measure| &measure.voices)
+            .flat_map(|voice| &voice.events)
+            .map(|event| event.markings.texts.clone())
+            .collect()
+    }
+
+    #[test]
+    fn staff_text_round_trips_with_placement_and_style() {
+        let mut doc = Document::new();
+        let part = doc.new_part("Violin", &[Clef::Treble]);
+        let staff = part.staves[0].id;
+        doc.execute(Command::AddPart { index: 0, part }).unwrap();
+        let text = |text: &str, placement, italic| StaffText {
+            text: text.to_owned(),
+            placement,
+            italic,
+        };
+        let texts = [
+            vec![
+                text("div.", TextPlacement::Above, false),
+                text("dolce & <cantabile>", TextPlacement::Below, true),
+            ],
+            vec![],
+            vec![text("con sord.", TextPlacement::Above, true)],
+            vec![text("sul pont.", TextPlacement::Below, false)],
+        ];
+        for (index, text) in texts.iter().enumerate() {
+            let kind = if index == 3 {
+                EventKind::Rest
+            } else {
+                EventKind::Chord {
+                    pitches: vec![Pitch::new(Step::C, 0, 5)],
+                    tied: false,
+                }
+            };
+            let mut event = Event::new(
+                doc.new_event_id(),
+                Duration::new(NoteValue::Quarter, 0),
+                kind,
+            );
+            event.markings.texts = text.clone();
+            let at = VoiceLocation {
+                staff,
+                measure: 0,
+                voice: 0,
+            };
+            doc.execute(Command::InsertEvent { at, index, event })
+                .unwrap();
+        }
+        let exported = export(doc.score());
+        assert!(exported.unsupported.is_empty());
+        assert!(exported.xml.contains(
+            "<direction placement=\"below\"><direction-type><words font-style=\"italic\">dolce &amp; &lt;cantabile&gt;</words></direction-type>"
+        ));
+        let imported = import(&exported.xml).unwrap();
+        assert!(
+            imported.unsupported.is_empty(),
+            "{:?}",
+            imported.unsupported
+        );
+        assert_eq!(staff_texts(&imported.score), texts.to_vec());
+        assert!(imported.score.tempo_texts.is_empty());
+    }
+
+    #[test]
+    fn import_reads_staff_text_written_by_other_programs() {
+        let xml = r#"<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Viola</part-name></score-part></part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions><time><beats>2</beats><beat-type>4</beat-type></time></attributes>
+<direction placement="above"><direction-type><words>pizz.</words></direction-type></direction>
+<direction placement="above"><direction-type><words>arco</words></direction-type></direction>
+<direction placement="below"><direction-type><words font-style="italic">espr.</words></direction-type><direction-type><words font-style="italic"> molto</words></direction-type></direction>
+<note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
+<direction><direction-type><words>arco</words></direction-type><direction-type><words>
+sul tasto</words></direction-type><offset>1</offset></direction>
+<note><pitch><step>D</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
+</measure></part></score-partwise>"#;
+        let imported = import(xml).unwrap();
+        let texts = staff_texts(&imported.score);
+        // Two directions on one side of a note are joined; one direction's words become one
+        // text.
+        assert_eq!(
+            texts[0],
+            vec![
+                StaffText {
+                    text: "pizz. arco".to_owned(),
+                    placement: TextPlacement::Above,
+                    italic: false,
+                },
+                StaffText {
+                    text: "espr. molto".to_owned(),
+                    placement: TextPlacement::Below,
+                    italic: true,
+                },
+            ]
+        );
+        assert!(texts[1].is_empty());
+        assert_eq!(
+            imported.unsupported,
+            vec!["text on several lines".to_owned()]
+        );
     }
 
     #[test]

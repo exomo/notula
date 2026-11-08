@@ -7,8 +7,8 @@ use notula_model::edit::{self, Cursor};
 use notula_model::selection::{ResolvedSelection, Selection, Step as SelectionStep};
 use notula_model::{
     Articulation, Document, Duration, Dynamic, EventId, EventKind, Hairpin, KeySignature,
-    PedalStyle, Pitch, Register, StaffId, Step, Tempo, TempoChangeMark, TempoDirection,
-    TimeSignature, TimeSignatureDisplay,
+    PedalStyle, Pitch, Register, StaffId, StaffText, Step, Tempo, TempoChangeMark, TempoDirection,
+    TextPlacement, TimeSignature, TimeSignatureDisplay,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -58,6 +58,7 @@ pub struct EventArticulations {
     tie_possible: bool,
     dynamic: Option<Dynamic>,
     register: Option<Register>,
+    texts: Vec<StaffText>,
     /// Where the event lies in a hairpin, slur, and phrase slur, if it belongs to one.
     hairpin: Option<edit::SpanPosition>,
     /// Where the event lies in a sustain pedal, and that pedal's style.
@@ -711,6 +712,28 @@ pub fn set_register(
     Ok(finish(&app, &session, cursor, Some(event)))
 }
 
+/// Sets or, with `None` or empty text, removes the text on one side of the staff at an event.
+#[tauri::command]
+pub fn set_staff_text(
+    app: AppHandle,
+    state: State<AppState>,
+    event: EventId,
+    placement: TextPlacement,
+    text: Option<StaffText>,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    let staff_text = text
+        .map(|text| StaffText {
+            text: text.text.trim().to_owned(),
+            ..text
+        })
+        .filter(|text| !text.text.is_empty());
+    edit::set_text(&mut session.doc, event, placement, staff_text)
+        .map_err(|error| error.to_string())?;
+    let cursor = cursor_of(&session, event);
+    Ok(finish(&app, &session, cursor, Some(event)))
+}
+
 #[tauri::command]
 pub fn toggle_hairpin(
     app: AppHandle,
@@ -948,6 +971,7 @@ pub fn event_articulations(state: State<AppState>, event: EventId) -> Option<Eve
         tie_possible,
         dynamic: event.markings.dynamic,
         register: event.markings.register,
+        texts: event.markings.texts.clone(),
         hairpin: edit::hairpin_at(session.doc.score(), event.id)
             .map(|span| span.position_of(event.id)),
         pedal: pedal.map(|span| span.position_of(event.id)),

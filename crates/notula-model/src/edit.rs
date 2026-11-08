@@ -8,7 +8,8 @@ use crate::error::ModelError;
 use crate::history::Document;
 use crate::ids::{EventId, StaffId};
 use crate::markings::{
-    Articulation, Dynamic, Hairpin, Markings, PedalStyle, Register, SlurPlacement,
+    Articulation, Dynamic, Hairpin, Markings, PedalStyle, Register, SlurPlacement, StaffText,
+    TextPlacement,
 };
 use crate::pitch::{Pitch, Step};
 use crate::score::{Clef, Event, EventKind, Score, Voice, VoiceLocation};
@@ -275,8 +276,8 @@ fn enter_event(
         }
         let fillers = rest_durations(covered.saturating_sub(length))?;
 
-        // A new note keeps the volume marks, register, and pedal of what it replaces, but not its
-        // articulations.
+        // A new note keeps the volume marks, register, pedal, and text of what it replaces, but
+        // not its articulations.
         let inherited = voice
             .events
             .get(index)
@@ -289,6 +290,7 @@ fn enter_event(
                 pedal_start: replaced.markings.pedal_start,
                 pedal_stop: replaced.markings.pedal_stop,
                 pedal_release_hidden: replaced.markings.pedal_release_hidden,
+                texts: replaced.markings.texts.clone(),
                 articulations: Vec::new(),
                 slur_start: false,
                 slur_stop: false,
@@ -916,6 +918,16 @@ pub fn set_register(
     register: Option<Register>,
 ) -> Result<(), ModelError> {
     edit_markings(doc, id, |markings| markings.register = register)
+}
+
+/// Sets or, with `None`, removes the text on one side of the staff at an event.
+pub fn set_text(
+    doc: &mut Document,
+    id: EventId,
+    placement: TextPlacement,
+    text: Option<StaffText>,
+) -> Result<(), ModelError> {
+    edit_markings(doc, id, |markings| markings.set_text(placement, text))
 }
 
 /// Where an event lies within a hairpin, pedal, slur, or phrase slur.

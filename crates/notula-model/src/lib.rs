@@ -21,7 +21,10 @@ pub use duration::{
 pub use error::ModelError;
 pub use history::Document;
 pub use ids::{EventId, PartId, StaffId};
-pub use markings::{Articulation, Dynamic, Hairpin, Markings, PedalStyle, Register, SlurPlacement};
+pub use markings::{
+    Articulation, Dynamic, Hairpin, Markings, PedalStyle, Register, SlurPlacement, StaffText,
+    TextPlacement,
+};
 pub use pitch::{Pitch, Step};
 pub use score::{
     Clef, Event, EventKind, KeySignature, MeasureData, MeasureInfo, Part, Score, Staff,

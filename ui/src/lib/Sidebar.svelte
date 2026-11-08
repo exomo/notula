@@ -4,6 +4,7 @@
   import { returnFocusAfterChoice, returnFocusAfterClick } from "./focus";
   import Icon from "./Icon.svelte";
   import RegisterControl from "./RegisterControl.svelte";
+  import StaffTextControl from "./StaffTextControl.svelte";
 
   const DYNAMICS: { dynamic: Dynamic; label: string }[] = [
     { dynamic: "Ppp", label: "ppp" },
@@ -191,6 +192,23 @@
       </div>
     </section>
   {/if}
+
+  <section>
+    <h2>Text</h2>
+    {#if selectedNote}
+      {#each ["above", "below"] as const as placement (placement)}
+        <StaffTextControl
+          {placement}
+          value={selectedNote.texts.find((text) => (text.placement ?? "above") === placement) ?? null}
+          onchange={(text) => editor.setStaffText(placement, text)}
+        />
+      {/each}
+    {:else if editor.hasRangeSelection}
+      <p class="hint">Text is set on one note; click a note to edit its text.</p>
+    {:else}
+      <p class="hint">Select a note or rest to add text such as "div." or "dolce".</p>
+    {/if}
+  </section>
 
   <section>
     <h2>Accordion register</h2>
