@@ -51,6 +51,22 @@ pub enum Anchor {
     End,
 }
 
+/// How plain text is set: tempo text is bold, expression text italic.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextStyle {
+    #[default]
+    Plain,
+    Bold,
+    Italic,
+}
+
+impl TextStyle {
+    fn is_plain(&self) -> bool {
+        *self == Self::Plain
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Shape {
@@ -91,6 +107,8 @@ pub enum Shape {
         text: String,
         size: f32,
         anchor: Anchor,
+        #[serde(default, skip_serializing_if = "TextStyle::is_plain")]
+        style: TextStyle,
     },
     Slur {
         points: Vec<[f32; 2]>,
@@ -240,8 +258,22 @@ impl Canvas {
     }
 
     pub fn text(&mut self, x: f32, y: f32, text: &str, size: f32, anchor: Anchor) {
+        self.styled_text(None, x, y, text, size, anchor, TextStyle::Plain);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn styled_text(
+        &mut self,
+        event: Option<EventId>,
+        x: f32,
+        y: f32,
+        text: &str,
+        size: f32,
+        anchor: Anchor,
+        style: TextStyle,
+    ) {
         self.items.push(Item {
-            event: None,
+            event,
             staff: None,
             voice: None,
             shape: Shape::Text {
@@ -250,6 +282,7 @@ impl Canvas {
                 text: text.to_owned(),
                 size,
                 anchor,
+                style,
             },
         });
     }

@@ -17,7 +17,7 @@ use notula_model::{EventKind, NoteValue, Pitch, Score, Staff, StaffId};
 use measure::{MeasureMetrics, measure_metrics};
 use prefix::Prefix;
 use render::Canvas;
-pub use render::{Anchor, Item, MeasureArea, RenderList, Shape};
+pub use render::{Anchor, Item, MeasureArea, RenderList, Shape, TextStyle};
 use smufl::notehead;
 
 pub struct LayoutOptions {
@@ -772,7 +772,12 @@ impl Layouter<'_> {
             .score
             .tempo_changes
             .iter()
-            .any(|mark| !mark.hidden && in_system(mark.measure));
+            .any(|mark| !mark.hidden && in_system(mark.measure))
+            || self
+                .score
+                .tempo_texts
+                .iter()
+                .any(|mark| in_system(mark.measure));
         let tempo_texts = self
             .score
             .tempo_directions
@@ -864,8 +869,8 @@ impl Layouter<'_> {
 
         // Registers are drawn last, above the slurs: (staff index, event, centre, register).
         let mut registers = Vec::new();
-        // Metronome marks go above everything, registers included: (staff index, x,
-        // baseline over the notes, tempo).
+        // Tempo headings (text and metronome marks) go above everything, registers included:
+        // (staff index, x, baseline over the notes, heading).
         let mut metronomes = Vec::new();
         let mut arcs: Vec<(StaffId, emit::Arc)> = Vec::new();
         let mut cursor = x_start;
@@ -1029,22 +1034,50 @@ impl Layouter<'_> {
                 tempo_texts.push((x_of(mark.tick), text));
             }
 
+            // Tempo text and a printed metronome mark at one position form one heading.
+            let mut headings: Vec<(u32, emit::TempoHeading)> = Vec::new();
+            for mark in self
+                .score
+                .tempo_texts
+                .iter()
+                .filter(|mark| mark.measure == measure)
+            {
+                headings.push((
+                    mark.tick,
+                    emit::TempoHeading {
+                        text: Some(&mark.text),
+                        tempo: None,
+                    },
+                ));
+            }
             for mark in self
                 .score
                 .tempo_changes
                 .iter()
                 .filter(|mark| mark.measure == measure && !mark.hidden)
             {
-                let x = x_of(mark.tick);
+                match headings.iter_mut().find(|(tick, _)| *tick == mark.tick) {
+                    Some((_, heading)) => heading.tempo = Some(mark.tempo),
+                    None => headings.push((
+                        mark.tick,
+                        emit::TempoHeading {
+                            text: None,
+                            tempo: Some(mark.tempo),
+                        },
+                    )),
+                }
+            }
+            for (tick, heading) in headings {
+                let x = x_of(tick);
                 for part in rows.parts.iter().filter(|part| !part.is_empty()) {
                     let baseline = emit::metronome_baseline(
                         &metrics.plans[part.start].voices,
                         y_top + rows.y[part.start],
                         x,
-                        mark.tempo,
+                        x + heading.width(),
                         &x_of,
                     );
-                    metronomes.push((part.start, x, baseline, mark.tempo));
+                    metronomes.push((part.start, x, baseline, heading));
                 }
             }
 
@@ -1420,8 +1453,8 @@ impl Layouter<'_> {
             register_tops[staff_index] = Some(bottom - emit::register_height());
         }
 
-        for (staff_index, x, baseline, tempo) in metronomes {
-            let right = x + emit::metronome_width(tempo);
+        for (staff_index, x, baseline, heading) in metronomes {
+            let right = x + heading.width();
             let staff = self.staves[staff_index].id;
             let over_arcs = arcs
                 .iter()
@@ -1436,7 +1469,7 @@ impl Layouter<'_> {
                 .map(|top| top - METRONOME_ABOVE_MARKS)
                 .into_iter();
             let baseline = over_arcs.chain(over_registers).fold(baseline, f32::min);
-            emit::metronome_mark(canvas, x, baseline, tempo);
+            heading.emit(canvas, x, baseline);
         }
     }
 }

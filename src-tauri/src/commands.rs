@@ -875,6 +875,40 @@ pub fn set_tempo_change(
 }
 
 #[tauri::command]
+pub fn tempo_text_at(state: State<AppState>, measure: usize, tick: u32) -> Option<String> {
+    let session = state.lock();
+    session
+        .doc
+        .score()
+        .tempo_text_at(measure, tick)
+        .map(|mark| mark.text.clone())
+}
+
+/// Sets the tempo text at a position; empty text removes it.
+#[tauri::command]
+pub fn set_tempo_text(
+    app: AppHandle,
+    state: State<AppState>,
+    measure: usize,
+    tick: u32,
+    text: Option<String>,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    let text = text
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty());
+    session
+        .doc
+        .execute(notula_model::Command::SetTempoText {
+            measure,
+            tick,
+            text,
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(finish(&app, &session, None, None))
+}
+
+#[tauri::command]
 pub fn event_articulations(state: State<AppState>, event: EventId) -> Option<EventArticulations> {
     let session = state.lock();
     let located = edit::locate(session.doc.score(), event)?;

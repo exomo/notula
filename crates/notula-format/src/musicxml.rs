@@ -726,19 +726,77 @@ fn direction_offset(tick: u32) -> String {
     }
 }
 
+/// Common tempo words that start tempo text, for telling it apart from other text when a
+/// direction has no metronome mark or sound tempo.
+const TEMPO_WORDS: [&str; 24] = [
+    "adagietto",
+    "adagio",
+    "allegretto",
+    "allegro",
+    "andante",
+    "andantino",
+    "grave",
+    "larghetto",
+    "largo",
+    "lento",
+    "moderato",
+    "prestissimo",
+    "presto",
+    "vivace",
+    "vivacissimo",
+    "vivo",
+    "tempo di",
+    "tempo i",
+    "tempo primo",
+    "maestoso",
+    "allegrissimo",
+    "lentissimo",
+    "langsam",
+    "schnell",
+];
+
+fn is_tempo_text(text: &str) -> bool {
+    let lower = text.trim().to_lowercase();
+    TEMPO_WORDS.iter().any(|word| {
+        lower
+            .strip_prefix(word)
+            .is_some_and(|rest| !rest.starts_with(char::is_alphabetic))
+    })
+}
+
 fn write_tempo_marks(xml: &mut String, score: &Score, measure: usize) {
-    // Hidden marks keep their metronome so the beat unit survives a round trip.
+    let words = |text: &str| {
+        format!(
+            "<direction-type><words font-weight=\"bold\">{}</words></direction-type>",
+            escape(text)
+        )
+    };
+    // Hidden marks keep their metronome so the beat unit survives a round trip. Tempo text at
+    // the same position goes into the same direction, before the metronome mark.
     for mark in score
         .tempo_changes
         .iter()
         .filter(|mark| mark.measure == measure)
     {
+        let text = score
+            .tempo_text_at(mark.measure, mark.tick)
+            .map_or_else(String::new, |text| words(&text.text));
         let _ = writeln!(
             xml,
-            "      <direction placement=\"above\"><direction-type>{}</direction-type>{}<sound tempo=\"{}\"/></direction>",
+            "      <direction placement=\"above\">{text}<direction-type>{}</direction-type>{}<sound tempo=\"{}\"/></direction>",
             metronome(mark.tempo, !mark.hidden),
             direction_offset(mark.tick),
             sound_tempo(mark.tempo)
+        );
+    }
+    for mark in score.tempo_texts.iter().filter(|mark| {
+        mark.measure == measure && score.tempo_change_at(mark.measure, mark.tick).is_none()
+    }) {
+        let _ = writeln!(
+            xml,
+            "      <direction placement=\"above\">{}{}</direction>",
+            words(&mark.text),
+            direction_offset(mark.tick)
         );
     }
     for mark in score
@@ -946,6 +1004,7 @@ struct ParsedMeasure {
     end_tick: u32,
     tempos: Vec<ParsedTempo>,
     tempo_directions: Vec<(u32, TempoDirection)>,
+    tempo_texts: Vec<(u32, String)>,
     /// In document order; attached to events once the whole part is read.
     wedges: Vec<ParsedWedge>,
     pedals: Vec<ParsedPedal>,
@@ -1581,6 +1640,8 @@ fn parse_measure(
                 let direction_voice =
                     child_text(child, "voice").map(|name| voice_index(name, voice_names));
                 let mut metronome_tempo = None;
+                let mut words = String::new();
+                let mut bold_words = false;
                 for direction_type in elements(child, "direction-type") {
                     if let Some(dynamics) = element(direction_type, "dynamics") {
                         direction.dynamic = dynamics
@@ -1666,17 +1727,31 @@ fn parse_measure(
                                 }
                                 None => remember(unsupported, "metronome mark"),
                             },
-                            "words" => match item.text().and_then(tempo_direction_from_text) {
-                                Some(tempo_direction) => {
-                                    result.tempo_directions.push((onset, tempo_direction));
-                                }
-                                None => remember(unsupported, "direction: words"),
-                            },
+                            "words" => {
+                                words.push_str(item.text().unwrap_or(""));
+                                bold_words |= item.attribute("font-weight") == Some("bold");
+                            }
                             name => remember(unsupported, format!("direction: {name}")),
                         }
                     }
                 }
                 let sound_tempo = element(child, "sound").and_then(parse_sound_tempo);
+                let words = words.trim();
+                if !words.is_empty() {
+                    if let Some(tempo_direction) = tempo_direction_from_text(words) {
+                        result.tempo_directions.push((onset, tempo_direction));
+                    } else if metronome_tempo.is_some()
+                        || sound_tempo.is_some()
+                        || bold_words
+                        || is_tempo_text(words)
+                    {
+                        // Words given with a tempo, set in bold as tempo text usually is, or
+                        // starting with a tempo word are tempo text.
+                        result.tempo_texts.push((onset, words.to_owned()));
+                    } else {
+                        remember(unsupported, "direction: words");
+                    }
+                }
                 let sound_tempo = sound_tempo.map(|tempo| (tempo, true));
                 if let Some((tempo, hidden)) = metronome_tempo.or(sound_tempo) {
                     result.tempos.push(ParsedTempo {
@@ -1970,6 +2045,7 @@ fn import_tempo_marks(
 ) -> Result<(), MusicXmlError> {
     let mut tempos = BTreeMap::<(usize, u32), ParsedTempo>::new();
     let mut directions = BTreeMap::<(usize, u32), TempoDirection>::new();
+    let mut texts = BTreeMap::<(usize, u32), String>::new();
     for part in parts {
         for (index, measure) in part.measures.iter().enumerate() {
             let capacity = doc.score().measure_capacity(index)?;
@@ -1988,6 +2064,11 @@ fn import_tempo_marks(
             for &(onset, direction) in &measure.tempo_directions {
                 directions.entry(position(onset)).or_insert(direction);
             }
+            for (onset, text) in &measure.tempo_texts {
+                texts
+                    .entry(position(*onset))
+                    .or_insert_with(|| text.clone());
+            }
         }
     }
     for ((measure, tick), parsed) in tempos {
@@ -2003,6 +2084,13 @@ fn import_tempo_marks(
             measure,
             tick,
             direction: Some(direction),
+        })?;
+    }
+    for ((measure, tick), text) in texts {
+        doc.execute(Command::SetTempoText {
+            measure,
+            tick,
+            text: Some(text),
         })?;
     }
     Ok(())
@@ -2513,6 +2601,14 @@ mod tests {
             })
             .unwrap();
         }
+        for (measure, tick, text) in [(0, 0, "Andante"), (2, 1920, "Più mosso & <leggiero>")] {
+            doc.execute(Command::SetTempoText {
+                measure,
+                tick,
+                text: Some(text.to_owned()),
+            })
+            .unwrap();
+        }
         for (measure, tick, direction) in [
             (0, 2880, TempoDirection::Ritardando),
             (1, 0, TempoDirection::ATempo),
@@ -2540,6 +2636,10 @@ mod tests {
                 .contains("<offset sound=\"yes\">1920</offset><sound tempo=\"168\"/>")
         );
         assert_eq!(exported.xml.matches("<words>rit.</words>").count(), 1);
+        assert!(exported.xml.contains(
+            "<direction placement=\"above\"><direction-type><words font-weight=\"bold\">Andante</words></direction-type><direction-type><metronome>"
+        ));
+        assert!(exported.xml.contains("Più mosso &amp; &lt;leggiero&gt;"));
 
         let imported = import(&exported.xml).unwrap();
         assert!(
@@ -2552,6 +2652,7 @@ mod tests {
             imported.score.tempo_directions,
             doc.score().tempo_directions
         );
+        assert_eq!(imported.score.tempo_texts, doc.score().tempo_texts);
     }
 
     #[test]
@@ -2621,7 +2722,28 @@ mod tests {
             ),
             (0, 960, TempoDirection::Ritardando)
         );
-        assert_eq!(imported.unsupported, vec!["direction: words".to_owned()]);
+        // "Allegro" comes with a sound tempo, so it is tempo text.
+        let texts: Vec<_> = score
+            .tempo_texts
+            .iter()
+            .map(|mark| (mark.measure, mark.tick, mark.text.as_str()))
+            .collect();
+        assert_eq!(texts, vec![(1, 0, "Allegro")]);
+        assert!(
+            imported.unsupported.is_empty(),
+            "{:?}",
+            imported.unsupported
+        );
+    }
+
+    #[test]
+    fn tempo_text_is_recognized_by_its_words() {
+        assert!(is_tempo_text("Allegro ma non troppo"));
+        assert!(is_tempo_text("Andante con moto"));
+        assert!(is_tempo_text("Tempo I"));
+        assert!(is_tempo_text("Langsam"));
+        assert!(!is_tempo_text("dolce"));
+        assert!(!is_tempo_text("Allegrezza"), "only whole words count");
     }
 
     /// A hairpin as (kind, staff index, start tick, end tick).

@@ -2,11 +2,21 @@ use std::path::Path;
 use std::sync::Arc;
 
 use base64::Engine;
-use notula_layout::{Anchor, RenderList, Shape};
+use notula_layout::{Anchor, RenderList, Shape, TextStyle};
 use resvg::usvg;
 use resvg::{tiny_skia, usvg::fontdb::Database};
 
 const BRAVURA_TTF: &[u8] = include_bytes!("../../ui/src/fonts/Bravura.ttf");
+/// Serif fonts for plain text in exports, by preference; the first one installed is used.
+const SERIF_FAMILIES: [&str; 7] = [
+    "Times New Roman",
+    "Liberation Serif",
+    "Tinos",
+    "DejaVu Serif",
+    "Noto Serif",
+    "Georgia",
+    "FreeSerif",
+];
 
 #[derive(Clone, Copy)]
 pub enum ExportFormat {
@@ -89,6 +99,16 @@ fn parse_svg(svg: &str) -> Result<usvg::Tree, String> {
     let mut options = usvg::Options::default();
     let mut fonts = Database::new();
     fonts.load_font_data(BRAVURA_TTF.to_vec());
+    // Plain text (part names, tempo and staff text) uses a serif system font.
+    fonts.load_system_fonts();
+    if let Some(serif) = SERIF_FAMILIES.iter().find(|family| {
+        fonts
+            .faces()
+            .any(|face| face.families.iter().any(|(name, _)| name == *family))
+    }) {
+        fonts.set_serif_family(*serif);
+    }
+    options.font_family = "serif".to_owned();
     options.fontdb = Arc::new(fonts);
     usvg::Tree::from_str(svg, &options).map_err(|error| error.to_string())
 }
@@ -96,7 +116,7 @@ fn parse_svg(svg: &str) -> Result<usvg::Tree, String> {
 fn render_list_svg(list: &RenderList) -> String {
     let font = base64::engine::general_purpose::STANDARD.encode(BRAVURA_TTF);
     let mut svg = format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}pt\" height=\"{}pt\" viewBox=\"0 0 {} {}\"><style>@font-face{{font-family:Bravura;src:url(data:font/ttf;base64,{font}) format('truetype')}}text{{fill:#000}}.glyph{{font-family:Bravura}}</style><rect width=\"100%\" height=\"100%\" fill=\"white\"/>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}pt\" height=\"{}pt\" viewBox=\"0 0 {} {}\"><style>@font-face{{font-family:Bravura;src:url(data:font/ttf;base64,{font}) format('truetype')}}text{{fill:#000;font-family:serif}}.glyph{{font-family:Bravura}}</style><rect width=\"100%\" height=\"100%\" fill=\"white\"/>",
         list.width * 8.0,
         list.height * 8.0,
         list.width,
@@ -168,14 +188,20 @@ fn render_list_svg(list: &RenderList) -> String {
                 text,
                 size,
                 anchor,
+                style,
             } => {
                 let anchor = match anchor {
                     Anchor::Start => "start",
                     Anchor::Middle => "middle",
                     Anchor::End => "end",
                 };
+                let style = match style {
+                    TextStyle::Plain => "",
+                    TextStyle::Bold => " font-weight=\"bold\"",
+                    TextStyle::Italic => " font-style=\"italic\"",
+                };
                 svg.push_str(&format!(
-                    "<text x=\"{x}\" y=\"{y}\" font-size=\"{size}\" text-anchor=\"{anchor}\">{}</text>",
+                    "<text x=\"{x}\" y=\"{y}\" font-size=\"{size}\" text-anchor=\"{anchor}\"{style}>{}</text>",
                     escape_xml(text)
                 ));
             }
@@ -213,6 +239,7 @@ mod tests {
                         text: "A & B".to_owned(),
                         size: 2.0,
                         anchor: Anchor::Start,
+                        style: TextStyle::Italic,
                     },
                 },
                 notula_layout::Item {
@@ -233,6 +260,7 @@ mod tests {
         let svg = render_list_svg(&list);
         assert!(svg.contains("data:font/ttf;base64,"));
         assert!(svg.contains("A &amp; B"));
+        assert!(svg.contains("font-style=\"italic\""));
         assert!(svg.contains("text-anchor=\"middle\""));
         assert!(parse_svg(&svg).is_ok());
         assert!(

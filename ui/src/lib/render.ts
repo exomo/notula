@@ -9,7 +9,18 @@ export type Shape =
   | { type: "phrase_slur"; points: [number, number][] }
   | { type: "knockout"; x: number; y: number; width: number; height: number }
   | { type: "glyph"; x: number; y: number; glyph: string; size: number; centered?: boolean }
-  | { type: "text"; x: number; y: number; text: string; size: number; anchor: Anchor };
+  | {
+      type: "text";
+      x: number;
+      y: number;
+      text: string;
+      size: number;
+      anchor: Anchor;
+      style?: TextStyle;
+    };
+
+/** How plain text is set; absent means plain. */
+export type TextStyle = "bold" | "italic";
 
 /** Everything that belongs to a note or rest carries that event's id. */
 export type Item = Shape & { event?: number; staff?: number; voice?: number };
@@ -85,4 +96,19 @@ export function glyphInkBox(
     width: (ink.right - ink.left) * item.size + 2 * margin,
     height: (ink.bottom - ink.top) * item.size + 2 * margin,
   };
+}
+
+/** Average advance of a text character, relative to the font size; matches the layout's estimate. */
+const TEXT_CHAR_WIDTH = 0.45;
+
+/** A clickable box over text that belongs to an event, estimated like the layout does. */
+export function textBox(item: Extract<Shape, { type: "text" }>): {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+} {
+  const width = [...item.text].length * TEXT_CHAR_WIDTH * item.size;
+  const shift = item.anchor === "middle" ? -width / 2 : item.anchor === "end" ? -width : 0;
+  return { x: item.x + shift - 0.2, y: item.y - item.size * 0.8, width: width + 0.4, height: item.size };
 }

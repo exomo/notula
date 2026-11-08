@@ -25,6 +25,21 @@
   let tempoDirectionChoice = $state<TempoDirection>("ritardando");
   let tempoBeatChoice = $state("Quarter:0");
   let tempoUnitsChoice = $state(120);
+  let tempoTextChoice = $state("");
+  const TEMPO_TEXTS = [
+    "Largo",
+    "Adagio",
+    "Andante",
+    "Andantino",
+    "Moderato",
+    "Allegretto",
+    "Allegro",
+    "Vivace",
+    "Presto",
+    "Tempo I",
+    "Più mosso",
+    "Meno mosso",
+  ];
   const tempoChoiceValid = $derived(
     Number.isInteger(tempoUnitsChoice) && tempoUnitsChoice >= 1 && tempoUnitsChoice <= 1000,
   );
@@ -85,6 +100,11 @@
     editor.revision;
     void editor.refreshTempoDirection(cursor);
     void editor.refreshTempoChange(cursor);
+    void editor.refreshTempoText(cursor);
+  });
+
+  $effect(() => {
+    tempoTextChoice = editor.tempoTextAt ?? "";
   });
 
   // Show the marks at the cursor so they can be adjusted in place.
@@ -355,6 +375,40 @@
         </div>
       </div>
       <div class="part">
+        <h3>Tempo text</h3>
+        <div class="row">
+          <input
+            class="wide"
+            type="text"
+            list="tempo-texts"
+            placeholder="Allegro"
+            bind:value={tempoTextChoice}
+            onkeydown={(event) => {
+              if (event.key === "Enter" && tempoTextChoice.trim()) void editor.setTempoText(tempoTextChoice);
+            }}
+            aria-label="Tempo text"
+            title="Printed above the score with the metronome mark at the same position; playback ignores it"
+          />
+          <datalist id="tempo-texts">
+            {#each TEMPO_TEXTS as text}
+              <option value={text}></option>
+            {/each}
+          </datalist>
+        </div>
+        <div class="row">
+          <button
+            onclick={() => editor.setTempoText(tempoTextChoice)}
+            disabled={!tempoTextChoice.trim() || tempoTextChoice.trim() === editor.tempoTextAt}
+            title="Add or change the tempo text at the cursor for the whole score"
+          >{editor.tempoTextAt === null ? "Add" : "Change"}</button>
+          <button
+            onclick={() => editor.setTempoText(null)}
+            disabled={editor.tempoTextAt === null}
+            title="Remove the tempo text at the cursor from the whole score"
+          >Remove</button>
+        </div>
+      </div>
+      <div class="part">
         <h3>Tempo direction</h3>
         <div class="row">
           <select bind:value={tempoDirectionChoice} aria-label="Tempo direction">
@@ -554,6 +608,11 @@
   select,
   input {
     padding: 0 0.4rem;
+  }
+
+  .wide {
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   /* Keeps "beat = number" together; the dropdown gives way. */

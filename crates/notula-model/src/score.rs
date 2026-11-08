@@ -39,6 +39,15 @@ pub struct TempoDirectionMark {
     pub direction: TempoDirection,
 }
 
+/// Tempo text such as "Allegro" or "Andante con moto", printed above the score like a
+/// metronome mark and together with one at the same position. Playback ignores it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TempoTextMark {
+    pub measure: usize,
+    pub tick: u32,
+    pub text: String,
+}
+
 /// A metronome mark that sets the tempo from its position onward.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TempoChangeMark {
@@ -58,6 +67,17 @@ impl Default for Tempo {
             units_per_minute: 120,
         }
     }
+}
+
+/// Tempo text must show something and stay on one line.
+pub fn validate_tempo_text(text: &str) -> Result<(), ModelError> {
+    if text.trim().is_empty() {
+        return Err(ModelError::Invalid("tempo text cannot be empty"));
+    }
+    if text.contains(['\n', '\r']) {
+        return Err(ModelError::Invalid("tempo text must be a single line"));
+    }
+    Ok(())
 }
 
 impl Tempo {
@@ -303,6 +323,9 @@ pub struct Score {
     pub tempo_directions: Vec<TempoDirectionMark>,
     /// Sorted by position; a mark at the very start sets the initial tempo.
     pub tempo_changes: Vec<TempoChangeMark>,
+    /// Sorted by position.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tempo_texts: Vec<TempoTextMark>,
     pub parts: Vec<Part>,
     /// Never empty.
     pub measures: Vec<MeasureInfo>,
@@ -321,6 +344,8 @@ struct StoredScore {
     tempo_directions: Vec<TempoDirectionMark>,
     #[serde(default)]
     tempo_changes: Vec<TempoChangeMark>,
+    #[serde(default)]
+    tempo_texts: Vec<TempoTextMark>,
     parts: Vec<Part>,
     measures: Vec<MeasureInfo>,
     next_id: IdCounter,
@@ -349,6 +374,7 @@ impl From<StoredScore> for Score {
             composer: stored.composer,
             tempo_directions: stored.tempo_directions,
             tempo_changes,
+            tempo_texts: stored.tempo_texts,
             parts: stored.parts,
             measures: stored.measures,
             next_id: stored.next_id,
@@ -380,6 +406,7 @@ impl Score {
             composer: String::new(),
             tempo_directions: Vec::new(),
             tempo_changes: Vec::new(),
+            tempo_texts: Vec::new(),
             parts: Vec::new(),
             measures: vec![MeasureInfo::default()],
             next_id: IdCounter(1),
@@ -394,6 +421,12 @@ impl Score {
 
     pub fn tempo_change_at(&self, measure: usize, tick: u32) -> Option<&TempoChangeMark> {
         self.tempo_changes
+            .iter()
+            .find(|mark| mark.measure == measure && mark.tick == tick)
+    }
+
+    pub fn tempo_text_at(&self, measure: usize, tick: u32) -> Option<&TempoTextMark> {
+        self.tempo_texts
             .iter()
             .find(|mark| mark.measure == measure && mark.tick == tick)
     }
@@ -533,6 +566,21 @@ impl Score {
             if !change_positions.insert((mark.measure, mark.tick)) {
                 return Err(ModelError::Invalid(
                     "only one tempo change is allowed at each position",
+                ));
+            }
+        }
+        let mut text_positions = std::collections::HashSet::new();
+        for mark in &self.tempo_texts {
+            validate_tempo_text(&mark.text)?;
+            let capacity = self.measure_capacity(mark.measure)?;
+            if mark.tick > capacity {
+                return Err(ModelError::Invalid(
+                    "tempo text position is outside its measure",
+                ));
+            }
+            if !text_positions.insert((mark.measure, mark.tick)) {
+                return Err(ModelError::Invalid(
+                    "only one tempo text is allowed at each position",
                 ));
             }
         }

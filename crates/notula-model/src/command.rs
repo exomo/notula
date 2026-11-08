@@ -8,7 +8,8 @@ use crate::error::ModelError;
 use crate::ids::{PartId, StaffId};
 use crate::score::{
     Clef, Event, KeySignature, MeasureData, MeasureInfo, Part, Score, Staff, StaffMeasure, Tempo,
-    TempoChangeMark, TempoDirection, TempoDirectionMark, Voice, VoiceLocation,
+    TempoChangeMark, TempoDirection, TempoDirectionMark, TempoTextMark, Voice, VoiceLocation,
+    validate_tempo_text,
 };
 
 /// A reversible edit. `apply` leaves the score untouched on error and returns the inverse command.
@@ -128,6 +129,12 @@ pub enum Command {
         #[serde(default)]
         hidden: bool,
     },
+    /// Adds, replaces, or with `None` removes the tempo text at a position.
+    SetTempoText {
+        measure: usize,
+        tick: u32,
+        text: Option<String>,
+    },
     /// Applied all-or-nothing and undone as a single step.
     Batch {
         commands: Vec<Command>,
@@ -158,6 +165,12 @@ fn check_marks_fit(score: &Score, measure: usize, capacity: u32) -> Result<(), M
         .chain(
             score
                 .tempo_changes
+                .iter()
+                .map(|mark| (mark.measure, mark.tick)),
+        )
+        .chain(
+            score
+                .tempo_texts
                 .iter()
                 .map(|mark| (mark.measure, mark.tick)),
         );
@@ -360,6 +373,11 @@ impl Command {
                         mark.measure += 1;
                     }
                 }
+                for mark in &mut score.tempo_texts {
+                    if mark.measure >= index {
+                        mark.measure += 1;
+                    }
+                }
                 for (id, content) in data.content {
                     score.staff_mut(id)?.measures.insert(index, content);
                 }
@@ -395,6 +413,18 @@ impl Command {
                         mark.measure -= 1;
                     }
                 }
+                let removed_texts: Vec<_> = score
+                    .tempo_texts
+                    .iter()
+                    .filter(|mark| mark.measure == index)
+                    .cloned()
+                    .collect();
+                score.tempo_texts.retain(|mark| mark.measure != index);
+                for mark in &mut score.tempo_texts {
+                    if mark.measure > index {
+                        mark.measure -= 1;
+                    }
+                }
                 let content = score
                     .staves_mut()
                     .map(|staff| (staff.id, staff.measures.remove(index)))
@@ -420,6 +450,11 @@ impl Command {
                             hidden: mark.hidden,
                         }),
                 );
+                commands.extend(removed_texts.into_iter().map(|mark| Command::SetTempoText {
+                    measure: mark.measure,
+                    tick: mark.tick,
+                    text: Some(mark.text),
+                }));
                 Ok(Command::Batch { commands })
             }
             Command::SetTimeSignature {
@@ -720,6 +755,41 @@ impl Command {
                     tick,
                     tempo: old.map(|mark| mark.tempo),
                     hidden: old.is_some_and(|mark| mark.hidden),
+                })
+            }
+            Command::SetTempoText {
+                measure,
+                tick,
+                text,
+            } => {
+                let capacity = score.measure_capacity(measure)?;
+                if tick > capacity {
+                    return Err(ModelError::Invalid(
+                        "tempo text position is outside its measure",
+                    ));
+                }
+                if let Some(text) = &text {
+                    validate_tempo_text(text)?;
+                }
+                let existing = score
+                    .tempo_texts
+                    .iter()
+                    .position(|mark| mark.measure == measure && mark.tick == tick);
+                let old = existing.map(|index| score.tempo_texts.remove(index).text);
+                if let Some(text) = text {
+                    score.tempo_texts.push(TempoTextMark {
+                        measure,
+                        tick,
+                        text,
+                    });
+                    score
+                        .tempo_texts
+                        .sort_by_key(|mark| (mark.measure, mark.tick));
+                }
+                Ok(Command::SetTempoText {
+                    measure,
+                    tick,
+                    text: old,
                 })
             }
             Command::Batch { commands } => {

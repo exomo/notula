@@ -3,7 +3,7 @@
 use notula_model::{Articulation, EventId, NoteValue, SlurPlacement, Tempo};
 
 use crate::engrave::{Body, EventPlan, NotePlan, VoicePlan, dot_advance};
-use crate::render::{Anchor, Canvas};
+use crate::render::{Anchor, Canvas, TextStyle};
 use crate::smufl;
 
 const STEM_LENGTH: f32 = 3.5;
@@ -675,15 +675,67 @@ pub(crate) fn metronome_width(tempo: Tempo) -> f32 {
         + metronome_text(tempo).chars().count() as f32 * METRONOME_CHAR_WIDTH * METRONOME_TEXT_SIZE
 }
 
-/// Baseline for a metronome mark at `x` that clears the staff and the events beneath it.
+/// Average advance of a text character, relative to the font size.
+pub(crate) const TEXT_CHAR_WIDTH: f32 = 0.45;
+/// Font size of tempo text such as "Allegro".
+const TEMPO_TEXT_SIZE: f32 = 2.2;
+/// Room between tempo text and the metronome mark after it.
+const TEMPO_TEXT_GAP: f32 = 0.8;
+
+/// Estimated width of plain text at a font size, in staff spaces.
+pub(crate) fn text_width(text: &str, size: f32) -> f32 {
+    text.chars().count() as f32 * TEXT_CHAR_WIDTH * size
+}
+
+/// A tempo heading: tempo text, a printed metronome mark, or the text followed by the mark.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TempoHeading<'a> {
+    pub text: Option<&'a str>,
+    pub tempo: Option<Tempo>,
+}
+
+impl TempoHeading<'_> {
+    fn metronome_x(&self) -> f32 {
+        self.text.map_or(0.0, |text| {
+            text_width(text, TEMPO_TEXT_SIZE) + TEMPO_TEXT_GAP
+        })
+    }
+
+    pub fn width(&self) -> f32 {
+        match self.tempo {
+            Some(tempo) => self.metronome_x() + metronome_width(tempo),
+            None => self.metronome_x() - TEMPO_TEXT_GAP,
+        }
+    }
+
+    /// Draws the heading starting at `x`, with `baseline` under the text and metronome.
+    pub fn emit(&self, canvas: &mut Canvas, x: f32, baseline: f32) {
+        if let Some(text) = self.text {
+            canvas.styled_text(
+                None,
+                x,
+                baseline,
+                text,
+                TEMPO_TEXT_SIZE,
+                Anchor::Start,
+                TextStyle::Bold,
+            );
+        }
+        if let Some(tempo) = self.tempo {
+            metronome_mark(canvas, x + self.metronome_x(), baseline, tempo);
+        }
+    }
+}
+
+/// Baseline for a tempo heading from `x` to `right` that clears the staff and the events
+/// beneath it.
 pub(crate) fn metronome_baseline(
     voices: &[VoicePlan],
     y0: f32,
     x: f32,
-    tempo: Tempo,
+    right: f32,
     x_of: &dyn Fn(u32) -> f32,
 ) -> f32 {
-    let right = x + metronome_width(tempo);
     let top = voices
         .iter()
         .flat_map(|voice| (0..voice.events.len()).map(move |index| (voice, index)))

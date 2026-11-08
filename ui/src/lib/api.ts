@@ -349,6 +349,10 @@ export const api = {
     invoke<TempoChangeMark | null>("tempo_change_at", { measure, tick }),
   setTempoChange: (measure: number, tick: number, tempo: Tempo | null, hidden: boolean) =>
     invoke<Edited>("set_tempo_change", { measure, tick, tempo, hidden }),
+  tempoTextAt: (measure: number, tick: number) =>
+    invoke<string | null>("tempo_text_at", { measure, tick }),
+  setTempoText: (measure: number, tick: number, text: string | null) =>
+    invoke<Edited>("set_tempo_text", { measure, tick, text }),
   eventArticulations: (event: number) =>
     invoke<EventArticulations | null>("event_articulations", { event }),
   deleteEvent: (event: number) => invoke<Edited>("delete_event", { event }),

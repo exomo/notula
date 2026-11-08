@@ -1016,6 +1016,58 @@ fn metronome_marks_clear_high_notes_beneath_them() {
 }
 
 #[test]
+fn tempo_text_is_bold_and_followed_by_its_metronome_mark() {
+    let mut builder = Builder::new(&[("Flute", &[Clef::Treble]), ("Cello", &[Clef::Bass])]);
+    builder.note(0, 0, Pitch::new(Step::G, 0, 4), NoteValue::Quarter);
+    for (tick, text) in [(0, "Allegro"), (1920, "Meno mosso")] {
+        builder
+            .doc
+            .execute(Command::SetTempoText {
+                measure: 0,
+                tick,
+                text: Some(text.to_owned()),
+            })
+            .unwrap();
+    }
+    builder
+        .doc
+        .execute(Command::SetTempoChange {
+            measure: 0,
+            tick: 0,
+            tempo: Some(notula_model::Tempo::default()),
+            hidden: false,
+        })
+        .unwrap();
+    let list = builder.layout(100.0);
+    let find = |wanted: &str| -> Vec<(f32, f32, notula_layout::TextStyle)> {
+        list.items
+            .iter()
+            .filter_map(|item| match &item.shape {
+                Shape::Text {
+                    x, y, text, style, ..
+                } if text == wanted => Some((*x, *y, *style)),
+                _ => None,
+            })
+            .collect()
+    };
+    let allegro = find("Allegro");
+    let metronome = find("= 120");
+    // Once above each part.
+    assert_eq!(allegro.len(), 2);
+    assert_eq!(find("Meno mosso").len(), 2);
+    assert_eq!(allegro[0].2, notula_layout::TextStyle::Bold);
+    assert_eq!(
+        allegro[0].1, metronome[0].1,
+        "one line with the metronome mark"
+    );
+    assert!(
+        metronome[0].0 > allegro[0].0 + 3.0,
+        "the mark follows the text"
+    );
+    assert!(allegro[0].1 < list.areas[0].y_top, "above the staff");
+}
+
+#[test]
 fn hidden_tempo_changes_are_not_printed() {
     let mut builder = Builder::new(&[("Flute", &[Clef::Treble])]);
     builder

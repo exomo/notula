@@ -30,5 +30,5 @@ manguebyte-core = "0.1"
 manguebyte-dsp = "0.1"
 tauri-plugin-dialog = "2"
 base64 = "0.22"
-resvg = { version = "0.45", default-features = false, features = ["text"] }
+resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts"] }
 svg2pdf = "0.13"

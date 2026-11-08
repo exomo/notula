@@ -112,6 +112,7 @@ class Editor {
   pedalStyle = $state<PedalStyle>("text");
   tempoDirectionAt = $state<TempoDirection | null>(null);
   tempoChangeAt = $state<TempoChangeMark | null>(null);
+  tempoTextAt = $state<string | null>(null);
   inputMode = $state(false);
   entryAlter = $state<number | null>(null);
   duration = $state<Duration>({ value: "Quarter", dots: 0 });
@@ -139,6 +140,7 @@ class Editor {
   private articulationRequest = 0;
   private tempoDirectionRequest = 0;
   private tempoChangeRequest = 0;
+  private tempoTextRequest = 0;
   private selectionRequest = 0;
 
   zoomIn() {
@@ -960,6 +962,29 @@ class Editor {
     if (!edited) return;
     this.apply(edited);
     await this.refreshTempoChange(cursor);
+  }
+
+  async refreshTempoText(cursor = this.cursor) {
+    const request = ++this.tempoTextRequest;
+    if (!cursor) {
+      this.tempoTextAt = null;
+      return;
+    }
+    const text = await this.run(() => api.tempoTextAt(cursor.measure, cursor.tick));
+    if (request === this.tempoTextRequest && text !== undefined) {
+      this.tempoTextAt = text;
+    }
+  }
+
+  /** Sets the score-wide tempo text at the cursor; empty text removes it. */
+  async setTempoText(text: string | null) {
+    const cursor = this.cursor;
+    if (!cursor) return;
+    const trimmed = text?.trim() || null;
+    const edited = await this.run(() => api.setTempoText(cursor.measure, cursor.tick, trimmed));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshTempoText(cursor);
   }
 
   async transpose(semitones: number) {

@@ -742,6 +742,56 @@ fn tempo_directions_are_score_wide_and_restore_with_measure_edits() {
 }
 
 #[test]
+fn tempo_texts_are_score_wide_and_restore_with_measure_edits() {
+    let (mut doc, _) = setup();
+    let set = |text: &str| Command::SetTempoText {
+        measure: 0,
+        tick: 0,
+        text: Some(text.to_owned()),
+    };
+    assert!(
+        doc.execute(set("  ")).is_err(),
+        "tempo text needs something"
+    );
+    assert!(doc.execute(set("Allegro\nmolto")).is_err());
+    assert!(
+        doc.execute(Command::SetTempoText {
+            measure: 0,
+            tick: doc.score().measure_capacity(0).unwrap() + 1,
+            text: Some("Allegro".to_owned()),
+        })
+        .is_err()
+    );
+
+    doc.execute(set("Allegro")).unwrap();
+    doc.execute(set("Andante")).unwrap();
+    assert_eq!(doc.score().tempo_texts.len(), 1);
+    assert_eq!(doc.score().tempo_text_at(0, 0).unwrap().text, "Andante");
+    doc.undo().unwrap();
+    assert_eq!(doc.score().tempo_text_at(0, 0).unwrap().text, "Allegro");
+
+    let data = doc.score().blank_measure(0);
+    doc.execute(Command::InsertMeasure { index: 0, data })
+        .unwrap();
+    assert_eq!(doc.score().tempo_texts[0].measure, 1);
+    doc.execute(Command::RemoveMeasure { index: 1 }).unwrap();
+    assert!(doc.score().tempo_texts.is_empty());
+    doc.undo().unwrap();
+    assert_eq!(doc.score().tempo_text_at(1, 0).unwrap().text, "Allegro");
+    assert!(doc.score().validate().is_ok());
+
+    // Scores without tempo text keep their files unchanged.
+    doc.execute(Command::SetTempoText {
+        measure: 1,
+        tick: 0,
+        text: None,
+    })
+    .unwrap();
+    let json = serde_json::to_value(doc.score()).unwrap();
+    assert!(json.get("tempo_texts").is_none());
+}
+
+#[test]
 fn restored_score_keeps_allocating_unique_ids() {
     let (mut doc, _) = setup();
     let last = doc.new_event_id();

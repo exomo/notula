@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from "./api";
   import { editor } from "./editor.svelte";
-  import { glyphInkBox, type MeasureArea, type RenderList } from "./render";
+  import { glyphInkBox, textBox, type MeasureArea, type RenderList } from "./render";
 
   // Room around a glyph's ink that still counts as clicking it, in staff spaces.
   const GLYPH_HIT_MARGIN = 0.2;
@@ -379,7 +379,27 @@
             />
           {/if}
         {:else}
-          <text x={item.x} y={item.y} font-size={item.size} text-anchor={item.anchor}>{item.text}</text>
+          <text
+            class:selected
+            class:active-voice={!editor.spansStaves && editor.cursor !== null && item.staff === editor.cursor.staff && item.voice === editor.cursor.voice}
+            x={item.x}
+            y={item.y}
+            font-size={item.size}
+            font-style={item.style === "italic" ? "italic" : undefined}
+            font-weight={item.style === "bold" ? "bold" : undefined}
+            text-anchor={item.anchor}>{item.text}</text
+          >
+          {#if item.event !== undefined}
+            {@const box = textBox(item)}
+            <rect
+              class="hit-box"
+              data-event={item.event}
+              x={box.x}
+              y={box.y}
+              width={box.width}
+              height={box.height}
+            />
+          {/if}
         {/if}
       {/each}
       {#if dragBox}
