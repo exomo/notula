@@ -138,6 +138,23 @@ export interface Duration {
 /** An accordion register symbol; unset dots are omitted. */
 export type TextPlacement = "above" | "below";
 
+export type Barline = "regular" | "double" | "final";
+
+/** Repeat signs, barline, and ending of a measure; absent fields mean none. */
+export interface Bars {
+  repeat_start?: boolean;
+  /** How often the repeated music is played in all (2–10). */
+  repeat_end?: number | null;
+  barline?: Barline;
+  ending?: Ending | null;
+}
+
+/** A volta played on the passes it names; `open` leaves out the hook at its end. */
+export interface Ending {
+  numbers: number[];
+  open?: boolean;
+}
+
 /** A horizontal bracket over or under notes; absent fields mean solid, above, with hooks. */
 export interface Bracket {
   placement?: TextPlacement;
@@ -377,6 +394,10 @@ export const api = {
     invoke<TempoChangeMark | null>("tempo_change_at", { measure, tick }),
   setTempoChange: (measure: number, tick: number, tempo: Tempo | null, hidden: boolean) =>
     invoke<Edited>("set_tempo_change", { measure, tick, tempo, hidden }),
+  measureBars: (measure: number) => invoke<Bars | null>("measure_bars", { measure }),
+  setBars: (measure: number, bars: Bars) => invoke<Edited>("set_bars", { measure, bars }),
+  setEnding: (first: number, last: number, ending: Ending | null) =>
+    invoke<Edited>("set_ending", { first, last, ending }),
   tempoTextAt: (measure: number, tick: number) =>
     invoke<string | null>("tempo_text_at", { measure, tick }),
   setTempoText: (measure: number, tick: number, text: string | null) =>

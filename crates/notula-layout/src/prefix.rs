@@ -22,6 +22,8 @@ pub(crate) struct Prefix {
     pub key: bool,
     pub cancel_key: Option<i8>,
     pub time: bool,
+    /// A repeat starts after the clef and signatures.
+    pub repeat_start: bool,
 }
 
 fn digits(mut n: u8) -> usize {
@@ -84,7 +86,15 @@ impl Prefix {
         if self.time {
             width += time_width(info) + TIME_TRAIL;
         }
+        if self.repeat_start {
+            width += crate::barline::START_ROOM;
+        }
         width
+    }
+
+    /// Nothing but a repeat start: it then begins right at the barline.
+    pub fn only_repeat_start(self) -> bool {
+        self.repeat_start && !self.clef && !self.key && !self.time
     }
 
     pub fn draw(self, canvas: &mut Canvas, x: f32, y0: f32, clef: Clef, info: MeasureInfo) {

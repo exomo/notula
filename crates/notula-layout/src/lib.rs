@@ -1,5 +1,6 @@
 //! Engraving layout: turns a score into a list of drawing primitives.
 
+mod barline;
 mod bracket;
 mod emit;
 mod engrave;
@@ -51,6 +52,13 @@ const METRONOME_ABOVE_MARKS: f32 = 0.6;
 const SLUR_ALLOWANCE: f32 = 2.0;
 /// Room between a phrase slur's end and the outer edge of its end note.
 const ARC_END_CLEARANCE: f32 = 0.6;
+/// Room between an ending's line and what lies below it, with its number hanging under it.
+const VOLTA_GAP: f32 = 2.3;
+/// An ending's line stays at least this far above the staff.
+const VOLTA_MIN_HEIGHT: f32 = 2.5;
+const VOLTA_HOOK: f32 = 1.8;
+const VOLTA_THICKNESS: f32 = 0.13;
+const VOLTA_LABEL_SIZE: f32 = 1.8;
 /// How far tempo text below a part reaches under the line it hangs from.
 const TEMPO_TEXT_DEPTH: f32 = 2.4;
 const NAME_SIZE: f32 = 2.0;
@@ -165,6 +173,7 @@ fn prefix_for(score: &Score, measure: usize, first_in_system: bool) -> Prefix {
             None
         },
         time: time_changed,
+        repeat_start: info.bars.repeat_start,
     }
 }
 
@@ -812,7 +821,15 @@ impl Layouter<'_> {
             .tempo_directions
             .iter()
             .any(|mark| in_system(mark.measure));
+        // Endings go above each part, under its tempo marks.
+        let endings = self.score.measures[system.measures.clone()]
+            .iter()
+            .any(|info| info.bars.ending.is_some());
         for part in self.rows.parts.iter().filter(|part| !part.is_empty()) {
+            if endings {
+                let top = &mut reaches[part.start].0;
+                *top = top.min(-VOLTA_MIN_HEIGHT) - VOLTA_GAP;
+            }
             if tempo_marks {
                 let top = &mut reaches[part.start].0;
                 *top = emit::metronome_top(*top);
@@ -933,6 +950,8 @@ impl Layouter<'_> {
         let mut metronomes = Vec::new();
         let mut arcs: Vec<(StaffId, emit::Arc)> = Vec::new();
         let mut cursor = x_start;
+        // Where each measure lies: (measure, barline before it, body start, body end).
+        let mut measure_xs: Vec<(usize, f32, f32, f32)> = Vec::new();
         let mut timeline = volume::Timeline::default();
         let mut tempo_texts = Vec::new();
         let mut foreground_fermatas = Vec::new();
@@ -952,6 +971,29 @@ impl Layouter<'_> {
                 prefix.draw(canvas, cursor, y_top + row, staff.clef, info);
             }
             let body_start = cursor + prefix.width(info);
+            if prefix.repeat_start {
+                // Right after a thick line ending at the barline, the repeat shares it.
+                let shares_thick = offset > 0
+                    && prefix.only_repeat_start()
+                    && matches!(
+                        barline::end(self.score.measures[measure - 1], false),
+                        barline::End::Final | barline::End::Repeat
+                    );
+                let x = body_start - barline::START_ROOM;
+                for range in rows.parts.iter().filter(|r| !r.is_empty()) {
+                    let tops: Vec<f32> = rows.y[range.clone()]
+                        .iter()
+                        .map(|row| y_top + row)
+                        .collect();
+                    let bottom = tops[tops.len() - 1] + STAFF_HEIGHT;
+                    let x = if shares_thick {
+                        x - smufl::THICK_BARLINE
+                    } else {
+                        x
+                    };
+                    barline::draw_start(canvas, x, (tops[0], bottom), &tops, !shares_thick);
+                }
+            }
             let body_end = body_start + metrics.body_width * stretch;
             let x_of = |onset: u32| body_start + metrics.offset_of(onset) * stretch;
             timeline.push(measure_tick, body_start);
@@ -1140,27 +1182,20 @@ impl Layouter<'_> {
                 }
             }
 
-            let is_final = measure + 1 == self.score.measures.len();
-            for range in rows.parts.iter().filter(|r| !r.is_empty()) {
-                let top = y_top + rows.y[range.start];
-                let bottom = y_top + rows.y[range.end - 1] + STAFF_HEIGHT;
-                if is_final {
-                    let thick = body_end - smufl::THICK_BARLINE / 2.0;
-                    let thin = thick
-                        - smufl::THICK_BARLINE / 2.0
-                        - smufl::FINAL_BARLINE_GAP
-                        - smufl::THIN_BARLINE / 2.0;
-                    canvas.line(None, (thin, top), (thin, bottom), smufl::THIN_BARLINE);
-                    canvas.line(None, (thick, top), (thick, bottom), smufl::THICK_BARLINE);
-                } else {
-                    canvas.line(
-                        None,
-                        (body_end, top),
-                        (body_end, bottom),
-                        smufl::THIN_BARLINE,
-                    );
-                }
+            let end = barline::end(info, measure + 1 == self.score.measures.len());
+            // A repeat starting right at the barline takes the place of a plain one.
+            let replaced = matches!(end, barline::End::Regular | barline::End::Double)
+                && system.measures.contains(&(measure + 1))
+                && prefix_for(self.score, measure + 1, false).only_repeat_start();
+            for range in rows.parts.iter().filter(|r| !r.is_empty() && !replaced) {
+                let tops: Vec<f32> = rows.y[range.clone()]
+                    .iter()
+                    .map(|row| y_top + row)
+                    .collect();
+                let bottom = tops[tops.len() - 1] + STAFF_HEIGHT;
+                barline::draw_end(canvas, end, body_end, (tops[0], bottom), &tops);
             }
+            measure_xs.push((measure, cursor, body_start, body_end));
             cursor = body_end;
             measure_tick += u64::from(info.capacity());
             timeline.push(measure_tick, body_end);
@@ -1642,6 +1677,81 @@ impl Layouter<'_> {
             register_tops[staff_index] = Some(bottom - emit::register_height());
         }
 
+        // Endings: one bracket per run of measures with the same numbers, above each part.
+        let mut volta_tops: Vec<(usize, f32, f32, f32)> = Vec::new();
+        let ending_of = |measure: usize| self.score.measures.get(measure)?.bars.ending;
+        let mut index = 0;
+        while index < measure_xs.len() {
+            let (first, barline_x, first_body, _) = measure_xs[index];
+            let Some(ending) = ending_of(first) else {
+                index += 1;
+                continue;
+            };
+            let mut last_index = index;
+            while measure_xs
+                .get(last_index + 1)
+                .is_some_and(|&(measure, ..)| {
+                    ending_of(measure).is_some_and(|other| other.numbers == ending.numbers)
+                })
+            {
+                last_index += 1;
+            }
+            let (last, _, _, last_end) = measure_xs[last_index];
+            let same = |measure: Option<usize>| {
+                measure
+                    .and_then(ending_of)
+                    .is_some_and(|other| other.numbers == ending.numbers)
+            };
+            let continues_before = index == 0 && same(first.checked_sub(1));
+            let continues_after = last_index + 1 == measure_xs.len() && same(Some(last + 1));
+            let open = ending_of(last).is_some_and(|ending| ending.open);
+            let x0 = if index == 0 { first_body } else { barline_x };
+            let x1 = if continues_after {
+                last_end
+            } else {
+                last_end - 0.4
+            };
+            for part in rows.parts.iter().filter(|part| !part.is_empty()) {
+                let staff_index = part.start;
+                let staff = self.staves[staff_index].id;
+                let staff_top = y_top + rows.y[staff_index];
+                let notes_top = staff_top
+                    + emit::reach_top(
+                        (first..=last)
+                            .map(|measure| &self.metrics[measure].plans[staff_index].voices[..]),
+                    );
+                let samples = (0..=8).map(|step| x0 + (x1 - x0) * step as f32 / 8.0);
+                let over_arcs = arcs
+                    .iter()
+                    .filter(|(arc_staff, arc)| *arc_staff == staff && arc.above)
+                    .flat_map(|(_, arc)| samples.clone().filter_map(|x| arc.top_at(x)));
+                let y = over_arcs
+                    .chain(register_tops[staff_index])
+                    .chain(text_tops[staff_index])
+                    .chain(bracket_top(staff, x0, x1))
+                    .fold(notes_top.min(staff_top - VOLTA_MIN_HEIGHT), f32::min)
+                    - VOLTA_GAP;
+                canvas.line(None, (x0, y), (x1, y), VOLTA_THICKNESS);
+                if !continues_before {
+                    let hook_x = x0 + VOLTA_THICKNESS / 2.0;
+                    canvas.line(None, (hook_x, y), (hook_x, y + VOLTA_HOOK), VOLTA_THICKNESS);
+                    canvas.text(
+                        x0 + 0.5,
+                        y + VOLTA_LABEL_SIZE * 0.85,
+                        &ending.numbers.label(),
+                        VOLTA_LABEL_SIZE,
+                        Anchor::Start,
+                    );
+                }
+                if !continues_after && !open {
+                    let hook_x = x1 - VOLTA_THICKNESS / 2.0;
+                    canvas.line(None, (hook_x, y), (hook_x, y + VOLTA_HOOK), VOLTA_THICKNESS);
+                }
+                volta_tops.push((staff_index, x0, x1, y - VOLTA_THICKNESS / 2.0));
+            }
+            index = last_index + 1;
+        }
+
         for (staff_index, x, baseline, heading) in metronomes {
             let right = x + heading.width();
             let staff = self.staves[staff_index].id;
@@ -1654,7 +1764,13 @@ impl Layouter<'_> {
                         .filter_map(|x| arc.top_at(x))
                 })
                 .map(|top| top - METRONOME_ABOVE_MARKS);
-            let over_registers = register_tops[staff_index]
+            let over_volta = volta_tops
+                .iter()
+                .filter(|volta| volta.0 == staff_index && volta.1 <= right && x <= volta.2)
+                .map(|volta| volta.3)
+                .reduce(f32::min);
+            let over_registers = over_volta
+                .or(register_tops[staff_index])
                 .or(text_tops[staff_index])
                 .or(bracket_top(staff, x, right))
                 .map(|top| top - METRONOME_ABOVE_MARKS)

@@ -247,6 +247,127 @@ pub struct Part {
     pub staves: Vec<Staff>,
 }
 
+/// The line at a measure's end, unless a repeat ends there. The last measure of the score
+/// always ends with a final barline.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Barline {
+    #[default]
+    Regular,
+    /// Two thin lines, as at the end of a section.
+    Double,
+    /// A thin and a thick line, as at the end of a piece.
+    Final,
+}
+
+impl Barline {
+    fn is_regular(&self) -> bool {
+        *self == Self::Regular
+    }
+}
+
+/// The passes through a repeat that play an ending, numbered from 1 to 16.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(into = "Vec<u8>", try_from = "Vec<u8>")]
+pub struct EndingNumbers(u16);
+
+impl EndingNumbers {
+    pub const MAX: u8 = 16;
+
+    /// The numbers, or `None` when the list is empty or holds a number outside 1..=16.
+    pub fn new(numbers: &[u8]) -> Option<Self> {
+        let mut mask = 0_u16;
+        for &number in numbers {
+            if !(1..=Self::MAX).contains(&number) {
+                return None;
+            }
+            mask |= 1 << (number - 1);
+        }
+        (mask != 0).then_some(Self(mask))
+    }
+
+    pub fn contains(self, pass: u32) -> bool {
+        (1..=u32::from(Self::MAX)).contains(&pass) && self.0 & (1 << (pass - 1)) != 0
+    }
+
+    /// Ascending.
+    pub fn numbers(self) -> Vec<u8> {
+        (1..=Self::MAX)
+            .filter(|number| self.0 & (1 << (number - 1)) != 0)
+            .collect()
+    }
+
+    /// As printed at the start of the ending, such as "1." or "1., 2.".
+    pub fn label(self) -> String {
+        self.numbers()
+            .iter()
+            .map(|number| format!("{number}."))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+impl From<EndingNumbers> for Vec<u8> {
+    fn from(numbers: EndingNumbers) -> Self {
+        numbers.numbers()
+    }
+}
+
+impl TryFrom<Vec<u8>> for EndingNumbers {
+    type Error = &'static str;
+
+    fn try_from(numbers: Vec<u8>) -> Result<Self, Self::Error> {
+        Self::new(&numbers).ok_or("ending numbers must be 1 to 16")
+    }
+}
+
+/// A volta: the measure is played only on the passes through the repeat it names. Neighbouring
+/// measures with the same numbers form one ending, drawn as one bracket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Ending {
+    pub numbers: EndingNumbers,
+    /// The bracket has no hook at its end, as usual for the last ending. It counts where the
+    /// ending's last measure has it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub open: bool,
+}
+
+/// Repeat signs, the barline, and the ending of one measure, shared by all staves.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Bars {
+    /// A repeat begins at the measure's start.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub repeat_start: bool,
+    /// A repeat ends at the measure's end; the music from the repeat start is played this
+    /// many times in all (2 to 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_end: Option<u8>,
+    #[serde(default, skip_serializing_if = "Barline::is_regular")]
+    pub barline: Barline,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ending: Option<Ending>,
+}
+
+impl Bars {
+    pub const MAX_REPEAT_TIMES: u8 = 10;
+
+    pub fn is_plain(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn validate(self) -> Result<(), ModelError> {
+        if self
+            .repeat_end
+            .is_some_and(|times| !(2..=Self::MAX_REPEAT_TIMES).contains(&times))
+        {
+            return Err(ModelError::Invalid(
+                "a repeat is played 2 to 10 times in all",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Properties shared by all staves in a measure.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeasureInfo {
@@ -257,6 +378,9 @@ pub struct MeasureInfo {
     /// Length in ticks when shorter than the time signature, as in a pickup measure (anacrusis).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub length: Option<u32>,
+    /// Repeats, barline, and ending.
+    #[serde(default, skip_serializing_if = "Bars::is_plain")]
+    pub bars: Bars,
 }
 
 impl MeasureInfo {
@@ -284,6 +408,7 @@ impl MeasureInfo {
             }
         }
         self.key_signature.validate()?;
+        self.bars.validate()?;
         if let Some(length) = self.length {
             let grain = NoteValue::SixtyFourth.ticks();
             if length == 0 || length % grain != 0 {
@@ -468,6 +593,7 @@ impl Score {
         MeasureData {
             info: MeasureInfo {
                 length: None,
+                bars: Bars::default(),
                 ..self.measures[inherit]
             },
             content: self

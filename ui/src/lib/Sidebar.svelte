@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Bracket, Dynamic, PedalStyle, TempoDirection } from "./api";
+  import type { Barline, Bracket, Dynamic, PedalStyle, TempoDirection } from "./api";
   import { TEMPO_BEATS, editor, tempoBeatKey, tempoFromBeatKey } from "./editor.svelte";
   import { returnFocusAfterChoice, returnFocusAfterClick } from "./focus";
   import Icon from "./Icon.svelte";
@@ -27,6 +27,20 @@
   let tempoBeatChoice = $state("Quarter:0");
   let tempoUnitsChoice = $state(120);
   let tempoTextChoice = $state("");
+  let endingChoice = $state("1");
+  let endingOpen = $state(false);
+  // "1, 2" as the passes 1 and 2; null unless every number is 1 to 16.
+  const endingNumbers = $derived.by(() => {
+    const parts = endingChoice.split(/[\s,.]+/).filter((part) => part !== "");
+    const numbers = parts.map(Number);
+    if (numbers.length === 0 || numbers.some((n) => !Number.isInteger(n) || n < 1 || n > 16)) return null;
+    return [...new Set(numbers)].sort((a, b) => a - b);
+  });
+  const endingRangeLabel = $derived.by(() => {
+    const range = editor.endingMeasures;
+    if (!range || range[0] === range[1]) return "this measure";
+    return `measures ${range[0] + 1}–${range[1] + 1}`;
+  });
   const TEMPO_TEXTS = [
     "Largo",
     "Adagio",
@@ -113,6 +127,16 @@
     void editor.refreshTempoDirection(cursor);
     void editor.refreshTempoChange(cursor);
     void editor.refreshTempoText(cursor);
+    void editor.refreshMeasureBars(cursor);
+  });
+
+  // Show the ending of the cursor's measure so it can be adjusted.
+  $effect(() => {
+    const ending = editor.measureBars?.ending;
+    if (ending) {
+      endingChoice = ending.numbers.join(", ");
+      endingOpen = ending.open ?? false;
+    }
   });
 
   $effect(() => {
@@ -564,6 +588,87 @@
           title="Pickup (anacrusis): shorten this measure to the notes in it, or restore its full length"
         >Pickup</button>
       </div>
+      <div class="part">
+        <h3>Repeats and barline</h3>
+        <div class="row">
+          <label class="check" title="A repeat begins at the start of this measure">
+            <input
+              type="checkbox"
+              checked={editor.measureBars?.repeat_start ?? false}
+              onchange={(event) => editor.setBars({ repeat_start: event.currentTarget.checked })}
+            />
+            Repeat start
+          </label>
+          <label class="check" title="A repeat ends at the end of this measure">
+            <input
+              type="checkbox"
+              checked={(editor.measureBars?.repeat_end ?? null) !== null}
+              onchange={(event) => editor.setBars({ repeat_end: event.currentTarget.checked ? 2 : null })}
+            />
+            Repeat end
+          </label>
+        </div>
+        {#if (editor.measureBars?.repeat_end ?? null) !== null}
+          <label class="field">
+            <span>Played</span>
+            <input
+              class="times"
+              type="number"
+              min="2"
+              max="10"
+              step="1"
+              value={editor.measureBars?.repeat_end}
+              onchange={(event) => {
+                const times = Number(event.currentTarget.value);
+                if (Number.isInteger(times) && times >= 2 && times <= 10) void editor.setBars({ repeat_end: times });
+              }}
+              aria-label="How often the repeated music is played in all"
+            />
+            <span>times</span>
+          </label>
+        {/if}
+        <label class="field">
+          <span>Barline</span>
+          <select
+            value={editor.measureBars?.barline ?? "regular"}
+            onchange={(event) => editor.setBars({ barline: event.currentTarget.value as Barline })}
+            title="The line at the end of this measure; a repeat end draws its own, and the last measure always ends with a final barline"
+          >
+            <option value="regular">Normal</option>
+            <option value="double">Double</option>
+            <option value="final">Final</option>
+          </select>
+        </label>
+      </div>
+      <div class="part">
+        <h3>Ending</h3>
+        <div class="row">
+          <input
+            class="wide"
+            type="text"
+            bind:value={endingChoice}
+            placeholder="1, 2"
+            aria-label="Passes through the repeat that play this ending"
+            title="The passes through the repeat that play this ending, such as 1 or 1, 2"
+          />
+          <label class="check" title="Leave out the hook at the end, as usual for the last ending">
+            <input type="checkbox" bind:checked={endingOpen} />
+            Open
+          </label>
+        </div>
+        <div class="row">
+          <button
+            onclick={() => endingNumbers && editor.setEnding({ numbers: endingNumbers, open: endingOpen })}
+            disabled={endingNumbers === null}
+            title={`Make ${endingRangeLabel} an ending; select several measures for a longer one`}
+          >Set for {endingRangeLabel}</button>
+          <button
+            onclick={() => editor.setEnding(null)}
+            disabled={!editor.measureBars?.ending && !editor.hasRangeSelection}
+            title={`Remove the ending from ${endingRangeLabel}`}
+          >Remove</button>
+        </div>
+      </div>
       <div class="row">
         <button
           class="danger"
@@ -694,6 +799,10 @@
   .wide {
     flex: 1 1 auto;
     min-width: 0;
+  }
+
+  .times {
+    width: 4rem;
   }
 
   /* Keeps "beat = number" together; the dropdown gives way. */

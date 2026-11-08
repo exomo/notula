@@ -47,6 +47,49 @@ fn measure_starts(score: &Score) -> Vec<u64> {
     starts
 }
 
+/// The measures in the order they are played, following repeats and endings, with where
+/// each one starts in performance ticks. Playback events, the tempo map, and the playback
+/// position count performance ticks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Performance {
+    /// (measure index, performance tick where it starts, capacity).
+    measures: Vec<(usize, u64, u32)>,
+}
+
+impl Performance {
+    pub fn new(score: &Score) -> Self {
+        let mut tick = 0_u64;
+        let measures = notula_model::repeats::play_order(score)
+            .into_iter()
+            .map(|measure| {
+                let capacity = score.measures[measure].capacity();
+                let start = tick;
+                tick += u64::from(capacity);
+                (measure, start, capacity)
+            })
+            .collect();
+        Self { measures }
+    }
+
+    /// Each measure as it is played: (measure index, performance tick where it starts).
+    pub fn measures(&self) -> impl Iterator<Item = (usize, u64)> + '_ {
+        self.measures
+            .iter()
+            .map(|&(measure, start, _)| (measure, start))
+    }
+
+    /// The measure and the tick within it being played at a performance tick; past the end,
+    /// the end of the last measure played.
+    pub fn score_position(&self, tick: u64) -> Option<(usize, u32)> {
+        let index = self
+            .measures
+            .partition_point(|&(_, start, _)| start <= tick)
+            .checked_sub(1)?;
+        let (measure, start, capacity) = self.measures[index];
+        Some((measure, (tick - start).min(u64::from(capacity)) as u32))
+    }
+}
+
 /// Builds note-on/off events for all parts, staves, voices, and measures.
 ///
 /// A sustain pedal holds every note of its instrument, on all of its staves: a note released
@@ -54,18 +97,39 @@ fn measure_starts(score: &Score) -> Vec<u64> {
 pub fn events(score: &Score) -> Vec<PlaybackEvent> {
     let mut spans = Vec::new();
     let measure_starts = measure_starts(score);
+    let performance = Performance::new(score);
     let part_of = |staff| {
         score
             .parts
             .iter()
             .position(|part| part.staves.iter().any(|candidate| candidate.id == staff))
     };
-    // Per part, where the pedal is down: (start, end) in score ticks.
-    let pedals: Vec<(usize, u64, u64)> = notula_model::edit::pedals(score)
-        .0
-        .into_iter()
-        .filter_map(|span| Some((part_of(span.staff)?, span.start_tick, span.end_tick)))
-        .collect();
+    // Per part, where the pedal is down: (start, end) in performance ticks. A pedal is held
+    // in every measure it covers each time that measure is played.
+    let mut pedals: Vec<(usize, u64, u64)> = Vec::new();
+    for span in notula_model::edit::pedals(score).0 {
+        let Some(part) = part_of(span.staff) else {
+            continue;
+        };
+        // Pieces of this pedal that follow each other in performance time are one pedal.
+        let first_piece = pedals.len();
+        for (measure, start) in performance.measures() {
+            let score_start = measure_starts[measure];
+            let score_end = score_start + u64::from(score.measures[measure].capacity());
+            let (from, to) = (
+                span.start_tick.max(score_start),
+                span.end_tick.min(score_end),
+            );
+            if from >= to {
+                continue;
+            }
+            let (from, to) = (start + from - score_start, start + to - score_start);
+            match pedals[first_piece..].last_mut() {
+                Some(last) if last.2 == from => last.2 = to,
+                _ => pedals.push((part, from, to)),
+            }
+        }
+    }
 
     let mut track = 0;
     for (part_index, part) in score.parts.iter().enumerate() {
@@ -82,11 +146,12 @@ pub fn events(score: &Score) -> Vec<PlaybackEvent> {
                 let track_id = track;
                 track += 1;
                 let channel = midi_channel(track_id);
-                for (measure_index, measure) in staff.measures.iter().enumerate() {
+                for (measure_index, measure_start) in performance.measures() {
+                    let measure = &staff.measures[measure_index];
                     let Some(voice) = measure.voices.get(voice_index) else {
                         continue;
                     };
-                    let mut onset = measure_starts[measure_index];
+                    let mut onset = measure_start;
                     for event in &voice.events {
                         let end = onset + u64::from(event.duration.ticks());
                         if let EventKind::Chord { pitches, tied } = &event.kind {
@@ -231,16 +296,21 @@ impl TempoMap {
         }
     }
 
+    /// Follows the tempo changes in the order the measures are played: a change takes effect
+    /// each time its measure is played, and holds until the next change played.
     pub fn new(score: &Score) -> Self {
         let mut map = Self::default();
-        let measure_starts = measure_starts(score);
-        // Changes are kept sorted by position, so absolute ticks ascend too.
+        // Changes are kept sorted by position, so ticks ascend within a measure.
         // Hidden marks are not printed but still play.
-        for mark in &score.tempo_changes {
-            let Some(start) = measure_starts.get(mark.measure) else {
-                continue;
-            };
-            let tick = start + u64::from(mark.tick);
+        let performance = Performance::new(score);
+        let changes = performance.measures().flat_map(|(measure, start)| {
+            score
+                .tempo_changes
+                .iter()
+                .filter(move |mark| mark.measure == measure)
+                .map(move |mark| (start + u64::from(mark.tick), mark))
+        });
+        for (tick, mark) in changes {
             let quarter_notes_per_minute = mark.tempo.quarter_notes_per_minute();
             let last = map.segments.last_mut().expect("a tempo map is never empty");
             // A mark at the end of one measure and the next measure's start share a tick.
@@ -715,6 +785,75 @@ mod tests {
         let flute_channel = 2;
         assert_eq!(release(flute_channel, c4, 0), Some(960));
         assert_eq!(release(flute_channel, c4, 1920), Some(2880));
+    }
+
+    #[test]
+    fn repeats_and_endings_play_measures_in_performance_order() {
+        use notula_model::{Bars, Ending, EndingNumbers};
+        let (mut doc, cursor) = setup(3);
+        // C4, D4, E4 as whole notes; the second measure is the first ending of a repeat.
+        for (measure, step) in [(0, Step::C), (1, Step::D), (2, Step::E)] {
+            enter_note(
+                &mut doc,
+                Cursor { measure, ..cursor },
+                Pitch::new(step, 0, 4),
+                Duration::new(NoteValue::Whole, 0),
+            )
+            .unwrap();
+        }
+        let ending = |numbers: &[u8]| {
+            Some(Ending {
+                numbers: EndingNumbers::new(numbers).unwrap(),
+                open: false,
+            })
+        };
+        doc.execute(Command::SetBars {
+            measure: 1,
+            bars: Bars {
+                repeat_end: Some(2),
+                ending: ending(&[1]),
+                ..Bars::default()
+            },
+        })
+        .unwrap();
+        doc.execute(Command::SetBars {
+            measure: 2,
+            bars: Bars {
+                ending: ending(&[2]),
+                ..Bars::default()
+            },
+        })
+        .unwrap();
+        doc.execute(Command::SetTempoChange {
+            measure: 1,
+            tick: 0,
+            tempo: Some(Tempo {
+                beat_unit: NoteValue::Quarter,
+                beat_unit_dots: 0,
+                units_per_minute: 60,
+            }),
+            hidden: false,
+        })
+        .unwrap();
+
+        let notes: Vec<_> = events(doc.score())
+            .into_iter()
+            .filter(|event| event.kind == PlaybackEventKind::NoteOn)
+            .map(|event| (event.tick, event.note))
+            .collect();
+        assert_eq!(notes, vec![(0, 60), (3840, 62), (7680, 60), (11520, 64)]);
+
+        let performance = Performance::new(doc.score());
+        assert_eq!(performance.score_position(9000), Some((0, 1320)));
+        assert_eq!(performance.score_position(12000), Some((2, 480)));
+        // Entering the last whole note appended an empty fourth measure.
+        assert_eq!(performance.score_position(99_999), Some((3, 3840)));
+
+        // The second measure slows down to 60, and the repeated first measure stays slow.
+        let map = TempoMap::new(doc.score());
+        assert!((map.seconds_at(3840) - 2.0).abs() < 1e-9);
+        assert!((map.seconds_at(7680) - 6.0).abs() < 1e-9);
+        assert!((map.seconds_at(11520) - 10.0).abs() < 1e-9);
     }
 
     #[test]

@@ -2330,3 +2330,74 @@ fn brackets_span_their_notes_with_hooks_towards_them() {
         "the dynamics line goes under the bracket"
     );
 }
+
+#[test]
+fn repeats_draw_dots_and_thick_lines_and_endings_a_numbered_bracket() {
+    use notula_model::{Barline, Bars, Ending, EndingNumbers};
+    let mut builder = Builder::new(&[("Flute", &[Clef::Treble])]);
+    builder.measures(4);
+    let bars = [
+        (
+            1,
+            Bars {
+                repeat_start: true,
+                ..Bars::default()
+            },
+        ),
+        (
+            2,
+            Bars {
+                repeat_end: Some(2),
+                ending: Some(Ending {
+                    numbers: EndingNumbers::new(&[1]).unwrap(),
+                    open: false,
+                }),
+                ..Bars::default()
+            },
+        ),
+        (
+            3,
+            Bars {
+                barline: Barline::Double,
+                ..Bars::default()
+            },
+        ),
+    ];
+    for (measure, bars) in bars {
+        builder
+            .doc
+            .execute(Command::SetBars { measure, bars })
+            .unwrap();
+    }
+    let list = builder.layout(200.0);
+    let dots = list
+        .items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.shape,
+                Shape::Glyph {
+                    glyph: '\u{E044}',
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(dots, 4, "two dots at the repeat start and two at its end");
+    let thick = list
+        .items
+        .iter()
+        .filter(|item| matches!(item.shape, Shape::Line { thickness, .. } if thickness > 0.4))
+        .count();
+    // Start repeat, end repeat, and the final barline: the last measure always ends with one,
+    // whatever its own style.
+    assert_eq!(thick, 3);
+    let top = list.areas[0].y_top;
+    let label = text_item(&list, "1.");
+    assert!(
+        label.1 < top - 1.0,
+        "the ending's number is above the staff"
+    );
+    let start = list.areas.iter().find(|area| area.measure == 2).unwrap();
+    assert!(label.0 > start.x_start - 2.0 && label.0 < start.x_end);
+}

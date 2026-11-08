@@ -7,9 +7,9 @@ use crate::duration::{TimeSignature, TimeSignatureDisplay};
 use crate::error::ModelError;
 use crate::ids::{PartId, StaffId};
 use crate::score::{
-    Clef, Event, KeySignature, MeasureData, MeasureInfo, Part, Score, Staff, StaffMeasure, Tempo,
-    TempoChangeMark, TempoDirection, TempoDirectionMark, TempoTextMark, Voice, VoiceLocation,
-    validate_tempo_text,
+    Bars, Clef, Event, KeySignature, MeasureData, MeasureInfo, Part, Score, Staff, StaffMeasure,
+    Tempo, TempoChangeMark, TempoDirection, TempoDirectionMark, TempoTextMark, Voice,
+    VoiceLocation, validate_tempo_text,
 };
 
 /// A reversible edit. `apply` leaves the score untouched on error and returns the inverse command.
@@ -128,6 +128,11 @@ pub enum Command {
         tempo: Option<Tempo>,
         #[serde(default)]
         hidden: bool,
+    },
+    /// Sets a measure's repeats, barline, and ending.
+    SetBars {
+        measure: usize,
+        bars: Bars,
     },
     /// Adds, replaces, or with `None` removes the tempo text at a position.
     SetTempoText {
@@ -756,6 +761,12 @@ impl Command {
                     tempo: old.map(|mark| mark.tempo),
                     hidden: old.is_some_and(|mark| mark.hidden),
                 })
+            }
+            Command::SetBars { measure, bars } => {
+                check_measure_index(score, measure)?;
+                bars.validate()?;
+                let old = mem::replace(&mut score.measures[measure].bars, bars);
+                Ok(Command::SetBars { measure, bars: old })
             }
             Command::SetTempoText {
                 measure,

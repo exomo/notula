@@ -8,6 +8,8 @@ import {
   type PedalStyle,
   type Register,
   type StaffText,
+  type Bars,
+  type Ending,
   type Bracket,
   type TextPlacement,
   type Edited,
@@ -120,6 +122,8 @@ class Editor {
   tempoDirectionAt = $state<TempoDirection | null>(null);
   tempoChangeAt = $state<TempoChangeMark | null>(null);
   tempoTextAt = $state<string | null>(null);
+  /** Repeats, barline, and ending of the cursor's measure. */
+  measureBars = $state<Bars | null>(null);
   inputMode = $state(false);
   entryAlter = $state<number | null>(null);
   duration = $state<Duration>({ value: "Quarter", dots: 0 });
@@ -148,6 +152,7 @@ class Editor {
   private tempoDirectionRequest = 0;
   private tempoChangeRequest = 0;
   private tempoTextRequest = 0;
+  private measureBarsRequest = 0;
   private selectionRequest = 0;
 
   zoomIn() {
@@ -1056,6 +1061,47 @@ class Editor {
     if (!edited) return;
     this.apply(edited);
     await this.refreshTempoChange(cursor);
+  }
+
+  async refreshMeasureBars(cursor = this.cursor) {
+    const request = ++this.measureBarsRequest;
+    if (!cursor) {
+      this.measureBars = null;
+      return;
+    }
+    const bars = await this.run(() => api.measureBars(cursor.measure));
+    if (request === this.measureBarsRequest && bars !== undefined) {
+      this.measureBars = bars;
+    }
+  }
+
+  /** Changes the repeats or barline of the cursor's measure, keeping the rest. */
+  async setBars(change: Bars) {
+    const cursor = this.cursor;
+    if (!cursor) return;
+    const bars = { ...(this.measureBars ?? {}), ...change };
+    const edited = await this.run(() => api.setBars(cursor.measure, bars));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshMeasureBars(cursor);
+  }
+
+  /** The measures an ending applies to: the selected ones, or the cursor's. */
+  get endingMeasures(): [number, number] | null {
+    const measures = this.rangeSelection?.resolved.measures;
+    if (this.hasRangeSelection && measures && measures.length > 0) {
+      return [measures[0].measure, measures[measures.length - 1].measure];
+    }
+    return this.cursor ? [this.cursor.measure, this.cursor.measure] : null;
+  }
+
+  async setEnding(ending: Ending | null) {
+    const range = this.endingMeasures;
+    if (!range) return;
+    const edited = await this.run(() => api.setEnding(range[0], range[1], ending));
+    if (!edited) return;
+    this.apply(edited);
+    await this.refreshMeasureBars();
   }
 
   async refreshTempoText(cursor = this.cursor) {

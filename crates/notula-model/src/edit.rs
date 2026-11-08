@@ -12,7 +12,7 @@ use crate::markings::{
     StaffText, TextPlacement,
 };
 use crate::pitch::{Pitch, Step};
-use crate::score::{Clef, Event, EventKind, Score, Voice, VoiceLocation};
+use crate::score::{Bars, Clef, Ending, Event, EventKind, Score, Voice, VoiceLocation};
 
 /// An insertion point: a position in time within one voice of one staff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -920,6 +920,28 @@ pub fn set_register(
     register: Option<Register>,
 ) -> Result<(), ModelError> {
     edit_markings(doc, id, |markings| markings.register = register)
+}
+
+/// Sets or, with `None`, removes the ending on measures `first` through `last`, as one step.
+pub fn set_ending(
+    doc: &mut Document,
+    first: usize,
+    last: usize,
+    ending: Option<Ending>,
+) -> Result<(), ModelError> {
+    if first > last || last >= doc.score().measures.len() {
+        return Err(ModelError::MeasureOutOfRange(last));
+    }
+    let commands = (first..=last)
+        .map(|measure| Command::SetBars {
+            measure,
+            bars: Bars {
+                ending,
+                ..doc.score().measures[measure].bars
+            },
+        })
+        .collect();
+    doc.execute(Command::Batch { commands })
 }
 
 /// Sets or, with `None`, removes the text on one side of the staff at an event.

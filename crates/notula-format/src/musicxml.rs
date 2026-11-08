@@ -8,10 +8,11 @@ use std::io::{Read, Seek};
 use std::path::Path;
 
 use notula_model::{
-    Articulation, Bracket, BracketLine, Clef, Command, Document, Duration, Dynamic, Event,
-    EventKind, Hairpin, KeySignature, Markings, MeasureInfo, NoteValue, PedalStyle, Pitch,
-    Register, Score, SlurPlacement, StaffText, Step, TICKS_PER_QUARTER, Tempo, TempoDirection,
-    TextPlacement, TimeSignature, TimeSignatureDisplay, Voice, VoiceLocation,
+    Articulation, Barline, Bars, Bracket, BracketLine, Clef, Command, Document, Duration, Dynamic,
+    Ending, EndingNumbers, Event, EventKind, Hairpin, KeySignature, Markings, MeasureInfo,
+    NoteValue, PedalStyle, Pitch, Register, Score, SlurPlacement, StaffText, Step,
+    TICKS_PER_QUARTER, Tempo, TempoDirection, TextPlacement, TimeSignature, TimeSignatureDisplay,
+    Voice, VoiceLocation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +169,7 @@ pub fn export(score: &Score) -> MusicXmlExport {
                 "    <measure number=\"{}\"{implicit}>",
                 measure_index + 1
             );
+            write_barline(&mut xml, score, measure_index, true);
             let _ = writeln!(
                 xml,
                 "      <attributes><divisions>{TICKS_PER_QUARTER}</divisions>"
@@ -270,6 +272,7 @@ pub fn export(score: &Score) -> MusicXmlExport {
                     }
                 }
             }
+            write_barline(&mut xml, score, measure_index, false);
             xml.push_str("    </measure>\n");
         }
         xml.push_str("  </part>\n");
@@ -745,6 +748,84 @@ fn direction_offset(tick: u32) -> String {
     }
 }
 
+/// The barline at a measure's start (`left`) or end, with its repeat and the ending that
+/// starts or stops there. Barlines are written in every part.
+fn write_barline(xml: &mut String, score: &Score, measure: usize, left: bool) {
+    let bars = score.measures[measure].bars;
+    let numbers = |measure: Option<usize>| {
+        measure
+            .and_then(|measure| score.measures.get(measure))
+            .and_then(|info| info.bars.ending)
+            .map(|ending| ending.numbers)
+    };
+    let ending_numbers = |numbers: EndingNumbers| {
+        numbers
+            .numbers()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut content = String::new();
+    if left {
+        if bars.repeat_start {
+            content.push_str("<bar-style>heavy-light</bar-style>");
+        }
+        if let Some(ending) = bars.ending
+            && numbers(measure.checked_sub(1)) != Some(ending.numbers)
+        {
+            let _ = write!(
+                content,
+                "<ending number=\"{}\" type=\"start\">{}</ending>",
+                ending_numbers(ending.numbers),
+                escape(&ending.numbers.label())
+            );
+        }
+        if bars.repeat_start {
+            content.push_str("<repeat direction=\"forward\"/>");
+        }
+    } else {
+        let last = measure + 1 == score.measures.len();
+        let style = if bars.repeat_end.is_some() || last {
+            Some("light-heavy")
+        } else {
+            match bars.barline {
+                Barline::Regular => None,
+                Barline::Double => Some("light-light"),
+                Barline::Final => Some("light-heavy"),
+            }
+        };
+        if let Some(style) = style {
+            let _ = write!(content, "<bar-style>{style}</bar-style>");
+        }
+        if let Some(ending) = bars.ending
+            && numbers(Some(measure + 1)) != Some(ending.numbers)
+        {
+            let kind = if ending.open { "discontinue" } else { "stop" };
+            let _ = write!(
+                content,
+                "<ending number=\"{}\" type=\"{kind}\"/>",
+                ending_numbers(ending.numbers)
+            );
+        }
+        if let Some(times) = bars.repeat_end {
+            let times = if times == 2 {
+                String::new()
+            } else {
+                format!(" times=\"{times}\"")
+            };
+            let _ = write!(content, "<repeat direction=\"backward\"{times}/>");
+        }
+    }
+    if !content.is_empty() {
+        let location = if left { "left" } else { "right" };
+        let _ = writeln!(
+            xml,
+            "      <barline location=\"{location}\">{content}</barline>"
+        );
+    }
+}
+
 /// Common tempo words that start tempo text, for telling it apart from other text when a
 /// direction has no metronome mark or sound tempo.
 const TEMPO_WORDS: [&str; 24] = [
@@ -1074,6 +1155,11 @@ struct ParsedMeasure {
     tempos: Vec<ParsedTempo>,
     tempo_directions: Vec<(u32, TempoDirection)>,
     tempo_texts: Vec<(u32, String)>,
+    /// Repeat signs and the barline at the end; the ending is read from the two below.
+    bars: Bars,
+    ending_start: Option<EndingNumbers>,
+    /// An ending stops at the measure's end: `true` when it has no hook (`discontinue`).
+    ending_stop: Option<bool>,
     /// In document order; attached to events once the whole part is read.
     wedges: Vec<ParsedWedge>,
     pedals: Vec<ParsedPedal>,
@@ -1909,7 +1995,7 @@ fn parse_measure(
                     directions.push(direction);
                 }
             }
-            "barline" => remember(unsupported, "barline styles and repeats"),
+            "barline" => parse_barline(child, &mut result, unsupported),
             "sound" if child.attribute("tempo").is_some() => {
                 if let Some(tempo) = parse_sound_tempo(child) {
                     result.tempos.push(ParsedTempo {
@@ -1967,6 +2053,70 @@ fn parse_measure(
         }
     }
     result
+}
+
+/// Reads repeat signs, barline styles, and ending starts and stops into the measure.
+fn parse_barline(
+    node: roxmltree::Node<'_, '_>,
+    measure: &mut ParsedMeasure,
+    unsupported: &mut BTreeSet<String>,
+) {
+    let location = node.attribute("location").unwrap_or("right");
+    if location == "middle" {
+        remember(unsupported, "barlines inside a measure");
+        return;
+    }
+    let left = location == "left";
+    for item in node.children().filter(|child| child.is_element()) {
+        match item.tag_name().name() {
+            "bar-style" => match (item.text().map(str::trim), left) {
+                (Some("regular"), _) => {}
+                (Some("light-light"), false) => measure.bars.barline = Barline::Double,
+                (Some("light-heavy"), false) => measure.bars.barline = Barline::Final,
+                // Drawn with the repeat start.
+                (Some("heavy-light"), true) => {}
+                (style, _) => remember(
+                    unsupported,
+                    format!("barline style {}", style.unwrap_or("")),
+                ),
+            },
+            "repeat" => match item.attribute("direction") {
+                Some("forward") => measure.bars.repeat_start = true,
+                Some("backward") => {
+                    let times = item
+                        .attribute("times")
+                        .and_then(|times| times.trim().parse::<u8>().ok())
+                        .unwrap_or(2);
+                    if !(2..=Bars::MAX_REPEAT_TIMES).contains(&times) {
+                        remember(unsupported, "repeats played more than 10 times");
+                    }
+                    measure.bars.repeat_end = Some(times.clamp(2, Bars::MAX_REPEAT_TIMES));
+                }
+                _ => remember(unsupported, "repeat direction"),
+            },
+            "ending" => {
+                let numbers: Option<Vec<u8>> = item
+                    .attribute("number")
+                    .unwrap_or("")
+                    .split([',', ' '])
+                    .filter(|number| !number.is_empty())
+                    .map(|number| number.parse().ok())
+                    .collect();
+                let numbers = numbers.as_deref().and_then(EndingNumbers::new);
+                match (item.attribute("type"), numbers) {
+                    (Some("start"), Some(numbers)) => measure.ending_start = Some(numbers),
+                    (Some("stop"), _) => measure.ending_stop = Some(false),
+                    (Some("discontinue"), _) => measure.ending_stop = Some(true),
+                    _ => remember(unsupported, "ending numbers"),
+                }
+            }
+            name => remember(unsupported, format!("barline: {name}")),
+        }
+    }
+    // A repeat end is drawn with its own thin and thick line.
+    if !left && measure.bars.repeat_end.is_some() && measure.bars.barline == Barline::Final {
+        measure.bars.barline = Barline::Regular;
+    }
 }
 
 /// A treble register from `<accordion-registration>`: high and low reeds, and a count of 1–3
@@ -2371,10 +2521,35 @@ pub fn import(xml: &str) -> Result<MusicXmlImport, MusicXmlError> {
     let mut measure_info = Vec::with_capacity(measure_count);
     let mut time = (TimeSignature::COMMON, TimeSignatureDisplay::Numeric);
     let mut key = KeySignature::default();
+    // Repeats and endings are score-wide; they are read from the first part that has the
+    // measure. An ending runs from its start to its stop.
+    let mut open_ending: Option<EndingNumbers> = None;
     for index in 0..measure_count {
         let source = parsed_parts
             .iter()
             .find_map(|part| part.measures.get(index));
+        let mut bars = source.map_or_else(Bars::default, |source| source.bars);
+        if let Some(numbers) = source.and_then(|source| source.ending_start) {
+            if open_ending.is_some() {
+                remember(&mut unsupported, "ending without a stop");
+            }
+            open_ending = Some(numbers);
+        }
+        bars.ending = open_ending.map(|numbers| Ending {
+            numbers,
+            open: false,
+        });
+        if let Some(open) = source.and_then(|source| source.ending_stop) {
+            match &mut bars.ending {
+                Some(ending) => ending.open = open,
+                None => remember(&mut unsupported, "ending stop without a start"),
+            }
+            open_ending = None;
+        }
+        // The last measure always ends with a final barline.
+        if index + 1 == measure_count && bars.barline == Barline::Final {
+            bars.barline = Barline::Regular;
+        }
         if let Some(source) = source {
             if let Some(next) = source.time {
                 time = next;
@@ -2404,6 +2579,7 @@ pub fn import(xml: &str) -> Result<MusicXmlImport, MusicXmlError> {
             time_signature_display: time.1,
             key_signature: key,
             length,
+            bars,
         });
     }
 
@@ -2449,6 +2625,10 @@ pub fn import(xml: &str) -> Result<MusicXmlImport, MusicXmlError> {
         doc.execute(Command::SetMeasureLength {
             measure: index,
             length: info.length,
+        })?;
+        doc.execute(Command::SetBars {
+            measure: index,
+            bars: info.bars,
         })?;
     }
 
@@ -3739,6 +3919,143 @@ sul tasto</words></direction-type><offset>1</offset></direction>
         assert_eq!(
             imported.unsupported,
             vec!["overlapping brackets in one voice".to_owned()]
+        );
+    }
+
+    #[test]
+    fn repeats_barlines_and_endings_round_trip() {
+        let mut doc = Document::new();
+        for index in 0..2 {
+            let part = doc.new_part("Flute", &[Clef::Treble]);
+            doc.execute(Command::AddPart { index, part }).unwrap();
+        }
+        for index in 1..7 {
+            let data = doc.score().blank_measure(index);
+            doc.execute(Command::InsertMeasure { index, data }).unwrap();
+        }
+        let ending = |numbers: &[u8], open| {
+            Some(Ending {
+                numbers: EndingNumbers::new(numbers).unwrap(),
+                open,
+            })
+        };
+        let marks = [
+            (
+                1,
+                Bars {
+                    repeat_start: true,
+                    ..Bars::default()
+                },
+            ),
+            (
+                2,
+                Bars {
+                    ending: ending(&[1, 2], false),
+                    ..Bars::default()
+                },
+            ),
+            (
+                3,
+                Bars {
+                    repeat_end: Some(3),
+                    ending: ending(&[1, 2], false),
+                    ..Bars::default()
+                },
+            ),
+            (
+                4,
+                Bars {
+                    barline: Barline::Double,
+                    ending: ending(&[3], true),
+                    ..Bars::default()
+                },
+            ),
+            (
+                5,
+                Bars {
+                    barline: Barline::Final,
+                    ..Bars::default()
+                },
+            ),
+        ];
+        for (measure, bars) in marks {
+            doc.execute(Command::SetBars { measure, bars }).unwrap();
+        }
+        let exported = export(doc.score());
+        assert!(exported.unsupported.is_empty());
+        assert!(exported.xml.contains(
+            "<barline location=\"right\"><bar-style>light-heavy</bar-style><ending number=\"1, 2\" type=\"stop\"/><repeat direction=\"backward\" times=\"3\"/></barline>"
+        ));
+        assert!(exported.xml.contains(
+            "<barline location=\"left\"><ending number=\"3\" type=\"start\">3.</ending></barline>"
+        ));
+        let imported = import(&exported.xml).unwrap();
+        assert!(
+            imported.unsupported.is_empty(),
+            "{:?}",
+            imported.unsupported
+        );
+        let bars = |score: &Score| {
+            score
+                .measures
+                .iter()
+                .map(|info| info.bars)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bars(&imported.score), bars(doc.score()));
+    }
+
+    #[test]
+    fn import_reads_repeats_written_by_other_programs() {
+        let measure = |number: usize, barlines: &str| {
+            format!(
+                r#"<measure number="{number}">{barlines}<note><rest measure="yes"/><duration>4</duration><voice>1</voice></note></measure>"#
+            )
+        };
+        let xml = format!(
+            r#"<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Oboe</part-name></score-part></part-list><part id="P1">{}{}{}{}</part></score-partwise>"#,
+            measure(
+                1,
+                r#"<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes><barline location="left"><bar-style>heavy-light</bar-style><repeat direction="forward"/></barline>"#
+            ),
+            measure(
+                2,
+                r#"<barline location="left"><ending number="1" type="start"/></barline><barline location="right"><bar-style>light-heavy</bar-style><ending number="1" type="stop"/><repeat direction="backward"/></barline>"#
+            ),
+            measure(
+                3,
+                r#"<barline location="left"><ending number="2" type="start"/></barline><barline location="right"><bar-style>dashed</bar-style><ending number="2" type="discontinue"/><segno/></barline>"#
+            ),
+            measure(
+                4,
+                r#"<barline location="right"><bar-style>light-heavy</bar-style></barline>"#
+            ),
+        );
+        let imported = import(&xml).unwrap();
+        let bars: Vec<_> = imported
+            .score
+            .measures
+            .iter()
+            .map(|info| info.bars)
+            .collect();
+        assert!(bars[0].repeat_start);
+        assert_eq!(bars[1].repeat_end, Some(2));
+        assert_eq!(bars[1].ending.unwrap().numbers.numbers(), vec![1]);
+        let second = bars[2].ending.unwrap();
+        assert!(second.open);
+        assert_eq!(second.numbers.numbers(), vec![2]);
+        // The last measure's final barline is implied.
+        assert!(bars[3].is_plain());
+        assert_eq!(
+            imported.unsupported,
+            vec![
+                "barline style dashed".to_owned(),
+                "barline: segno".to_owned()
+            ]
+        );
+        assert_eq!(
+            notula_model::repeats::play_order(&imported.score),
+            vec![0, 1, 0, 2, 3]
         );
     }
 

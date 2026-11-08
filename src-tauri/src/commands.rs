@@ -6,9 +6,9 @@ use notula_model::clipboard::{self, Clip};
 use notula_model::edit::{self, Cursor};
 use notula_model::selection::{ResolvedSelection, Selection, Step as SelectionStep};
 use notula_model::{
-    Articulation, Bracket, Document, Duration, Dynamic, EventId, EventKind, Hairpin, KeySignature,
-    PedalStyle, Pitch, Register, StaffId, StaffText, Step, Tempo, TempoChangeMark, TempoDirection,
-    TextPlacement, TimeSignature, TimeSignatureDisplay,
+    Articulation, Bars, Bracket, Document, Duration, Dynamic, Ending, EventId, EventKind, Hairpin,
+    KeySignature, PedalStyle, Pitch, Register, StaffId, StaffText, Step, Tempo, TempoChangeMark,
+    TempoDirection, TextPlacement, TimeSignature, TimeSignatureDisplay,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -937,6 +937,47 @@ pub fn set_tempo_change(
     Ok(finish(&app, &session, None, None))
 }
 
+/// A measure's repeats, barline, and ending.
+#[tauri::command]
+pub fn measure_bars(state: State<AppState>, measure: usize) -> Option<Bars> {
+    let session = state.lock();
+    session
+        .doc
+        .score()
+        .measures
+        .get(measure)
+        .map(|info| info.bars)
+}
+
+#[tauri::command]
+pub fn set_bars(
+    app: AppHandle,
+    state: State<AppState>,
+    measure: usize,
+    bars: Bars,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    session
+        .doc
+        .execute(notula_model::Command::SetBars { measure, bars })
+        .map_err(text)?;
+    Ok(finish(&app, &session, None, None))
+}
+
+/// Sets or removes the ending on measures `first` through `last`.
+#[tauri::command]
+pub fn set_ending(
+    app: AppHandle,
+    state: State<AppState>,
+    first: usize,
+    last: usize,
+    ending: Option<Ending>,
+) -> Reply<Edited> {
+    let mut session = state.lock();
+    edit::set_ending(&mut session.doc, first, last, ending).map_err(text)?;
+    Ok(finish(&app, &session, None, None))
+}
+
 #[tauri::command]
 pub fn tempo_text_at(state: State<AppState>, measure: usize, tick: u32) -> Option<String> {
     let session = state.lock();
@@ -1648,21 +1689,17 @@ pub fn playback_status(state: State<AppState>) -> PlaybackStatus {
         };
     };
     let score = session.doc.score();
-    let mut tick = controller.position();
-    let mut cursor = None;
-    for (measure, info) in score.measures.iter().enumerate() {
-        let capacity = u64::from(info.capacity());
-        if tick < capacity || measure + 1 == score.measures.len() {
-            cursor = score.staves().next().map(|staff| Cursor {
+    // Playback counts performance ticks, which follow the repeats.
+    let cursor = notula_playback::Performance::new(score)
+        .score_position(controller.position())
+        .and_then(|(measure, tick)| {
+            score.staves().next().map(|staff| Cursor {
                 staff: staff.id,
                 measure,
                 voice: 0,
-                tick: tick.min(capacity) as u32,
-            });
-            break;
-        }
-        tick -= capacity;
-    }
+                tick,
+            })
+        });
     PlaybackStatus {
         playing: controller.is_playing(),
         instrument: controller

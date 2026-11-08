@@ -5,16 +5,13 @@ use std::collections::BTreeMap;
 use notula_model::{Score, Staff, TICKS_PER_QUARTER};
 
 use crate::engrave::{StaffPlan, plan_staff};
-use crate::{emit, pedal, smufl, volume};
+use crate::{barline, emit, pedal, volume};
 
 const START_PAD: f32 = 1.0;
 const MIN_CLEARANCE: f32 = 1.0;
 const QUARTER_SPACING: f32 = 3.5;
 const SPACING_EXPONENT: f32 = 0.6;
 const MIN_BODY_WIDTH: f32 = 6.0;
-/// Width of the final double barline: thick line, gap, thin line.
-const FINAL_BARLINE_ROOM: f32 =
-    smufl::THICK_BARLINE + smufl::FINAL_BARLINE_GAP + smufl::THIN_BARLINE;
 
 pub(crate) struct MeasureMetrics {
     /// Onsets that have something to draw, ascending.
@@ -130,10 +127,9 @@ pub(crate) fn measure_metrics(score: &Score, staves: &[&Staff], measure: usize) 
         x += spacing(until.saturating_sub(*tick)).max(needed);
     }
 
-    // The final barline is drawn inside the measure's end; keep the usual room before it.
-    if measure + 1 == score.measures.len() {
-        x += FINAL_BARLINE_ROOM;
-    }
+    // Barlines other than a plain one are drawn inside the measure's end; keep the usual room
+    // before them.
+    x += barline::end_room(barline::end(info, measure + 1 == score.measures.len()));
 
     let body_width = if columns.is_empty() {
         spacing(capacity).max(MIN_BODY_WIDTH)

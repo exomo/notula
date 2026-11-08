@@ -799,3 +799,61 @@ fn restored_score_keeps_allocating_unique_ids() {
     let mut loaded = Document::from_score(serde_json::from_str(&json).unwrap());
     assert!(loaded.new_event_id() > last);
 }
+
+#[test]
+fn bars_are_undoable_validated_and_not_inherited_by_new_measures() {
+    use notula_model::{Barline, Bars, Ending, EndingNumbers};
+    let (mut doc, _) = setup();
+    let bars = Bars {
+        repeat_start: true,
+        repeat_end: Some(3),
+        barline: Barline::Double,
+        ending: Some(Ending {
+            numbers: EndingNumbers::new(&[1, 2]).unwrap(),
+            open: true,
+        }),
+    };
+    doc.execute(Command::SetBars { measure: 0, bars }).unwrap();
+    assert_eq!(doc.score().measures[0].bars, bars);
+    let json = serde_json::to_value(doc.score()).unwrap();
+    assert_eq!(
+        json["measures"][0]["bars"],
+        serde_json::json!({
+            "repeat_start": true,
+            "repeat_end": 3,
+            "barline": "double",
+            "ending": {"numbers": [1, 2], "open": true}
+        })
+    );
+    assert!(
+        json["measures"][1].get("bars").is_none(),
+        "plain bars are not stored"
+    );
+
+    let data = doc.score().blank_measure(1);
+    doc.execute(Command::InsertMeasure { index: 1, data })
+        .unwrap();
+    assert!(doc.score().measures[1].bars.is_plain());
+
+    for times in [1, 11] {
+        let invalid = Bars {
+            repeat_end: Some(times),
+            ..Bars::default()
+        };
+        assert!(
+            doc.execute(Command::SetBars {
+                measure: 0,
+                bars: invalid
+            })
+            .is_err()
+        );
+    }
+    assert!(EndingNumbers::new(&[0]).is_none());
+    assert!(EndingNumbers::new(&[]).is_none());
+    assert!(serde_json::from_value::<EndingNumbers>(serde_json::json!([17])).is_err());
+
+    doc.undo().unwrap();
+    doc.undo().unwrap();
+    assert!(doc.score().measures[0].bars.is_plain());
+    assert!(doc.score().validate().is_ok());
+}
