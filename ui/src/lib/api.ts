@@ -147,6 +147,19 @@ export interface Bars {
   repeat_end?: number | null;
   barline?: Barline;
   ending?: Ending | null;
+  /** Signs at the measure's start. */
+  segno?: boolean;
+  coda?: boolean;
+  /** Marks at the measure's end. */
+  fine?: boolean;
+  to_coda?: boolean;
+  jump?: Jump | null;
+}
+
+/** "D.C." or "D.S.", played to the end, to "Fine", or to "To Coda" and then the coda. */
+export interface Jump {
+  target: "da_capo" | "dal_segno";
+  until?: "end" | "fine" | "coda";
 }
 
 /** A volta played on the passes it names; `open` leaves out the hook at its end. */

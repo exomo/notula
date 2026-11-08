@@ -136,6 +136,12 @@ pub(crate) fn measure_metrics(score: &Score, staves: &[&Staff], measure: usize) 
     } else {
         x.max(MIN_BODY_WIDTH)
     };
+    // Room for segno and coda signs and navigation text, so neighbouring marks do not meet.
+    let navigation = emit::TempoHeading::width_of_navigation(
+        info.bars,
+        emit::navigation_text(info.bars).as_deref(),
+    );
+    let body_width = body_width.max(navigation);
 
     MeasureMetrics {
         columns,

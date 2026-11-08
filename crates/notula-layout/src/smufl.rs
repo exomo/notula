@@ -38,6 +38,13 @@ pub const METRONOME_NOTE_WIDTH: f32 = 1.18;
 /// How far a metronome notehead reaches below its origin.
 pub const METRONOME_NOTE_DEPTH: f32 = 0.56;
 pub const TIME_COMMON: char = '\u{E08A}';
+pub const SEGNO: char = '\u{E047}';
+pub const CODA: char = '\u{E048}';
+/// Widths of the segno and coda signs at the standard size.
+pub const SEGNO_WIDTH: f32 = 2.23;
+pub const CODA_WIDTH: f32 = 3.82;
+/// How far the coda sign reaches below its baseline at the standard size.
+pub const CODA_DEPTH: f32 = 0.63;
 pub const TIME_CUT_COMMON: char = '\u{E08B}';
 
 pub struct ClefGlyph {

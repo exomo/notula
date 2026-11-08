@@ -2401,3 +2401,65 @@ fn repeats_draw_dots_and_thick_lines_and_endings_a_numbered_bracket() {
     let start = list.areas.iter().find(|area| area.measure == 2).unwrap();
     assert!(label.0 > start.x_start - 2.0 && label.0 < start.x_end);
 }
+
+#[test]
+fn navigation_marks_sit_above_the_staff_at_their_measure_edges() {
+    use notula_model::{Bars, Jump, JumpTarget, JumpUntil};
+    let mut builder = Builder::new(&[("Violin", &[Clef::Treble])]);
+    builder.measures(3);
+    let bars = [
+        (
+            1,
+            Bars {
+                segno: true,
+                ..Bars::default()
+            },
+        ),
+        (
+            2,
+            Bars {
+                jump: Some(Jump {
+                    target: JumpTarget::DalSegno,
+                    until: JumpUntil::Fine,
+                }),
+                ..Bars::default()
+            },
+        ),
+    ];
+    for (measure, bars) in bars {
+        builder
+            .doc
+            .execute(Command::SetBars { measure, bars })
+            .unwrap();
+    }
+    let list = builder.layout(200.0);
+    let area = |measure: usize| {
+        list.areas
+            .iter()
+            .find(|area| area.measure == measure)
+            .unwrap()
+    };
+    let segno = list
+        .items
+        .iter()
+        .find_map(|item| match item.shape {
+            Shape::Glyph {
+                x,
+                y,
+                glyph: '\u{E047}',
+                ..
+            } => Some((x, y)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        (segno.0 - area(1).x_start).abs() < 0.01,
+        "at the measure's start"
+    );
+    assert!(segno.1 < area(1).y_top);
+    let (x, y, style, _) = text_item(&list, "D.S. al Fine");
+    assert_eq!(style, notula_layout::TextStyle::Italic);
+    assert!(y < area(2).y_top);
+    // It ends just before the barline and stays inside its measure.
+    assert!(x > area(2).x_start - 1.0 && x < area(2).x_end - 5.0);
+}

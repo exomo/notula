@@ -28,7 +28,7 @@ pub use markings::{
 };
 pub use pitch::{Pitch, Step};
 pub use score::{
-    Barline, Bars, Clef, Ending, EndingNumbers, Event, EventKind, KeySignature, MeasureData,
-    MeasureInfo, Part, Score, Staff, StaffMeasure, Tempo, TempoChangeMark, TempoDirection,
-    TempoDirectionMark, TempoTextMark, Voice, VoiceLocation,
+    Barline, Bars, Clef, Ending, EndingNumbers, Event, EventKind, Jump, JumpTarget, JumpUntil,
+    KeySignature, MeasureData, MeasureInfo, Part, Score, Staff, StaffMeasure, Tempo,
+    TempoChangeMark, TempoDirection, TempoDirectionMark, TempoTextMark, Voice, VoiceLocation,
 };

@@ -812,6 +812,7 @@ fn bars_are_undoable_validated_and_not_inherited_by_new_measures() {
             numbers: EndingNumbers::new(&[1, 2]).unwrap(),
             open: true,
         }),
+        ..Bars::default()
     };
     doc.execute(Command::SetBars { measure: 0, bars }).unwrap();
     assert_eq!(doc.score().measures[0].bars, bars);

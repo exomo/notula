@@ -815,7 +815,13 @@ impl Layouter<'_> {
                 .score
                 .tempo_texts
                 .iter()
-                .any(|mark| in_system(mark.measure));
+                .any(|mark| in_system(mark.measure))
+            || self.score.measures[system.measures.clone()]
+                .iter()
+                .any(|info| {
+                    let bars = info.bars;
+                    bars.segno || bars.coda || bars.fine || bars.to_coda || bars.jump.is_some()
+                });
         let tempo_texts = self
             .score
             .tempo_directions
@@ -949,6 +955,12 @@ impl Layouter<'_> {
         // (staff index, x, baseline over the notes, heading).
         let mut metronomes = Vec::new();
         let mut arcs: Vec<(StaffId, emit::Arc)> = Vec::new();
+        // Navigation text at each measure's end, such as "D.C. al Fine" or "To Coda".
+        let navigation_texts: Vec<Option<String>> = system
+            .measures
+            .clone()
+            .map(|measure| emit::navigation_text(self.score.measures[measure].bars))
+            .collect();
         let mut cursor = x_start;
         // Where each measure lies: (measure, barline before it, body start, body end).
         let mut measure_xs: Vec<(usize, f32, f32, f32)> = Vec::new();
@@ -1147,7 +1159,7 @@ impl Layouter<'_> {
                     mark.tick,
                     emit::TempoHeading {
                         text: Some(&mark.text),
-                        tempo: None,
+                        ..emit::TempoHeading::default()
                     },
                 ));
             }
@@ -1162,14 +1174,43 @@ impl Layouter<'_> {
                     None => headings.push((
                         mark.tick,
                         emit::TempoHeading {
-                            text: None,
                             tempo: Some(mark.tempo),
+                            ..emit::TempoHeading::default()
                         },
                     )),
                 }
             }
-            for (tick, heading) in headings {
-                let x = x_of(tick);
+            // Segno and coda signs over the measure's start; navigation text, and the coda sign
+            // after "To Coda", ending at its barline.
+            let bars = info.bars;
+            let mut placed_headings: Vec<(f32, emit::TempoHeading)> = headings
+                .into_iter()
+                .map(|(tick, heading)| (x_of(tick), heading))
+                .collect();
+            let mut sign_x = body_start;
+            for (shown, symbol) in [(bars.segno, smufl::SEGNO), (bars.coda, smufl::CODA)] {
+                if shown {
+                    let heading = emit::TempoHeading {
+                        symbol: Some(symbol),
+                        ..emit::TempoHeading::default()
+                    };
+                    placed_headings.push((sign_x, heading));
+                    sign_x += heading.width() + emit::NAVIGATION_GAP;
+                }
+            }
+            if let Some(text) = navigation_texts[offset].as_deref() {
+                let heading = emit::TempoHeading {
+                    text: Some(text),
+                    italic: true,
+                    symbol: bars.to_coda.then_some(smufl::CODA),
+                    ..emit::TempoHeading::default()
+                };
+                placed_headings.push((
+                    body_end - emit::NAVIGATION_END_ROOM - heading.width(),
+                    heading,
+                ));
+            }
+            for (x, heading) in placed_headings {
                 for part in rows.parts.iter().filter(|part| !part.is_empty()) {
                     let baseline = emit::metronome_baseline(
                         &metrics.plans[part.start].voices,

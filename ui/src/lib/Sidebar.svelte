@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Barline, Bracket, Dynamic, PedalStyle, TempoDirection } from "./api";
+  import type { Barline, Bracket, Dynamic, Jump, PedalStyle, TempoDirection } from "./api";
   import { TEMPO_BEATS, editor, tempoBeatKey, tempoFromBeatKey } from "./editor.svelte";
   import { returnFocusAfterChoice, returnFocusAfterClick } from "./focus";
   import Icon from "./Icon.svelte";
@@ -27,6 +27,14 @@
   let tempoBeatChoice = $state("Quarter:0");
   let tempoUnitsChoice = $state(120);
   let tempoTextChoice = $state("");
+  const JUMPS: Record<string, Jump> = Object.fromEntries(
+    (["da_capo", "dal_segno"] as const).flatMap((target) =>
+      (["end", "fine", "coda"] as const).map((until) => [`${target}:${until}`, { target, until }]),
+    ),
+  );
+  function jumpKey(jump: Jump | null): string {
+    return jump ? `${jump.target}:${jump.until ?? "end"}` : "";
+  }
   let endingChoice = $state("1");
   let endingOpen = $state(false);
   // "1, 2" as the passes 1 and 2; null unless every number is 1 to 16.
@@ -637,6 +645,61 @@
             <option value="regular">Normal</option>
             <option value="double">Double</option>
             <option value="final">Final</option>
+          </select>
+        </label>
+      </div>
+      <div class="part">
+        <h3>Navigation</h3>
+        <div class="row">
+          <label class="check" title="A segno sign at the start of this measure, where D.S. goes back to">
+            <input
+              type="checkbox"
+              checked={editor.measureBars?.segno ?? false}
+              onchange={(event) => editor.setBars({ segno: event.currentTarget.checked })}
+            />
+            Segno
+          </label>
+          <label class="check" title="A coda sign at the start of this measure, where To Coda goes after a jump al Coda">
+            <input
+              type="checkbox"
+              checked={editor.measureBars?.coda ?? false}
+              onchange={(event) => editor.setBars({ coda: event.currentTarget.checked })}
+            />
+            Coda
+          </label>
+        </div>
+        <div class="row">
+          <label class="check" title="Fine at the end of this measure: after a jump al Fine the music ends here">
+            <input
+              type="checkbox"
+              checked={editor.measureBars?.fine ?? false}
+              onchange={(event) => editor.setBars({ fine: event.currentTarget.checked })}
+            />
+            Fine
+          </label>
+          <label class="check" title="To Coda at the end of this measure: after a jump al Coda the music goes on at the coda">
+            <input
+              type="checkbox"
+              checked={editor.measureBars?.to_coda ?? false}
+              onchange={(event) => editor.setBars({ to_coda: event.currentTarget.checked })}
+            />
+            To Coda
+          </label>
+        </div>
+        <label class="field">
+          <span>Jump</span>
+          <select
+            value={jumpKey(editor.measureBars?.jump ?? null)}
+            onchange={(event) => editor.setBars({ jump: JUMPS[event.currentTarget.value] ?? null })}
+            title="A jump at the end of this measure; it is taken once, and repeats are not taken again after it"
+          >
+            <option value="">None</option>
+            <option value="da_capo:end">D.C.</option>
+            <option value="da_capo:fine">D.C. al Fine</option>
+            <option value="da_capo:coda">D.C. al Coda</option>
+            <option value="dal_segno:end">D.S.</option>
+            <option value="dal_segno:fine">D.S. al Fine</option>
+            <option value="dal_segno:coda">D.S. al Coda</option>
           </select>
         </label>
       </div>

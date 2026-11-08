@@ -9,10 +9,10 @@ use std::path::Path;
 
 use notula_model::{
     Articulation, Barline, Bars, Bracket, BracketLine, Clef, Command, Document, Duration, Dynamic,
-    Ending, EndingNumbers, Event, EventKind, Hairpin, KeySignature, Markings, MeasureInfo,
-    NoteValue, PedalStyle, Pitch, Register, Score, SlurPlacement, StaffText, Step,
-    TICKS_PER_QUARTER, Tempo, TempoDirection, TextPlacement, TimeSignature, TimeSignatureDisplay,
-    Voice, VoiceLocation,
+    Ending, EndingNumbers, Event, EventKind, Hairpin, Jump, JumpTarget, JumpUntil, KeySignature,
+    Markings, MeasureInfo, NoteValue, PedalStyle, Pitch, Register, Score, SlurPlacement, StaffText,
+    Step, TICKS_PER_QUARTER, Tempo, TempoDirection, TextPlacement, TimeSignature,
+    TimeSignatureDisplay, Voice, VoiceLocation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +204,7 @@ pub fn export(score: &Score) -> MusicXmlExport {
             // Score-wide tempo marks are written once, in the first part.
             if part_index == 0 {
                 write_tempo_marks(&mut xml, score, measure_index);
+                write_navigation(&mut xml, info.bars, true);
             }
 
             let mut first_voice = true;
@@ -271,6 +272,11 @@ pub fn export(score: &Score) -> MusicXmlExport {
                         );
                     }
                 }
+            }
+            // Navigation marks at the end are written once, in the first part, where the
+            // voices have reached the measure's end.
+            if part_index == 0 {
+                write_navigation(&mut xml, info.bars, false);
             }
             write_barline(&mut xml, score, measure_index, false);
             xml.push_str("    </measure>\n");
@@ -746,6 +752,80 @@ fn direction_offset(tick: u32) -> String {
     } else {
         format!("<offset sound=\"yes\">{tick}</offset>")
     }
+}
+
+/// Segno and coda signs at a measure's start, or "Fine", jumps, and "To Coda" at its end,
+/// with the `<sound>` attributes that other programs play them by.
+fn write_navigation(xml: &mut String, bars: Bars, start: bool) {
+    let mut write = |content: &str, sound: &str| {
+        let _ = writeln!(
+            xml,
+            "      <direction placement=\"above\"><direction-type>{content}</direction-type><sound {sound}/></direction>"
+        );
+    };
+    if start {
+        if bars.segno {
+            write("<segno/>", "segno=\"segno\"");
+        }
+        if bars.coda {
+            write("<coda/>", "coda=\"coda\"");
+        }
+        return;
+    }
+    if bars.fine {
+        write("<words>Fine</words>", "fine=\"yes\"");
+    }
+    if let Some(jump) = bars.jump {
+        let sound = match jump.target {
+            JumpTarget::DaCapo => "dacapo=\"yes\"",
+            JumpTarget::DalSegno => "dalsegno=\"segno\"",
+        };
+        write(&format!("<words>{}</words>", jump.label()), sound);
+    }
+    if bars.to_coda {
+        write("<words>To Coda</words>", "tocoda=\"coda\"");
+    }
+}
+
+/// Navigation marks read from words such as "D.S. al Coda", "Fine", or "To Coda", and from
+/// a direction's `<sound>`; `None` when the direction is none of them.
+fn parse_navigation(words: &str, sound: Option<roxmltree::Node<'_, '_>>) -> Option<Bars> {
+    let lower = words.trim().to_lowercase();
+    let has = |name: &str| sound.is_some_and(|sound| sound.has_attribute(name));
+    let mut bars = Bars::default();
+    let target = if has("dacapo") || lower.starts_with("d.c.") || lower.starts_with("da capo") {
+        Some(JumpTarget::DaCapo)
+    } else if has("dalsegno") || lower.starts_with("d.s.") || lower.starts_with("dal segno") {
+        Some(JumpTarget::DalSegno)
+    } else {
+        None
+    };
+    if let Some(target) = target {
+        let until = if lower.contains("al fine") {
+            JumpUntil::Fine
+        } else if lower.contains("al coda") {
+            JumpUntil::Coda
+        } else {
+            JumpUntil::End
+        };
+        bars.jump = Some(Jump { target, until });
+    } else if has("tocoda") || lower.starts_with("to coda") {
+        bars.to_coda = true;
+    } else if has("fine") || lower == "fine" {
+        bars.fine = true;
+    } else {
+        return None;
+    }
+    Some(bars)
+}
+
+/// Adds the navigation marks of `other` to `bars`.
+fn add_navigation(bars: &mut Bars, other: Bars) {
+    bars.segno |= other.segno;
+    bars.coda |= other.coda;
+    bars.fine |= other.fine;
+    bars.to_coda |= other.to_coda;
+    bars.jump = bars.jump.or(other.jump);
 }
 
 /// The barline at a measure's start (`left`) or end, with its repeat and the ending that
@@ -1814,6 +1894,8 @@ fn parse_measure(
                 let mut metronome_tempo = None;
                 let mut words = String::new();
                 let mut bold_words = false;
+                let mut segno_sign = false;
+                let mut coda_sign = false;
                 let mut italic_words = false;
                 for direction_type in elements(child, "direction-type") {
                     if let Some(dynamics) = element(direction_type, "dynamics") {
@@ -1943,6 +2025,8 @@ fn parse_measure(
                                 }
                                 None => remember(unsupported, "metronome mark"),
                             },
+                            "segno" => segno_sign = true,
+                            "coda" => coda_sign = true,
                             "words" => {
                                 words.push_str(item.text().unwrap_or(""));
                                 bold_words |= item.attribute("font-weight") == Some("bold");
@@ -1952,9 +2036,19 @@ fn parse_measure(
                         }
                     }
                 }
-                let sound_tempo = element(child, "sound").and_then(parse_sound_tempo);
+                let sound = element(child, "sound");
+                let sound_tempo = sound.and_then(parse_sound_tempo);
                 let words = words.trim();
-                if !words.is_empty() {
+                let navigation = parse_navigation(words, sound);
+                if let Some(navigation) = navigation {
+                    add_navigation(&mut result.bars, navigation);
+                }
+                // A coda sign that goes with "To Coda" is part of that mark.
+                if coda_sign && navigation.is_none_or(|bars| !bars.to_coda) {
+                    result.bars.coda = true;
+                }
+                result.bars.segno |= segno_sign;
+                if !words.is_empty() && navigation.is_none() {
                     if let Some(tempo_direction) = tempo_direction_from_text(words) {
                         result.tempo_directions.push((onset, tempo_direction));
                     } else if metronome_tempo.is_some()
@@ -2110,6 +2204,8 @@ fn parse_barline(
                     _ => remember(unsupported, "ending numbers"),
                 }
             }
+            "segno" => measure.bars.segno = true,
+            "coda" => measure.bars.coda = true,
             name => remember(unsupported, format!("barline: {name}")),
         }
     }
@@ -2529,6 +2625,13 @@ pub fn import(xml: &str) -> Result<MusicXmlImport, MusicXmlError> {
             .iter()
             .find_map(|part| part.measures.get(index));
         let mut bars = source.map_or_else(Bars::default, |source| source.bars);
+        // Navigation marks may be written in any part.
+        for measure in parsed_parts
+            .iter()
+            .filter_map(|part| part.measures.get(index))
+        {
+            add_navigation(&mut bars, measure.bars);
+        }
         if let Some(numbers) = source.and_then(|source| source.ending_start) {
             if open_ending.is_some() {
                 remember(&mut unsupported, "ending without a stop");
@@ -4046,16 +4149,130 @@ sul tasto</words></direction-type><offset>1</offset></direction>
         assert_eq!(second.numbers.numbers(), vec![2]);
         // The last measure's final barline is implied.
         assert!(bars[3].is_plain());
+        assert!(bars[2].segno, "a segno on a barline");
         assert_eq!(
             imported.unsupported,
-            vec![
-                "barline style dashed".to_owned(),
-                "barline: segno".to_owned()
-            ]
+            vec!["barline style dashed".to_owned()]
         );
         assert_eq!(
             notula_model::repeats::play_order(&imported.score),
             vec![0, 1, 0, 2, 3]
+        );
+    }
+
+    #[test]
+    fn navigation_marks_round_trip_and_import_from_words() {
+        let mut doc = Document::new();
+        for index in 0..2 {
+            let part = doc.new_part("Horn", &[Clef::Treble]);
+            doc.execute(Command::AddPart { index, part }).unwrap();
+        }
+        for index in 1..5 {
+            let data = doc.score().blank_measure(index);
+            doc.execute(Command::InsertMeasure { index, data }).unwrap();
+        }
+        let marks = [
+            (
+                1,
+                Bars {
+                    segno: true,
+                    ..Bars::default()
+                },
+            ),
+            (
+                2,
+                Bars {
+                    to_coda: true,
+                    fine: true,
+                    ..Bars::default()
+                },
+            ),
+            (
+                3,
+                Bars {
+                    jump: Some(Jump {
+                        target: JumpTarget::DalSegno,
+                        until: JumpUntil::Coda,
+                    }),
+                    ..Bars::default()
+                },
+            ),
+            (
+                4,
+                Bars {
+                    coda: true,
+                    ..Bars::default()
+                },
+            ),
+        ];
+        for (measure, bars) in marks {
+            doc.execute(Command::SetBars { measure, bars }).unwrap();
+        }
+        let exported = export(doc.score());
+        assert!(exported.unsupported.is_empty());
+        assert_eq!(
+            exported.xml.matches("<segno/>").count(),
+            1,
+            "first part only"
+        );
+        assert!(exported.xml.contains(
+            "<direction-type><words>D.S. al Coda</words></direction-type><sound dalsegno=\"segno\"/>"
+        ));
+        let imported = import(&exported.xml).unwrap();
+        assert!(
+            imported.unsupported.is_empty(),
+            "{:?}",
+            imported.unsupported
+        );
+        let bars = |score: &Score| {
+            score
+                .measures
+                .iter()
+                .map(|info| info.bars)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bars(&imported.score), bars(doc.score()));
+
+        // Words alone, as some programs write them, and a coda sign that belongs to "To Coda".
+        let measure = |number: usize, directions: &str| {
+            format!(
+                r#"<measure number="{number}">{directions}<note><rest measure="yes"/><duration>4</duration><voice>1</voice></note></measure>"#
+            )
+        };
+        let xml = format!(
+            r#"<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Horn</part-name></score-part></part-list><part id="P1">{}{}{}</part></score-partwise>"#,
+            measure(
+                1,
+                r#"<attributes><divisions>1</divisions></attributes><direction><direction-type><words>Fine</words></direction-type></direction>"#
+            ),
+            measure(
+                2,
+                r#"<direction><direction-type><words>To Coda</words></direction-type><direction-type><coda/></direction-type></direction>"#
+            ),
+            measure(
+                3,
+                r#"<direction><direction-type><words>Da Capo al Fine</words></direction-type></direction>"#
+            ),
+        );
+        let imported = import(&xml).unwrap();
+        let bars = bars(&imported.score);
+        assert!(bars[0].fine);
+        assert!(bars[1].to_coda && !bars[1].coda);
+        assert_eq!(
+            bars[2].jump,
+            Some(Jump {
+                target: JumpTarget::DaCapo,
+                until: JumpUntil::Fine,
+            })
+        );
+        assert!(
+            imported.unsupported.is_empty(),
+            "{:?}",
+            imported.unsupported
+        );
+        assert_eq!(
+            notula_model::repeats::play_order(&imported.score),
+            vec![0, 1, 2, 0]
         );
     }
 

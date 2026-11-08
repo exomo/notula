@@ -689,31 +689,109 @@ pub(crate) fn text_width(text: &str, size: f32) -> f32 {
     text.chars().count() as f32 * TEXT_CHAR_WIDTH * size
 }
 
-/// A tempo heading: tempo text, a printed metronome mark, or the text followed by the mark.
-#[derive(Debug, Clone, Copy)]
+/// A mark above a part on the line of tempo marks: text (bold tempo text such as "Allegro",
+/// or italic navigation text such as "D.C. al Fine"), then a symbol (segno or coda), then a
+/// metronome mark; any of them may be missing.
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TempoHeading<'a> {
     pub text: Option<&'a str>,
+    /// Italic navigation text rather than bold tempo text.
+    pub italic: bool,
+    pub symbol: Option<char>,
     pub tempo: Option<Tempo>,
 }
 
+/// Navigation text at a measure's end, such as "D.C. al Fine" or "To Coda".
+pub(crate) fn navigation_text(bars: notula_model::Bars) -> Option<String> {
+    let words: Vec<&str> = [
+        bars.fine.then_some("Fine"),
+        bars.jump.map(notula_model::Jump::label),
+        bars.to_coda.then_some("To Coda"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!words.is_empty()).then(|| words.join("   "))
+}
+
+/// Font size of segno and coda signs.
+const SYMBOL_SIZE: f32 = 2.8;
+/// Room between the parts of a heading.
+const HEADING_GAP: f32 = 0.6;
+/// Room after a segno or coda sign at a measure's start.
+pub(crate) const NAVIGATION_GAP: f32 = 0.8;
+/// Room between navigation text and the barline it ends at.
+pub(crate) const NAVIGATION_END_ROOM: f32 = 0.5;
+
+/// Width of a segno or coda sign as drawn.
+fn symbol_width(symbol: char) -> f32 {
+    let width = if symbol == smufl::SEGNO {
+        smufl::SEGNO_WIDTH
+    } else {
+        smufl::CODA_WIDTH
+    };
+    width * SYMBOL_SIZE / 4.0
+}
+
 impl TempoHeading<'_> {
-    fn metronome_x(&self) -> f32 {
+    /// The marks a measure's bars print on the tempo line: segno and coda signs at its start,
+    /// and navigation text (with the coda sign after "To Coda") at its end.
+    pub fn width_of_navigation(bars: notula_model::Bars, end_text: Option<&str>) -> f32 {
+        let start: f32 = [(bars.segno, smufl::SEGNO), (bars.coda, smufl::CODA)]
+            .into_iter()
+            .filter(|(shown, _)| *shown)
+            .map(|(_, symbol)| symbol_width(symbol) + NAVIGATION_GAP)
+            .sum();
+        let end = end_text.map_or(0.0, |text| {
+            TempoHeading {
+                text: Some(text),
+                italic: true,
+                symbol: bars.to_coda.then_some(smufl::CODA),
+                tempo: None,
+            }
+            .width()
+                + NAVIGATION_END_ROOM
+        });
+        start + end
+    }
+
+    fn text_width(&self) -> Option<f32> {
         // Bold letters are wider than the plain estimate.
-        self.text.map_or(0.0, |text| {
-            text_width(text, TEMPO_TEXT_SIZE) * BOLD_WIDTH + TEMPO_TEXT_GAP
-        })
+        let factor = if self.italic { 1.0 } else { BOLD_WIDTH };
+        self.text
+            .map(|text| text_width(text, TEMPO_TEXT_SIZE) * factor)
+    }
+
+    /// Where the symbol and the metronome mark start, relative to the heading's x.
+    fn offsets(&self) -> (f32, f32) {
+        let mut x = self
+            .text_width()
+            .map_or(0.0, |width| width + TEMPO_TEXT_GAP);
+        let symbol = x;
+        if let Some(glyph) = self.symbol {
+            x += symbol_width(glyph) + HEADING_GAP;
+        }
+        (symbol, x)
     }
 
     pub fn width(&self) -> f32 {
-        match self.tempo {
-            Some(tempo) => self.metronome_x() + metronome_width(tempo),
-            None => self.metronome_x() - TEMPO_TEXT_GAP,
+        let (symbol, metronome) = self.offsets();
+        match (self.tempo, self.symbol) {
+            (Some(tempo), _) => metronome + metronome_width(tempo),
+            (None, Some(glyph)) => symbol + symbol_width(glyph),
+            (None, None) => self.text_width().unwrap_or(0.0),
         }
     }
 
     /// Draws the heading starting at `x`, with `baseline` under the text and metronome.
     pub fn emit(&self, canvas: &mut Canvas, x: f32, baseline: f32) {
+        let (symbol, metronome) = self.offsets();
         if let Some(text) = self.text {
+            let style = if self.italic {
+                TextStyle::Italic
+            } else {
+                TextStyle::Bold
+            };
             canvas.styled_text(
                 None,
                 x,
@@ -721,11 +799,20 @@ impl TempoHeading<'_> {
                 text,
                 TEMPO_TEXT_SIZE,
                 Anchor::Start,
-                TextStyle::Bold,
+                style,
             );
         }
+        if let Some(glyph) = self.symbol {
+            // Signs stand on the baseline.
+            let raise = if glyph == smufl::CODA {
+                smufl::CODA_DEPTH * SYMBOL_SIZE / 4.0
+            } else {
+                0.0
+            };
+            canvas.glyph(None, x + symbol, baseline - raise, glyph, SYMBOL_SIZE);
+        }
         if let Some(tempo) = self.tempo {
-            metronome_mark(canvas, x + self.metronome_x(), baseline, tempo);
+            metronome_mark(canvas, x + metronome, baseline, tempo);
         }
     }
 }

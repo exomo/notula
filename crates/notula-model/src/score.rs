@@ -332,7 +332,60 @@ pub struct Ending {
     pub open: bool,
 }
 
-/// Repeat signs, the barline, and the ending of one measure, shared by all staves.
+/// Where a jump goes back to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JumpTarget {
+    /// Da capo: the beginning.
+    DaCapo,
+    /// Dal segno: the segno sign.
+    DalSegno,
+}
+
+/// How far the music is played after a jump.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JumpUntil {
+    /// To the end, as for a plain "D.C." or "D.S.".
+    #[default]
+    End,
+    /// To the measure marked "Fine".
+    Fine,
+    /// To the "To Coda" mark, and from there on at the coda.
+    Coda,
+}
+
+impl JumpUntil {
+    fn is_end(&self) -> bool {
+        *self == Self::End
+    }
+}
+
+/// A jump at the end of a measure, such as "D.C. al Fine". It is taken once; afterwards
+/// repeats are played without going back, so their endings play their last pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Jump {
+    pub target: JumpTarget,
+    #[serde(default, skip_serializing_if = "JumpUntil::is_end")]
+    pub until: JumpUntil,
+}
+
+impl Jump {
+    /// As printed, such as "D.C." or "D.S. al Coda".
+    pub fn label(self) -> &'static str {
+        match (self.target, self.until) {
+            (JumpTarget::DaCapo, JumpUntil::End) => "D.C.",
+            (JumpTarget::DaCapo, JumpUntil::Fine) => "D.C. al Fine",
+            (JumpTarget::DaCapo, JumpUntil::Coda) => "D.C. al Coda",
+            (JumpTarget::DalSegno, JumpUntil::End) => "D.S.",
+            (JumpTarget::DalSegno, JumpUntil::Fine) => "D.S. al Fine",
+            (JumpTarget::DalSegno, JumpUntil::Coda) => "D.S. al Coda",
+        }
+    }
+}
+
+/// Repeat signs, the barline, the ending, and the navigation marks of one measure, shared by
+/// all staves.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Bars {
     /// A repeat begins at the measure's start.
@@ -346,6 +399,21 @@ pub struct Bars {
     pub barline: Barline,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ending: Option<Ending>,
+    /// A segno sign at the measure's start, where "D.S." jumps back to.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub segno: bool,
+    /// A coda sign at the measure's start, where "To Coda" goes after a jump al Coda.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub coda: bool,
+    /// "Fine" at the measure's end: after a jump al Fine, the music ends here.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fine: bool,
+    /// "To Coda" at the measure's end: after a jump al Coda, the music goes on at the coda.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub to_coda: bool,
+    /// A jump at the measure's end, such as "D.C. al Fine".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jump: Option<Jump>,
 }
 
 impl Bars {
